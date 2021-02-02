@@ -44,8 +44,7 @@ virNetDevIPRouteCreate(const char *errorDetail,
     virNetDevIPRoutePtr def = NULL;
     virSocketAddr testAddr;
 
-    if (VIR_ALLOC(def) < 0)
-        return NULL;
+    def = g_new0(virNetDevIPRoute, 1);
 
     def->family = g_strdup(family);
 
@@ -228,7 +227,7 @@ virNetDevIPRouteParseXML(const char *errorDetail,
      */
 
     virNetDevIPRoutePtr def = NULL;
-    xmlNodePtr save;
+    VIR_XPATH_NODE_AUTORESTORE(ctxt)
     char *family = NULL;
     char *address = NULL, *netmask = NULL;
     char *gateway = NULL;
@@ -237,7 +236,6 @@ virNetDevIPRouteParseXML(const char *errorDetail,
     bool hasPrefix = false;
     bool hasMetric = false;
 
-    save = ctxt->node;
     ctxt->node = node;
 
     /* grab raw data from XML */
@@ -278,7 +276,6 @@ virNetDevIPRouteParseXML(const char *errorDetail,
                                  hasMetric);
 
  cleanup:
-    ctxt->node = save;
     VIR_FREE(family);
     VIR_FREE(address);
     VIR_FREE(netmask);

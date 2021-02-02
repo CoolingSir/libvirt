@@ -43,6 +43,8 @@ int virHostCPUGetStats(int cpuNum,
 bool virHostCPUHasBitmap(void);
 virBitmapPtr virHostCPUGetPresentBitmap(void);
 virBitmapPtr virHostCPUGetOnlineBitmap(void);
+virBitmapPtr virHostCPUGetAvailableCPUsBitmap(void);
+
 int virHostCPUGetCount(void);
 int virHostCPUGetThreadsPerSubcore(virArch arch) G_GNUC_NO_INLINE;
 
@@ -73,9 +75,12 @@ virBitmapPtr virHostCPUGetSiblingsList(unsigned int cpu);
 
 int virHostCPUGetOnline(unsigned int cpu, bool *online);
 
-unsigned int virHostCPUGetMicrocodeVersion(void);
+unsigned int
+virHostCPUGetMicrocodeVersion(virArch hostArch) G_GNUC_NO_INLINE;
 
 int virHostCPUGetMSR(unsigned long index,
                      uint64_t *msr);
 
 virHostCPUTscInfoPtr virHostCPUGetTscInfo(void);
+
+int virHostCPUGetSignature(char **signature);

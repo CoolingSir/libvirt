@@ -20,27 +20,6 @@ CI_HOST_SRCDIR = $(CI_SCRATCHDIR)/src
 # the $(CI_HOST_SRCDIR) directory from the host
 CI_CONT_SRCDIR = $(CI_USER_HOME)/libvirt
 
-# Relative directory to perform the build in. This
-# defaults to using a separate build dir, but can be
-# set to empty string for an in-source tree build.
-CI_VPATH = build
-
-# The directory holding the build output inside the
-# container.
-CI_CONT_BUILDDIR = $(CI_CONT_SRCDIR)/$(CI_VPATH)
-
-# Can be overridden with mingw{32,64}-configure if desired
-CI_CONFIGURE = $(CI_CONT_SRCDIR)/configure
-
-# Default to using all possible CPUs
-CI_SMP = $(shell getconf _NPROCESSORS_ONLN)
-
-# Any extra arguments to pass to make
-CI_MAKE_ARGS =
-
-# Any extra arguments to pass to configure
-CI_CONFIGURE_ARGS =
-
 # Script containing environment preparation steps
 CI_PREPARE_SCRIPT = $(CI_ROOTDIR)/prepare.sh
 
@@ -48,9 +27,9 @@ CI_PREPARE_SCRIPT = $(CI_ROOTDIR)/prepare.sh
 CI_BUILD_SCRIPT = $(CI_ROOTDIR)/build.sh
 
 # Location of the container images we're going to pull
-# Can be useful to overridde to use a locally built
+# Can be useful to override to use a locally built
 # image instead
-CI_IMAGE_PREFIX = quay.io/libvirt/buildenv-libvirt-
+CI_IMAGE_PREFIX = registry.gitlab.com/libvirt/libvirt/ci-
 
 # The default tag is ':latest' but if the container
 # repo above uses different conventions this can override it
@@ -85,7 +64,7 @@ endif
 
 # IDs you run as do not need to exist in
 # the container's /etc/passwd & /etc/group files, but
-# if they do not, then libvirt's 'make check' will fail
+# if they do not, then libvirt's 'ninja test' will fail
 # many tests.
 
 # We do not directly mount /etc/{passwd,group} as Docker
@@ -220,13 +199,10 @@ ci-run-command@%: ci-prepare-tree
 		  --login \
 		  --user="#$(CI_UID)" \
 		  --group="#$(CI_GID)" \
-		  CONFIGURE_OPTS="$$CONFIGURE_OPTS" \
+		  MESON_OPTS="$$MESON_OPTS" \
 		  CI_CONT_SRCDIR="$(CI_CONT_SRCDIR)" \
-		  CI_CONT_BUILDDIR="$(CI_CONT_BUILDDIR)" \
-		  CI_SMP="$(CI_SMP)" \
-		  CI_CONFIGURE="$(CI_CONFIGURE)" \
-		  CI_CONFIGURE_ARGS="$(CI_CONFIGURE_ARGS)" \
-		  CI_MAKE_ARGS="$(CI_MAKE_ARGS)" \
+		  CI_MESON_ARGS="$(CI_MESON_ARGS)" \
+		  CI_NINJA_ARGS="$(CI_NINJA_ARGS)" \
 		  $(CI_COMMAND) || exit 1'
 	@test "$(CI_CLEAN)" = "1" && rm -rf $(CI_SCRATCHDIR) || :
 
@@ -236,18 +212,18 @@ ci-shell@%:
 ci-build@%:
 	$(MAKE) -C $(CI_ROOTDIR) ci-run-command@$* CI_COMMAND="$(CI_USER_HOME)/build"
 
-ci-check@%:
-	$(MAKE) -C $(CI_ROOTDIR) ci-build@$* CI_MAKE_ARGS="check"
+ci-test@%:
+	$(MAKE) -C $(CI_ROOTDIR) ci-build@$* CI_NINJA_ARGS=test
 
 ci-list-images:
 	@echo
 	@echo "Available x86 container images:"
 	@echo
-	@sh list-images.sh "$(CI_ENGINE)" "$(CI_IMAGE_PREFIX)" | grep -v cross
+	@sh list-images.sh "$(CI_IMAGE_PREFIX)" | grep -v cross
 	@echo
 	@echo "Available cross-compiler container images:"
 	@echo
-	@sh list-images.sh "$(CI_ENGINE)" "$(CI_IMAGE_PREFIX)" | grep cross
+	@sh list-images.sh "$(CI_IMAGE_PREFIX)" | grep cross
 	@echo
 
 ci-help:
@@ -255,15 +231,17 @@ ci-help:
 	@echo
 	@echo "Available targets:"
 	@echo
-	@echo "    ci-build@\$$IMAGE - run a default 'make'"
-	@echo "    ci-check@\$$IMAGE - run a 'make check'"
+	@echo "    ci-build@\$$IMAGE - run a default 'ninja' build"
+	@echo "    ci-check@\$$IMAGE - run a 'ninja test'"
 	@echo "    ci-shell@\$$IMAGE - run an interactive shell"
 	@echo "    ci-list-images  - list available images"
 	@echo "    ci-help         - show this help message"
 	@echo
 	@echo "Available make variables:"
 	@echo
-	@echo "    CI_CLEAN=0     - do not delete '$(CI_SCRATCHDIR)' after completion"
-	@echo "    CI_REUSE=1     - re-use existing '$(CI_SCRATCHDIR)' content"
-	@echo "    CI_ENGINE=auto - container engine to use (podman, docker)"
+	@echo "    CI_CLEAN=0          - do not delete '$(CI_SCRATCHDIR)' after completion"
+	@echo "    CI_REUSE=1          - re-use existing '$(CI_SCRATCHDIR)' content"
+	@echo "    CI_ENGINE=auto      - container engine to use (podman, docker)"
+	@echo "    CI_MESON_ARGS=      - extra arguments passed to meson"
+	@echo "    CI_NINJA_ARGS=      - extra arguments passed to ninja"
 	@echo

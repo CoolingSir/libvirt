@@ -211,10 +211,7 @@ virTestLoadFile(const char *file, char **buf)
 
     tmplen = buflen = st.st_size + 1;
 
-    if (VIR_ALLOC_N(*buf, buflen) < 0) {
-        VIR_FORCE_FCLOSE(fp);
-        return -1;
-    }
+    *buf = g_new0(char, buflen);
 
     tmp = *buf;
     (*buf)[0] = '\0';
@@ -251,7 +248,7 @@ static char *
 virTestLoadFileGetPath(const char *p,
                        va_list ap)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char *path = NULL;
 
     virBufferAddLit(&buf, abs_srcdir "/");
@@ -340,7 +337,7 @@ virTestRewrapFile(const char *filename)
 
     script = g_strdup_printf("%s/scripts/test-wrap-argv.py", abs_top_srcdir);
 
-    cmd = virCommandNewArgList(PYTHON, script, "--in-place", filename, NULL);
+    cmd = virCommandNewArgList(PYTHON3, script, "--in-place", filename, NULL);
     if (virCommandRun(cmd, NULL) < 0)
         return -1;
 
@@ -767,10 +764,14 @@ int virTestMain(int argc,
         preloads[npreloads] = NULL;
     }
 
+    g_setenv("HOME", "/bad-test-used-env-home", TRUE);
+    g_setenv("XDG_RUNTIME_DIR", "/bad-test-used-env-xdg-runtime-dir", TRUE);
+
     va_start(ap, func);
     while ((lib = va_arg(ap, const char *))) {
         if (!virFileIsExecutable(lib)) {
             perror(lib);
+            va_end(ap);
             return EXIT_FAILURE;
         }
 
@@ -832,8 +833,7 @@ int virTestMain(int argc,
         }
     }
 
-    if (!(failedTests = virBitmapNew(1)))
-        return EXIT_FAILURE;
+    failedTests = virBitmapNew(1);
 
     ret = (func)();
 
@@ -974,16 +974,13 @@ virTestCapsBuildNUMATopology(int seq)
 
     id = 0;
     for (cell_id = 0; cell_id < MAX_CELLS; cell_id++) {
-        if (VIR_ALLOC_N(cell_cpus, MAX_CPUS_IN_CELL) < 0)
-            goto error;
+        cell_cpus = g_new0(virCapsHostNUMACellCPU, MAX_CPUS_IN_CELL);
 
         for (core_id = 0; core_id < MAX_CPUS_IN_CELL; core_id++) {
             cell_cpus[core_id].id = id + core_id;
             cell_cpus[core_id].socket_id = cell_id + seq;
             cell_cpus[core_id].core_id = id + core_id;
-            if (!(cell_cpus[core_id].siblings =
-                  virBitmapNew(MAX_CPUS_IN_CELL)))
-                goto error;
+            cell_cpus[core_id].siblings = virBitmapNew(MAX_CPUS_IN_CELL);
             ignore_value(virBitmapSetBit(cell_cpus[core_id].siblings, id));
         }
         id++;
@@ -998,10 +995,6 @@ virTestCapsBuildNUMATopology(int seq)
     }
 
     return g_steal_pointer(&caps);
-
- error:
-    VIR_FREE(cell_cpus);
-    return NULL;
 }
 
 static virDomainDefParserConfig virTestGenericDomainDefParserConfig = {

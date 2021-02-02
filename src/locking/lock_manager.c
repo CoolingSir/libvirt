@@ -30,7 +30,7 @@
 #include "viruuid.h"
 #include "virstring.h"
 
-#if HAVE_DLFCN_H
+#if WITH_DLFCN_H
 # include <dlfcn.h>
 #endif
 #include <unistd.h>
@@ -116,7 +116,7 @@ static void virLockManagerLogParams(size_t nparams,
  *
  * Returns a plugin object, or NULL if loading failed.
  */
-#if HAVE_DLFCN_H
+#if WITH_DLFCN_H
 virLockManagerPluginPtr virLockManagerPluginNew(const char *name,
                                                 const char *driverName,
                                                 const char *configDir,
@@ -138,8 +138,8 @@ virLockManagerPluginPtr virLockManagerPluginNew(const char *name,
     } else {
         if (!(modfile = virFileFindResourceFull(name,
                                                 NULL,
-                                                ".so",
-                                                abs_top_builddir "/src/.libs",
+                                                VIR_FILE_MODULE_EXT,
+                                                abs_top_builddir "/src",
                                                 LIBDIR "/libvirt/lock-driver",
                                                 "LIBVIRT_LOCK_MANAGER_PLUGIN_DIR")))
             goto cleanup;
@@ -171,8 +171,7 @@ virLockManagerPluginPtr virLockManagerPluginNew(const char *name,
     if (driver->drvInit(VIR_LOCK_MANAGER_VERSION, configFile, flags) < 0)
         goto cleanup;
 
-    if (VIR_ALLOC(plugin) < 0)
-        goto cleanup;
+    plugin = g_new0(virLockManagerPlugin, 1);
 
     plugin->driver = driver;
     plugin->handle = handle;
@@ -191,7 +190,7 @@ virLockManagerPluginPtr virLockManagerPluginNew(const char *name,
         dlclose(handle);
     return NULL;
 }
-#else /* !HAVE_DLFCN_H */
+#else /* !WITH_DLFCN_H */
 virLockManagerPluginPtr
 virLockManagerPluginNew(const char *name G_GNUC_UNUSED,
                         const char *driverName G_GNUC_UNUSED,
@@ -202,7 +201,7 @@ virLockManagerPluginNew(const char *name G_GNUC_UNUSED,
                    _("this platform is missing dlopen"));
     return NULL;
 }
-#endif /* !HAVE_DLFCN_H */
+#endif /* !WITH_DLFCN_H */
 
 
 /**
@@ -227,7 +226,7 @@ void virLockManagerPluginRef(virLockManagerPluginPtr plugin)
  * result in an unsafe scenario.
  *
  */
-#if HAVE_DLFCN_H
+#if WITH_DLFCN_H
 void virLockManagerPluginUnref(virLockManagerPluginPtr plugin)
 {
     if (!plugin)
@@ -249,11 +248,11 @@ void virLockManagerPluginUnref(virLockManagerPluginPtr plugin)
     VIR_FREE(plugin->name);
     VIR_FREE(plugin);
 }
-#else /* !HAVE_DLFCN_H */
+#else /* !WITH_DLFCN_H */
 void virLockManagerPluginUnref(virLockManagerPluginPtr plugin G_GNUC_UNUSED)
 {
 }
-#endif /* !HAVE_DLFCN_H */
+#endif /* !WITH_DLFCN_H */
 
 
 const char *virLockManagerPluginGetName(virLockManagerPluginPtr plugin)
@@ -303,8 +302,7 @@ virLockManagerPtr virLockManagerNew(virLockDriverPtr driver,
 
     CHECK_DRIVER(drvNew, NULL);
 
-    if (VIR_ALLOC(lock) < 0)
-        return NULL;
+    lock = g_new0(virLockManager, 1);
 
     lock->driver = driver;
 

@@ -43,7 +43,7 @@ VIR_LOG_INIT("util.virmacmap");
 struct virMacMap {
     virObjectLockable parent;
 
-    virHashTablePtr macs;
+    GHashTable *macs;
 };
 
 
@@ -52,10 +52,10 @@ static virClassPtr virMacMapClass;
 
 static int
 virMacMapHashFree(void *payload,
-                  const void *name G_GNUC_UNUSED,
+                  const char *name G_GNUC_UNUSED,
                   void *opaque G_GNUC_UNUSED)
 {
-    virStringListFree(payload);
+    g_strfreev(payload);
     return 0;
 }
 
@@ -129,7 +129,7 @@ static int
 virMacMapLoadFile(virMacMapPtr mgr,
                   const char *file)
 {
-    char *map_str = NULL;
+    g_autofree char *map_str = NULL;
     virJSONValuePtr map = NULL;
     int map_str_len = 0;
     size_t i;
@@ -189,7 +189,6 @@ virMacMapLoadFile(virMacMapPtr mgr,
 
     ret = 0;
  cleanup:
-    VIR_FREE(map_str);
     virJSONValueFree(map);
     return ret;
 }
@@ -197,7 +196,7 @@ virMacMapLoadFile(virMacMapPtr mgr,
 
 static int
 virMACMapHashDumper(void *payload,
-                    const void *name,
+                    const char *name,
                     void *data)
 {
     virJSONValuePtr obj = virJSONValueNewObject();
@@ -244,7 +243,7 @@ virMacMapDumpStrLocked(virMacMapPtr mgr,
 
     arr = virJSONValueNewArray();
 
-    if (virHashForEach(mgr->macs, virMACMapHashDumper, arr) < 0)
+    if (virHashForEachSorted(mgr->macs, virMACMapHashDumper, arr) < 0)
         goto cleanup;
 
     if (!(*str = virJSONValueToString(arr, true)))
@@ -299,7 +298,7 @@ virMacMapNew(const char *file)
         return NULL;
 
     virObjectLock(mgr);
-    if (!(mgr->macs = virHashCreate(VIR_MAC_HASH_TABLE_SIZE, NULL)))
+    if (!(mgr->macs = virHashNew(NULL)))
         goto error;
 
     if (file &&

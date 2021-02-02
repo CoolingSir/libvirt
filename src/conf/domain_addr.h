@@ -115,8 +115,8 @@ typedef struct {
 typedef virDomainPCIAddressBus *virDomainPCIAddressBusPtr;
 
 typedef struct {
-    virHashTablePtr uids;
-    virHashTablePtr fids;
+    GHashTable *uids;
+    GHashTable *fids;
 } virDomainZPCIAddressIds;
 typedef virDomainZPCIAddressIds *virDomainZPCIAddressIdsPtr;
 
@@ -196,7 +196,7 @@ void virDomainPCIAddressSetAllMulti(virDomainDefPtr def)
     ATTRIBUTE_NONNULL(1);
 
 struct _virDomainCCWAddressSet {
-    virHashTablePtr defined;
+    GHashTable *defined;
     virDomainDeviceCCWAddress next;
 };
 typedef struct _virDomainCCWAddressSet virDomainCCWAddressSet;
@@ -207,6 +207,9 @@ int virDomainCCWAddressAssign(virDomainDeviceInfoPtr dev,
                               bool autoassign)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 void virDomainCCWAddressSetFree(virDomainCCWAddressSetPtr addrs);
+
+char* virDomainCCWAddressAsString(virDomainDeviceCCWAddressPtr addr)
+    ATTRIBUTE_NONNULL(1);
 
 virDomainCCWAddressSetPtr
 virDomainCCWAddressSetCreateFromDomain(virDomainDefPtr def)

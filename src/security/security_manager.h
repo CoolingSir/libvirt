@@ -121,7 +121,7 @@ int virSecurityManagerCheckAllLabel(virSecurityManagerPtr mgr,
                                     virDomainDefPtr sec);
 int virSecurityManagerSetAllLabel(virSecurityManagerPtr mgr,
                                   virDomainDefPtr sec,
-                                  const char *stdin_path,
+                                  const char *incomingPath,
                                   bool chardevStdioLogd,
                                   bool migrated);
 int virSecurityManagerRestoreAllLabel(virSecurityManagerPtr mgr,
@@ -188,6 +188,15 @@ int virSecurityManagerDomainSetPathLabel(virSecurityManagerPtr mgr,
                                          virDomainDefPtr vm,
                                          const char *path,
                                          bool allowSubtree);
+
+int virSecurityManagerDomainSetPathLabelRO(virSecurityManagerPtr mgr,
+                                           virDomainDefPtr vm,
+                                           const char *path);
+
+int virSecurityManagerDomainRestorePathLabel(virSecurityManagerPtr mgr,
+                                             virDomainDefPtr def,
+                                             const char *path);
+
 
 int virSecurityManagerSetChardevLabel(virSecurityManagerPtr mgr,
                                       virDomainDefPtr def,

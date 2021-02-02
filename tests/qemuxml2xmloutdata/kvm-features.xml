@@ -13,9 +13,10 @@
     <kvm>
       <hidden state='on'/>
       <hint-dedicated state='on'/>
+      <poll-control state='on'/>
     </kvm>
   </features>
-  <cpu mode='host-passthrough' check='none'/>
+  <cpu mode='host-passthrough' check='none' migratable='off'/>
   <clock offset='utc'/>
   <on_poweroff>destroy</on_poweroff>
   <on_reboot>restart</on_reboot>

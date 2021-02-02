@@ -205,8 +205,7 @@ openvzReadNetworkConf(virDomainDefPtr def,
     } else if (ret > 0) {
         token = strtok_r(temp, " ", &saveptr);
         while (token != NULL) {
-            if (VIR_ALLOC(net) < 0)
-                goto error;
+            net = g_new0(virDomainNetDef, 1);
 
             net->type = VIR_DOMAIN_NET_TYPE_ETHERNET;
             if (virDomainNetAppendIPAddress(net, token, AF_UNSPEC, 0) < 0)
@@ -233,15 +232,14 @@ openvzReadNetworkConf(virDomainDefPtr def,
     } else if (ret > 0) {
         token = strtok_r(temp, ";", &saveptr);
         while (token != NULL) {
-            /* add new device to list */
-            if (VIR_ALLOC(net) < 0)
-                goto error;
-
-            net->type = VIR_DOMAIN_NET_TYPE_BRIDGE;
-
             char *p = token;
             char cpy_temp[32];
             int len;
+
+            /* add new device to list */
+            net = g_new0(virDomainNetDef, 1);
+
+            net->type = VIR_DOMAIN_NET_TYPE_BRIDGE;
 
             /* parse string */
             do {
@@ -259,8 +257,7 @@ openvzReadNetworkConf(virDomainDefPtr def,
                         goto error;
                     }
 
-                    if (VIR_ALLOC_N(net->ifname, len+1) < 0)
-                        goto error;
+                    net->ifname = g_new0(char, len+1);
 
                     if (virStrncpy(net->ifname, p, len, len+1) < 0) {
                         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -276,8 +273,7 @@ openvzReadNetworkConf(virDomainDefPtr def,
                         goto error;
                     }
 
-                    if (VIR_ALLOC_N(net->data.bridge.brname, len+1) < 0)
-                        goto error;
+                    net->data.bridge.brname = g_new0(char, len+1);
 
                     if (virStrncpy(net->data.bridge.brname, p, len, len+1) < 0) {
                         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -330,7 +326,7 @@ openvzReadFSConf(virDomainDefPtr def,
 {
     int ret;
     virDomainFSDefPtr fs = NULL;
-    char *veid_str = NULL;
+    g_autofree char *veid_str = NULL;
     char *temp = NULL;
     const char *param;
     unsigned long long barrier, limit;
@@ -357,7 +353,7 @@ openvzReadFSConf(virDomainDefPtr def,
             goto error;
         }
 
-        if (VIR_ALLOC(fs) < 0)
+        if (!(fs = virDomainFSDefNew(NULL)))
             goto error;
 
         veid_str = g_strdup_printf("%d", veid);
@@ -365,8 +361,6 @@ openvzReadFSConf(virDomainDefPtr def,
         fs->type = VIR_DOMAIN_FS_TYPE_MOUNT;
         if (!(fs->src->path = virStringReplace(temp, "$VEID", veid_str)))
             goto error;
-
-        VIR_FREE(veid_str);
     }
 
     fs->dst = g_strdup("/");
@@ -616,7 +610,7 @@ int openvzLoadDomains(struct openvz_driver *driver)
 static int
 openvzWriteConfigParam(const char * conf_file, const char *param, const char *value)
 {
-    char * temp_file = NULL;
+    g_autofree char *temp_file = NULL;
     int temp_fd = -1;
     FILE *fp;
     char *line = NULL;
@@ -666,7 +660,6 @@ openvzWriteConfigParam(const char * conf_file, const char *param, const char *va
     VIR_FORCE_CLOSE(temp_fd);
     if (temp_file)
         unlink(temp_file);
-    VIR_FREE(temp_file);
     return -1;
 }
 
@@ -1010,7 +1003,7 @@ openvzSetUUID(int vpsid)
 
 static int openvzAssignUUIDs(void)
 {
-    DIR *dp;
+    g_autoptr(DIR) dp = NULL;
     struct dirent *dent;
     char *conf_dir;
     int vpsid;
@@ -1035,7 +1028,6 @@ static int openvzAssignUUIDs(void)
             openvzSetUUID(vpsid);
     }
 
-    VIR_DIR_CLOSE(dp);
     VIR_FREE(conf_dir);
     return ret;
 }

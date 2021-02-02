@@ -46,8 +46,7 @@ testCompareParseXML(const char *xmcfg, const char *xml)
     int wrote = 4096;
     virDomainDefPtr def = NULL;
 
-    if (VIR_ALLOC_N(gotxmcfgData, wrote) < 0)
-        goto fail;
+    gotxmcfgData = g_new0(char, wrote);
 
     conn = virGetConnect();
     if (!conn) goto fail;
@@ -129,7 +128,6 @@ testCompareHelper(const void *data)
     const struct testInfo *info = data;
     char *xml = NULL;
     char *cfg = NULL;
-    char *cfgout = NULL;
 
     xml = g_strdup_printf("%s/xmconfigdata/test-%s.xml", abs_srcdir, info->name);
     cfg = g_strdup_printf("%s/xmconfigdata/test-%s.cfg", abs_srcdir, info->name);
@@ -141,7 +139,6 @@ testCompareHelper(const void *data)
 
     VIR_FREE(xml);
     VIR_FREE(cfg);
-    VIR_FREE(cfgout);
 
     return result;
 }
@@ -218,6 +215,7 @@ mymain(void)
     DO_TEST("escape-paths");
     DO_TEST("no-source-cdrom");
     DO_TEST("pci-devs");
+    DO_TEST_FORMAT("pci-dev-syntax");
 
     DO_TEST("disk-drv-blktap-raw");
     DO_TEST("disk-drv-blktap2-raw");

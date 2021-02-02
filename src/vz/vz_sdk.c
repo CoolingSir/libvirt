@@ -70,16 +70,14 @@ logPrlErrorHelper(PRL_RESULT err, const char *filename,
     /* Get required buffer length */
     PrlApi_GetResultDescription(err, PRL_TRUE, PRL_FALSE, NULL, &len);
 
-    if (VIR_ALLOC_N(msg1, len) < 0)
-        goto cleanup;
+    msg1 = g_new0(char, len);
 
     /* get short error description */
     PrlApi_GetResultDescription(err, PRL_TRUE, PRL_FALSE, msg1, &len);
 
     PrlApi_GetResultDescription(err, PRL_FALSE, PRL_FALSE, NULL, &len);
 
-    if (VIR_ALLOC_N(msg2, len) < 0)
-        goto cleanup;
+    msg2 = g_new0(char, len);
 
     /* get long error description */
     PrlApi_GetResultDescription(err, PRL_FALSE, PRL_FALSE, msg2, &len);
@@ -88,7 +86,6 @@ logPrlErrorHelper(PRL_RESULT err, const char *filename,
                          filename, funcname, linenr,
                          _("%s %s"), msg1, msg2);
 
- cleanup:
     VIR_FREE(msg1);
     VIR_FREE(msg2);
 }
@@ -122,22 +119,19 @@ logPrlEventErrorHelper(PRL_HANDLE event, const char *filename,
 
     PrlEvent_GetErrString(event, PRL_TRUE, PRL_FALSE, NULL, &len);
 
-    if (VIR_ALLOC_N(msg1, len) < 0)
-        goto cleanup;
+    msg1 = g_new0(char, len);
 
     PrlEvent_GetErrString(event, PRL_TRUE, PRL_FALSE, msg1, &len);
 
     PrlEvent_GetErrString(event, PRL_FALSE, PRL_FALSE, NULL, &len);
 
-    if (VIR_ALLOC_N(msg2, len) < 0)
-        goto cleanup;
+    msg2 = g_new0(char, len);
 
     PrlEvent_GetErrString(event, PRL_FALSE, PRL_FALSE, msg2, &len);
 
     virReportErrorHelper(VIR_FROM_THIS, VIR_ERR_INTERNAL_ERROR,
                          filename, funcname, linenr,
                          _("%s %s"), msg1, msg2);
- cleanup:
     VIR_FREE(msg1);
     VIR_FREE(msg2);
 }
@@ -256,11 +250,11 @@ waitDomainJobHelper(PRL_HANDLE job, virDomainObjPtr dom, unsigned int timeout,
     }
 
     pdom->job.sdkJob = job;
-    if (dom)
-        virObjectUnlock(dom);
+
+    virObjectUnlock(dom);
     ret = waitJobHelper(job, timeout, filename, funcname, linenr);
-    if (dom)
-        virObjectLock(dom);
+    virObjectLock(dom);
+
     pdom->job.sdkJob = NULL;
 
     return ret;
@@ -306,8 +300,7 @@ prlsdkGetStringParamVar(prlsdkParamGetterType getter, PRL_HANDLE handle)
     pret = getter(handle, NULL, &buflen);
     prlsdkCheckRetGoto(pret, error);
 
-    if (VIR_ALLOC_N(str, buflen) < 0)
-        goto error;
+    str = g_new0(char, buflen);
 
     pret = getter(handle, str, &buflen);
     prlsdkCheckRetGoto(pret, error);
@@ -582,11 +575,8 @@ prlsdkAddDomainVideoInfoVm(PRL_HANDLE sdkdom, virDomainDefPtr def)
     ret = PrlVmCfg_GetVideoRamSize(sdkdom, &videoRam);
     prlsdkCheckRetGoto(ret, error);
 
-    if (VIR_ALLOC(video) < 0)
-        goto error;
-
-    if (VIR_ALLOC(accel) < 0)
-        goto error;
+    video = g_new0(virDomainVideoDef, 1);
+    accel = g_new0(virDomainVideoAccelDef, 1);
 
     if (VIR_APPEND_ELEMENT_COPY(def->videos, def->nvideos, video) < 0)
         goto error;
@@ -684,8 +674,8 @@ prlsdkGetDiskInfo(vzDriverPtr driver,
     if (!(buf = prlsdkGetStringParamVar(PrlVmDev_GetFriendlyName, prldisk)))
         goto cleanup;
 
-    if (*buf != '\0' && virDomainDiskSetSource(disk, buf) < 0)
-        goto cleanup;
+    if (*buf != '\0')
+        virDomainDiskSetSource(disk, buf);
 
     if (prlsdkGetDiskId(prldisk, &disk->bus, &disk->dst) < 0)
         goto cleanup;
@@ -708,8 +698,7 @@ prlsdkGetDiskInfo(vzDriverPtr driver,
             VIR_FREE(disk->serial);
     }
 
-    if (virDomainDiskSetDriver(disk, "vz") < 0)
-        goto cleanup;
+    virDomainDiskSetDriver(disk, "vz");
 
     if (disk->device == VIR_DOMAIN_DISK_DEVICE_DISK) {
         pret = PrlVmDevHd_GetDiskSize(prldisk, &size);
@@ -773,8 +762,7 @@ prlsdkGetFSInfo(PRL_HANDLE prldisk,
             goto cleanup;
         }
         fs->type = VIR_DOMAIN_FS_TYPE_VOLUME;
-        if (VIR_ALLOC(fs->src->srcpool) < 0)
-            goto cleanup;
+        fs->src->srcpool = g_new0(virStorageSourcePoolDef, 1);
         fs->src->srcpool->pool = g_strdup(matches[1]);
         fs->src->srcpool->volume = g_strdup(matches[2]);
         VIR_FREE(buf);
@@ -796,7 +784,7 @@ prlsdkGetFSInfo(PRL_HANDLE prldisk,
 
  cleanup:
     VIR_FREE(buf);
-    virStringListFree(matches);
+    g_strfreev(matches);
     return ret;
 }
 
@@ -845,8 +833,7 @@ prlsdkAddDomainHardDisksInfo(vzDriverPtr driver, PRL_HANDLE sdkdom, virDomainDef
             if (prlsdkGetDiskInfo(driver, hdd, disk, false, IS_CT(def)) < 0)
                 goto error;
 
-            if (virDomainDiskInsert(def, disk) < 0)
-                goto error;
+            virDomainDiskInsert(def, disk);
 
             disk = NULL;
             PrlHandle_Free(hdd);
@@ -888,8 +875,7 @@ prlsdkAddDomainOpticalDisksInfo(vzDriverPtr driver, PRL_HANDLE sdkdom, virDomain
         PrlHandle_Free(cdrom);
         cdrom = PRL_INVALID_HANDLE;
 
-        if (virDomainDiskInsert(def, disk) < 0)
-            goto error;
+        virDomainDiskInsert(def, disk);
     }
 
     return 0;
@@ -914,8 +900,7 @@ prlsdkParseNetAddress(char *addr)
     *maskstr = '\0';
     ++maskstr;
 
-    if (VIR_ALLOC(ip) < 0)
-        goto cleanup;
+    ip = g_new0(virNetDevIPAddr, 1);
 
     if (virSocketAddrParse(&ip->address, addr, AF_UNSPEC) < 0)
         goto cleanup;
@@ -962,8 +947,7 @@ prlsdkGetNetAddresses(PRL_HANDLE sdknet, virDomainNetDefPtr net)
         pret = PrlStrList_GetItem(addrlist, i, NULL, &buflen);
         prlsdkCheckRetGoto(pret, cleanup);
 
-        if (VIR_ALLOC_N(addr, buflen) < 0)
-            goto cleanup;
+        addr = g_new0(char, buflen);
 
         pret = PrlStrList_GetItem(addrlist, i, addr, &buflen);
         prlsdkCheckRetGoto(pret, cleanup);
@@ -1145,8 +1129,7 @@ prlsdkAddDomainNetInfo(PRL_HANDLE sdkdom, virDomainDefPtr def)
         ret = PrlVmCfg_GetNetAdapter(sdkdom, i, &netAdapter);
         prlsdkCheckRetGoto(ret, error);
 
-        if (VIR_ALLOC(net) < 0)
-            goto error;
+        net = g_new0(virDomainNetDef, 1);
 
         if (prlsdkGetNetInfo(netAdapter, net, IS_CT(def)) < 0)
             goto error;
@@ -1333,8 +1316,7 @@ prlsdkAddVNCInfo(PRL_HANDLE sdkdom, virDomainDefPtr def)
     if (vncMode == PRD_DISABLED)
         return 0;
 
-    if (VIR_ALLOC(gr) < 0)
-        goto error;
+    gr = g_new0(virDomainGraphicsDef, 1);
 
     if (!(passwd = prlsdkGetStringParamVar(PrlVmCfg_GetVNCPassword, sdkdom)))
         goto error;
@@ -1351,9 +1333,7 @@ prlsdkAddVNCInfo(PRL_HANDLE sdkdom, virDomainDefPtr def)
     gr->type = VIR_DOMAIN_GRAPHICS_TYPE_VNC;
     gr->data.vnc.port = port;
 
-    if (VIR_ALLOC(gr->listens) < 0)
-        goto error;
-
+    gr->listens = g_new0(virDomainGraphicsListenDef, 1);
     gr->nListens = 1;
 
     if (!(gr->listens[0].address = prlsdkGetStringParamVar(PrlVmCfg_GetVNCHostName,
@@ -1481,8 +1461,7 @@ prlsdkConvertCpuInfo(PRL_HANDLE sdkdom,
         return -1;
 
     if (strlen(buf) == 0) {
-        if (!(def->cpumask = virBitmapNew(hostcpus)))
-            return -1;
+        def->cpumask = virBitmapNew(hostcpus);
         virBitmapSetAll(def->cpumask);
     } else {
         if (virBitmapParse(buf, &def->cpumask, hostcpus) < 0)
@@ -2073,7 +2052,7 @@ prlsdkNewStateToEvent(VIRTUAL_MACHINE_STATE domainState,
                       int *lvEventTypeDetails)
 {
     /* We skip all intermediate states here, because
-     * libvirt doesn't have correspoding event types for
+     * libvirt doesn't have corresponding event types for
      * them */
     switch ((int)domainState) {
     case VMS_STOPPED:
@@ -2549,7 +2528,7 @@ prlsdkCheckUnsupportedParams(PRL_HANDLE sdkdom, virDomainDefPtr def)
     /*
      * Though we don't support NUMA configuration at the moment
      * virDomainDefPtr always contain non zero NUMA configuration
-     * So, just make sure this configuration does't differ from auto generated.
+     * So, just make sure this configuration doesn't differ from auto generated.
      */
     if ((virDomainNumatuneGetMode(def->numa, -1, &memMode) == 0 &&
          memMode == VIR_DOMAIN_NUMATUNE_MEM_STRICT) ||
@@ -4652,8 +4631,7 @@ prlsdkParseSnapshotTree(const char *treexml)
         if (nodes[i]->parent == root)
             continue;
 
-        if (VIR_ALLOC(def) < 0)
-            goto cleanup;
+        def = g_new0(virDomainSnapshotDef, 1);
 
         ctxt->node = nodes[i];
 

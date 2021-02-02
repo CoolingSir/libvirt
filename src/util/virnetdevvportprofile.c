@@ -46,7 +46,7 @@ VIR_ENUM_IMPL(virNetDevVPortProfileOp,
               "no-op",
 );
 
-#if WITH_VIRTUALPORT
+#if defined(WITH_LIBNL)
 
 # include <fcntl.h>
 
@@ -62,10 +62,6 @@ VIR_ENUM_IMPL(virNetDevVPortProfileOp,
 VIR_LOG_INIT("util.netdevvportprofile");
 
 # define MICROSEC_PER_SEC       (1000 * 1000)
-
-# define NLMSGBUF_SIZE  256
-# define RATTBUF_SIZE   64
-
 
 # define STATUS_POLL_TIMEOUT_USEC (10 * MICROSEC_PER_SEC)
 # define STATUS_POLL_INTERVL_USEC (MICROSEC_PER_SEC / 8)
@@ -133,9 +129,7 @@ int virNetDevVPortProfileCopy(virNetDevVPortProfilePtr *dst, const virNetDevVPor
         return 0;
     }
 
-    if (VIR_ALLOC(*dst) < 0)
-        return -1;
-
+    *dst = g_new0(virNetDevVPortProfile, 1);
     memcpy(*dst, src, sizeof(*src));
     return 0;
 }
@@ -435,8 +429,7 @@ int virNetDevVPortProfileMerge3(virNetDevVPortProfilePtr *result,
     }
 
     /* at least one of the source profiles is non-empty */
-    if (VIR_ALLOC(*result) < 0)
-        return ret;
+    *result = g_new0(virNetDevVPortProfile, 1);
 
     /* start with the interface's profile. There are no pointers in a
      * virtualPortProfile, so a shallow copy is sufficient.
@@ -458,7 +451,7 @@ int virNetDevVPortProfileMerge3(virNetDevVPortProfilePtr *result,
 }
 
 
-#if WITH_VIRTUALPORT
+#if defined(WITH_LIBNL)
 
 static struct nla_policy ifla_port_policy[IFLA_PORT_MAX + 1] =
 {
@@ -1347,7 +1340,7 @@ virNetDevVPortProfileDisassociate(const char *macvtap_ifname,
     return rc;
 }
 
-#else /* ! WITH_VIRTUALPORT */
+#else /* !WITH_LIBNL */
 int virNetDevVPortProfileAssociate(const char *macvtap_ifname G_GNUC_UNUSED,
                                    const virNetDevVPortProfile *virtPort G_GNUC_UNUSED,
                                    const virMacAddr *macvtap_macaddr G_GNUC_UNUSED,
@@ -1373,4 +1366,4 @@ int virNetDevVPortProfileDisassociate(const char *macvtap_ifname G_GNUC_UNUSED,
                          _("Virtual port profile association not supported on this platform"));
     return -1;
 }
-#endif /* ! WITH_VIRTUALPORT */
+#endif /* !WITH_LIBNL */

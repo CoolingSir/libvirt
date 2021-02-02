@@ -87,8 +87,7 @@ virSecurityManagerNewDriver(virSecurityDriverPtr drv,
 
     virCheckFlags(VIR_SECURITY_MANAGER_NEW_MASK, NULL);
 
-    if (VIR_ALLOC_N(privateData, drv->privateDataLen) < 0)
-        return NULL;
+    privateData = g_new0(char, drv->privateDataLen);
 
     if (!(mgr = virObjectLockableNew(virSecurityManagerClass)))
         goto error;
@@ -451,7 +450,7 @@ virSecurityManagerRestoreImageLabel(virSecurityManagerPtr mgr,
  * If @dst is NULL then metadata is removed from @src and not
  * stored anywhere.
  *
- * If @pid is not -1 enther the @pid mount namespace (usually
+ * If @pid is not -1 enter the @pid mount namespace (usually
  * @pid refers to a domain) and perform the move from there. If
  * @pid is -1 then the move is performed from the caller's
  * namespace.
@@ -473,8 +472,7 @@ virSecurityManagerMoveImageMetadata(virSecurityManagerPtr mgr,
         return ret;
     }
 
-    virReportUnsupportedError();
-    return -1;
+    return 0;
 }
 
 
@@ -610,9 +608,9 @@ virSecurityManagerSetSavedStateLabel(virSecurityManagerPtr mgr,
         return ret;
     }
 
-    virReportUnsupportedError();
-    return -1;
+    return 0;
 }
+
 
 int
 virSecurityManagerRestoreSavedStateLabel(virSecurityManagerPtr mgr,
@@ -627,8 +625,7 @@ virSecurityManagerRestoreSavedStateLabel(virSecurityManagerPtr mgr,
         return ret;
     }
 
-    virReportUnsupportedError();
-    return -1;
+    return 0;
 }
 
 
@@ -858,14 +855,14 @@ int virSecurityManagerCheckAllLabel(virSecurityManagerPtr mgr,
 int
 virSecurityManagerSetAllLabel(virSecurityManagerPtr mgr,
                               virDomainDefPtr vm,
-                              const char *stdin_path,
+                              const char *incomingPath,
                               bool chardevStdioLogd,
                               bool migrated)
 {
     if (mgr->drv->domainSetSecurityAllLabel) {
         int ret;
         virObjectLock(mgr);
-        ret = mgr->drv->domainSetSecurityAllLabel(mgr, vm, stdin_path,
+        ret = mgr->drv->domainSetSecurityAllLabel(mgr, vm, incomingPath,
                                                   chardevStdioLogd,
                                                   migrated);
         virObjectUnlock(mgr);
@@ -1036,8 +1033,7 @@ virSecurityManagerGetNested(virSecurityManagerPtr mgr)
     if (STREQ("stack", mgr->drv->name))
         return virSecurityStackGetNested(mgr);
 
-    if (VIR_ALLOC_N(list, 2) < 0)
-        return NULL;
+    list = g_new0(virSecurityManagerPtr, 2);
 
     list[0] = mgr;
     list[1] = NULL;
@@ -1075,6 +1071,63 @@ virSecurityManagerDomainSetPathLabel(virSecurityManagerPtr mgr,
 
     return 0;
 }
+
+
+/**
+ * virSecurityManagerDomainSetPathLabelRO:
+ * @mgr: security manager object
+ * @vm: domain definition object
+ * @path: path to label
+ *
+ * This function relabels given @path for read only access, which
+ * is in contrast with virSecurityManagerDomainSetPathLabel() which
+ * gives read write access.
+ *
+ * Returns: 0 on success, -1 on error.
+ */
+int
+virSecurityManagerDomainSetPathLabelRO(virSecurityManagerPtr mgr,
+                                       virDomainDefPtr vm,
+                                       const char *path)
+{
+    if (mgr->drv->domainSetPathLabelRO) {
+        int ret;
+        virObjectLock(mgr);
+        ret = mgr->drv->domainSetPathLabelRO(mgr, vm, path);
+        virObjectUnlock(mgr);
+        return ret;
+    }
+
+    return 0;
+}
+
+/**
+ * virSecurityManagerDomainRestorePathLabel:
+ * @mgr: security manager object
+ * @vm: domain definition object
+ * @path: path to restore labels one
+ *
+ * This function is a counterpart to virSecurityManagerDomainSetPathLabel() and
+ * virSecurityManagerDomainSetPathLabelRO() as it restores any labels set by them.
+ *
+ * Returns: 0 on success, -1 on error.
+ */
+int
+virSecurityManagerDomainRestorePathLabel(virSecurityManagerPtr mgr,
+                                         virDomainDefPtr vm,
+                                         const char *path)
+{
+    if (mgr->drv->domainRestorePathLabel) {
+        int ret;
+        virObjectLock(mgr);
+        ret = mgr->drv->domainRestorePathLabel(mgr, vm, path);
+        virObjectUnlock(mgr);
+        return ret;
+    }
+
+    return 0;
+}
+
 
 
 /**
@@ -1291,9 +1344,8 @@ virSecurityManagerMetadataLock(virSecurityManagerPtr mgr G_GNUC_UNUSED,
     const char **locked_paths = NULL;
     virSecurityManagerMetadataLockStatePtr ret = NULL;
 
-    if (VIR_ALLOC_N(fds, npaths) < 0 ||
-        VIR_ALLOC_N(locked_paths, npaths) < 0)
-        return NULL;
+    fds = g_new0(int, npaths);
+    locked_paths = g_new0(const char *, npaths);
 
     /* Sort paths to lock in order to avoid deadlocks with other
      * processes. For instance, if one process wants to lock
@@ -1332,11 +1384,17 @@ virSecurityManagerMetadataLock(virSecurityManagerPtr mgr G_GNUC_UNUSED,
             continue;
 
         if (S_ISDIR(sb.st_mode)) {
-            /* Directories can't be locked */
+            /* We need to open the path for writing because we need exclusive
+             * (write) lock. But directories can't be opened for writing. */
             continue;
         }
 
         if ((fd = open(p, O_RDWR)) < 0) {
+            if (errno == EROFS) {
+                /* There is nothing we can do for RO filesystem. */
+                continue;
+            }
+
 #ifndef WIN32
             if (S_ISSOCK(sb.st_mode)) {
                 /* Sockets can be opened only if there exists the
@@ -1380,8 +1438,7 @@ virSecurityManagerMetadataLock(virSecurityManagerPtr mgr G_GNUC_UNUSED,
         VIR_APPEND_ELEMENT_COPY_INPLACE(fds, nfds, fd);
     }
 
-    if (VIR_ALLOC(ret) < 0)
-        goto cleanup;
+    ret = g_new0(virSecurityManagerMetadataLockState, 1);
 
     ret->paths = g_steal_pointer(&locked_paths);
     ret->fds = g_steal_pointer(&fds);

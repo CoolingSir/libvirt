@@ -12,9 +12,10 @@ QEMU_AUDIO_DRV=none \
 -S \
 -object secret,id=masterKey0,format=raw,\
 file=/tmp/lib/domain--1-QEMUGuest1/master-key.aes \
--machine q35,accel=tcg,usb=off,dump-guest-core=off \
+-machine q35,accel=tcg,usb=off,dump-guest-core=off,memory-backend=pc.ram \
 -cpu qemu64 \
 -m 214 \
+-object memory-backend-ram,id=pc.ram,size=224395264 \
 -overcommit mem-lock=off \
 -smp 1,sockets=1,cores=1,threads=1 \
 -uuid c7a5fdbd-edaf-9455-926a-d65c16db1809 \
@@ -37,8 +38,8 @@ addr=0x1 \
 "node-name":"libvirt-1-storage","auto-read-only":true,"discard":"unmap"}' \
 -blockdev '{"node-name":"libvirt-1-format","read-only":false,"driver":"raw",\
 "file":"libvirt-1-storage"}' \
--device virtio-blk-pci-transitional,scsi=off,bus=pci.2,addr=0x5,\
-drive=libvirt-1-format,id=virtio-disk0,bootindex=1 \
+-device virtio-blk-pci-transitional,bus=pci.2,addr=0x5,drive=libvirt-1-format,\
+id=virtio-disk0,bootindex=1 \
 -fsdev local,security_model=passthrough,id=fsdev-fs0,path=/export/fs1 \
 -device virtio-9p-pci-transitional,id=fs0,fsdev=fsdev-fs0,mount_tag=fs1,\
 bus=pci.2,addr=0x1 \

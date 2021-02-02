@@ -23,7 +23,6 @@
 #include "internal.h"
 
 #include "vircgroup.h"
-#include "virhash.h"
 
 #define CGROUP_MAX_VAL 512
 
@@ -90,6 +89,10 @@ typedef int
                               const char *selfpath);
 
 typedef int
+(*virCgroupSetPlacementCB)(virCgroupPtr group,
+                           const char *path);
+
+typedef int
 (*virCgroupValidatePlacementCB)(virCgroupPtr group,
                                 pid_t pid);
 
@@ -136,7 +139,7 @@ typedef int
 typedef int
 (*virCgroupKillRecursiveCB)(virCgroupPtr group,
                             int signum,
-                            virHashTablePtr pids);
+                            GHashTable *pids);
 
 typedef int
 (*virCgroupBindMountCB)(virCgroupPtr group,
@@ -370,6 +373,7 @@ struct _virCgroupBackend {
     virCgroupCopyPlacementCB copyPlacement;
     virCgroupDetectMountsCB detectMounts;
     virCgroupDetectPlacementCB detectPlacement;
+    virCgroupSetPlacementCB setPlacement;
     virCgroupValidatePlacementCB validatePlacement;
     virCgroupStealPlacementCB stealPlacement;
     virCgroupDetectControllersCB detectControllers;
@@ -452,15 +456,17 @@ virCgroupBackendForController(virCgroupPtr group,
                               unsigned int controller);
 
 #define VIR_CGROUP_BACKEND_CALL(group, controller, func, ret, ...) \
-    virCgroupBackendPtr backend = virCgroupBackendForController(group, controller); \
-    if (!backend) { \
-        virReportError(VIR_ERR_INTERNAL_ERROR, \
-                       _("failed to get cgroup backend for '%s'"), #func); \
-        return ret; \
-    } \
-    if (!backend->func) { \
-        virReportError(VIR_ERR_OPERATION_UNSUPPORTED, \
-                       _("operation '%s' not supported"), #func); \
-        return ret; \
-    } \
-    return backend->func(group, ##__VA_ARGS__);
+    do { \
+        virCgroupBackendPtr backend = virCgroupBackendForController(group, controller); \
+        if (!backend) { \
+            virReportError(VIR_ERR_INTERNAL_ERROR, \
+                           _("failed to get cgroup backend for '%s'"), #func); \
+            return ret; \
+        } \
+        if (!backend->func) { \
+            virReportError(VIR_ERR_OPERATION_UNSUPPORTED, \
+                           _("operation '%s' not supported"), #func); \
+            return ret; \
+        } \
+        return backend->func(group, ##__VA_ARGS__); \
+    } while (0)

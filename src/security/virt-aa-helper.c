@@ -37,6 +37,7 @@
 
 #include "security_driver.h"
 #include "security_apparmor.h"
+#include "storage_source.h"
 #include "domain_conf.h"
 #include "virxml.h"
 #include "viruuid.h"
@@ -99,7 +100,7 @@ vah_usage(void)
             "  Modes:\n"
             "    -a | --add                     load profile\n"
             "    -c | --create                  create profile from template\n"
-            "    -D | --delete                  unload and delete profile\n"
+            "    -D | --delete                  unload profile and delete generated rules\n"
             "    -r | --replace                 reload profile\n"
             "    -R | --remove                  unload profile\n"
             "  Options:\n"
@@ -898,10 +899,6 @@ storage_source_add_files(virStorageSourcePtr src,
         if (add_file_path(tmp, depth, buf) < 0)
             return -1;
 
-        if (tmp->externalDataStore &&
-            storage_source_add_files(tmp->externalDataStore, buf, depth) < 0)
-            return -1;
-
         depth++;
     }
 
@@ -911,7 +908,7 @@ storage_source_add_files(virStorageSourcePtr src,
 static int
 get_files(vahControl * ctl)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     int rc = -1;
     size_t i;
     char *uuid;
@@ -936,13 +933,13 @@ get_files(vahControl * ctl)
     for (i = 0; i < ctl->def->ndisks; i++) {
         virDomainDiskDefPtr disk = ctl->def->disks[i];
 
-        if (!virDomainDiskGetSource(disk))
+        if (virStorageSourceIsEmpty(disk->src))
             continue;
         /* XXX - if we knew the qemu user:group here we could send it in
          *        so that the open could be re-tried as that user:group.
          */
-        if (!virStorageSourceHasBacking(disk->src))
-            virStorageFileGetMetadata(disk->src, -1, -1, false);
+        if (!disk->src->backingStore)
+            virStorageSourceGetMetadata(disk->src, -1, -1, false);
 
          /* XXX should handle open errors more careful than just ignoring them.
          */
@@ -1108,11 +1105,7 @@ get_files(vahControl * ctl)
             }
 
             case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI: {
-                virPCIDevicePtr pci = virPCIDeviceNew(
-                           dev->source.subsys.u.pci.addr.domain,
-                           dev->source.subsys.u.pci.addr.bus,
-                           dev->source.subsys.u.pci.addr.slot,
-                           dev->source.subsys.u.pci.addr.function);
+                virPCIDevicePtr pci = virPCIDeviceNew(&dev->source.subsys.u.pci.addr);
 
                 virDomainHostdevSubsysPCIBackendType backend = dev->source.subsys.u.pci.backend;
                 if (backend == VIR_DOMAIN_HOSTDEV_PCI_BACKEND_VFIO ||
@@ -1146,7 +1139,7 @@ get_files(vahControl * ctl)
             /* We don't need to add deny rw rules for readonly mounts,
              * this can only lead to troubles when mounting / readonly.
              */
-            if (vah_add_path(&buf, fs->src->path, fs->readonly ? "R" : "rw", true) != 0)
+            if (vah_add_path(&buf, fs->src->path, fs->readonly ? "R" : "rwl", true) != 0)
                 goto cleanup;
         }
     }
@@ -1175,6 +1168,18 @@ get_files(vahControl * ctl)
         if (ctl->def->mems[i] &&
                 ctl->def->mems[i]->model == VIR_DOMAIN_MEMORY_MODEL_NVDIMM) {
             if (vah_add_file(&buf, ctl->def->mems[i]->nvdimmPath, "rw") != 0)
+                goto cleanup;
+        }
+    }
+
+    for (i = 0; i < ctl->def->nsysinfo; i++) {
+        size_t j;
+
+        for (j = 0; j < ctl->def->sysinfo[i]->nfw_cfgs; j++) {
+            virSysinfoFWCfgDefPtr f = &ctl->def->sysinfo[i]->fw_cfgs[j];
+
+            if (f->file &&
+                vah_add_file(&buf, f->file, "r") != 0)
                 goto cleanup;
         }
     }
@@ -1210,15 +1215,17 @@ get_files(vahControl * ctl)
     }
 
 
-    if (ctl->def->tpm) {
+    if (ctl->def->ntpms > 0) {
         char *shortName = NULL;
         const char *tpmpath = NULL;
 
-        switch (ctl->def->tpm->type) {
-        case VIR_DOMAIN_TPM_TYPE_EMULATOR:
+        for (i = 0; i < ctl->def->ntpms; i++) {
+            if (ctl->def->tpms[i]->type != VIR_DOMAIN_TPM_TYPE_EMULATOR)
+                continue;
+
             shortName = virDomainDefGetShortName(ctl->def);
 
-            switch (ctl->def->tpm->version) {
+            switch (ctl->def->tpms[i]->version) {
             case VIR_DOMAIN_TPM_VERSION_1_2:
                 tpmpath = "tpm1.2";
                 break;
@@ -1248,10 +1255,6 @@ get_files(vahControl * ctl)
                 RUNSTATEDIR, shortName);
 
             VIR_FREE(shortName);
-            break;
-        case VIR_DOMAIN_TPM_TYPE_PASSTHROUGH:
-        case VIR_DOMAIN_TPM_TYPE_LAST:
-            break;
         }
     }
 
@@ -1442,7 +1445,6 @@ int
 main(int argc, char **argv)
 {
     vahControl _ctl, *ctl = &_ctl;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
     int rc = -1;
     char *profile = NULL;
     char *include_file = NULL;
@@ -1484,12 +1486,11 @@ main(int argc, char **argv)
         rc = parserLoad(ctl->uuid);
     } else if (ctl->cmd == 'R' || ctl->cmd == 'D') {
         rc = parserRemove(ctl->uuid);
-        if (ctl->cmd == 'D') {
+        if (ctl->cmd == 'D')
             unlink(include_file);
-            unlink(profile);
-        }
     } else if (ctl->cmd == 'c' || ctl->cmd == 'r') {
         char *included_files = NULL;
+        g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
         if (ctl->cmd == 'c' && virFileExists(profile))
             vah_error(ctl, 1, _("profile exists"));

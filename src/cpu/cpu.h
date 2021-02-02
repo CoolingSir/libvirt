@@ -27,6 +27,7 @@
 #include "cpu_conf.h"
 #include "cpu_x86_data.h"
 #include "cpu_ppc64_data.h"
+#include "cpu_arm_data.h"
 
 
 typedef struct _virCPUData virCPUData;
@@ -36,6 +37,7 @@ struct _virCPUData {
     union {
         virCPUx86Data x86;
         virCPUppc64Data ppc64;
+        virCPUarmData arm;
         /* generic driver needs no data */
     } data;
 };
@@ -77,7 +79,8 @@ typedef virCPUDefPtr
 
 typedef int
 (*virCPUArchUpdate)(virCPUDefPtr guest,
-                    const virCPUDef *host);
+                    const virCPUDef *host,
+                    bool relative);
 
 typedef int
 (*virCPUArchUpdateLive)(virCPUDefPtr cpu,
@@ -151,7 +154,8 @@ virCPUCompareResult
 virCPUCompareXML(virArch arch,
                  virCPUDefPtr host,
                  const char *xml,
-                 bool failIncompatible);
+                 bool failIncompatible,
+                 bool validateXML);
 
 virCPUCompareResult
 virCPUCompare(virArch arch,
@@ -182,6 +186,7 @@ virCPUDataNew(virArch arch);
 
 void
 virCPUDataFree(virCPUDataPtr data);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virCPUData, virCPUDataFree);
 
 bool
 virCPUGetHostIsSupported(virArch arch);

@@ -37,6 +37,17 @@ typedef struct _virMediatedDevice virMediatedDevice;
 typedef virMediatedDevice *virMediatedDevicePtr;
 typedef struct _virMediatedDeviceList virMediatedDeviceList;
 typedef virMediatedDeviceList *virMediatedDeviceListPtr;
+typedef struct _virMediatedDeviceAttr virMediatedDeviceAttr;
+typedef virMediatedDeviceAttr *virMediatedDeviceAttrPtr;
+
+struct _virMediatedDeviceAttr {
+    char *name;
+    char *value;
+};
+
+virMediatedDeviceAttrPtr virMediatedDeviceAttrNew(void);
+void virMediatedDeviceAttrFree(virMediatedDeviceAttrPtr attr);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virMediatedDeviceAttr, virMediatedDeviceAttrFree);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virMediatedDeviceList, virObjectUnref);
 
@@ -119,11 +130,11 @@ virMediatedDeviceListDel(virMediatedDeviceListPtr list,
 
 virMediatedDevicePtr
 virMediatedDeviceListFind(virMediatedDeviceListPtr list,
-                          virMediatedDevicePtr dev);
+                          const char *sysfspath);
 
 int
 virMediatedDeviceListFindIndex(virMediatedDeviceListPtr list,
-                               virMediatedDevicePtr dev);
+                               const char *sysfspath);
 
 int
 virMediatedDeviceListMarkDevices(virMediatedDeviceListPtr dst,
@@ -137,6 +148,11 @@ virMediatedDeviceTypeFree(virMediatedDeviceTypePtr type);
 int
 virMediatedDeviceTypeReadAttrs(const char *sysfspath,
                                virMediatedDeviceTypePtr *type);
+
+ssize_t
+virMediatedDeviceGetMdevTypes(const char *sysfspath,
+                              virMediatedDeviceTypePtr **types,
+                              size_t *ntypes);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virMediatedDevice, virMediatedDeviceFree);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virMediatedDeviceType, virMediatedDeviceTypeFree);

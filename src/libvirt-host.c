@@ -51,7 +51,7 @@ VIR_LOG_INIT("libvirt.host");
 int
 virConnectRef(virConnectPtr conn)
 {
-    VIR_DEBUG("conn=%p refs=%d", conn, conn ? conn->parent.parent.u.s.refs : 0);
+    VIR_DEBUG("conn=%p", conn);
 
     virResetLastError();
 
@@ -772,6 +772,8 @@ virNodeGetMemoryParameters(virConnectPtr conn,
                            int *nparams,
                            unsigned int flags)
 {
+    int rc;
+
     VIR_DEBUG("conn=%p, params=%p, nparams=%p, flags=0x%x",
               conn, params, nparams, flags);
 
@@ -783,8 +785,11 @@ virNodeGetMemoryParameters(virConnectPtr conn,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(conn->driver, conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(conn->driver, conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     if (conn->driver->nodeGetMemoryParameters) {
@@ -1352,8 +1357,6 @@ virConnectSetKeepAlive(virConnectPtr conn,
                        int interval,
                        unsigned int count)
 {
-    int ret = -1;
-
     VIR_DEBUG("conn=%p, interval=%d, count=%u", conn, interval, count);
 
     virResetLastError();
@@ -1361,7 +1364,7 @@ virConnectSetKeepAlive(virConnectPtr conn,
     virCheckConnectReturn(conn, -1);
 
     if (conn->driver->connectSetKeepAlive) {
-        ret = conn->driver->connectSetKeepAlive(conn, interval, count);
+        int ret = conn->driver->connectSetKeepAlive(conn, interval, count);
         if (ret < 0)
             goto error;
         return ret;
@@ -1726,6 +1729,8 @@ virNodeGetSEVInfo(virConnectPtr conn,
                   int *nparams,
                   unsigned int flags)
 {
+    int rc;
+
     VIR_DEBUG("conn=%p, params=%p, nparams=%p, flags=0x%x",
               conn, params, nparams, flags);
 
@@ -1736,8 +1741,11 @@ virNodeGetSEVInfo(virConnectPtr conn,
     virCheckNonNegativeArgGoto(*nparams, error);
     virCheckReadOnlyGoto(conn->flags, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(conn->driver, conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(conn->driver, conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     if (conn->driver->nodeGetSEVInfo) {

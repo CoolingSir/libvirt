@@ -59,22 +59,22 @@ int virDiskNameToIndex(const char* str);
 char *virIndexToDiskName(int idx, const char *prefix);
 
 /* No-op workarounds for functionality missing in mingw.  */
-#ifndef HAVE_GETUID
+#ifndef WITH_GETUID
 static inline int getuid(void)
 { return 0; }
 #endif
 
-#ifndef HAVE_GETEUID
+#ifndef WITH_GETEUID
 static inline int geteuid(void)
 { return 0; }
 #endif
 
-#ifndef HAVE_GETGID
+#ifndef WITH_GETGID
 static inline int getgid(void)
 { return 0; }
 #endif
 
-#ifndef HAVE_GETEGID
+#ifndef WITH_GETEGID
 static inline int getegid(void)
 { return 0; }
 #endif
@@ -92,14 +92,14 @@ static inline int pthread_sigmask(int how,
 }
 #endif
 
-char *virGetHostname(void);
+char *virGetHostname(void) G_GNUC_NO_INLINE;
 char *virGetHostnameQuiet(void);
 
 char *virGetUserDirectory(void);
 char *virGetUserDirectoryByUID(uid_t uid);
 char *virGetUserConfigDirectory(void);
 char *virGetUserCacheDirectory(void);
-char *virGetUserRuntimeDirectory(void);
+char *virGetUserRuntimeDirectory(void) G_GNUC_NO_INLINE;
 char *virGetUserShell(uid_t uid);
 char *virGetUserName(uid_t uid) G_GNUC_NO_INLINE;
 char *virGetGroupName(gid_t gid) G_GNUC_NO_INLINE;
@@ -113,8 +113,6 @@ int virGetGroupID(const char *name,
 bool virDoesUserExist(const char *name);
 bool virDoesGroupExist(const char *name);
 
-
-bool virIsDevMapperDevice(const char *dev_name) ATTRIBUTE_NONNULL(1);
 
 bool virValidateWWN(const char *wwn);
 
@@ -146,6 +144,40 @@ unsigned long long virMemoryMaxValue(bool ulong) G_GNUC_NO_INLINE;
 bool virHostHasIOMMU(void);
 
 char *virHostGetDRMRenderNode(void) G_GNUC_NO_INLINE;
+
+/* Kernel cmdline match and comparison strategy for arg=value pairs */
+typedef enum {
+    /* substring comparison of argument values */
+    VIR_KERNEL_CMDLINE_FLAGS_CMP_PREFIX = 1,
+
+    /* strict string comparison of argument values */
+    VIR_KERNEL_CMDLINE_FLAGS_CMP_EQ = 2,
+
+    /* look for any occurrence of the argument with the expected value,
+     * this should be used when an argument set to the expected value overrides
+     * all the other occurrences of the argument, e.g. when looking for 'arg=1'
+     * in 'arg=0 arg=1 arg=0' the search would succeed with this flag
+     */
+    VIR_KERNEL_CMDLINE_FLAGS_SEARCH_FIRST = 4,
+
+    /* look for the last occurrence of argument with the expected value,
+     * this should be used when the last occurrence of the argument overrides
+     * all the other ones, e.g. when looking for 'arg=1' in 'arg=0 arg=1' the
+     * search would succeed with this flag, but in 'arg=1 arg=0' it would not,
+     * because 'arg=0' overrides all the previous occurrences of 'arg'
+     */
+    VIR_KERNEL_CMDLINE_FLAGS_SEARCH_LAST = 8,
+} virKernelCmdlineFlags;
+
+const char *virKernelCmdlineNextParam(const char *cmdline,
+                                      char **param,
+                                      char **val);
+
+bool virKernelCmdlineMatchParam(const char *cmdline,
+                                const char *arg,
+                                const char **values,
+                                size_t len_values,
+                                virKernelCmdlineFlags flags);
 
 /**
  * VIR_ASSIGN_IS_OVERFLOW:

@@ -59,7 +59,7 @@ def rewrap_line(line):
             # If there's a leading '-' then this is a new
             # parameter, otherwise its a value for the prev
             # parameter.
-            if bit.startswith("-"):
+            if bit.startswith("-") or len(args) == 0:
                 args.append(bit)
             else:
                 args[-1] = args[-1] + " " + bit
@@ -137,8 +137,8 @@ def rewrap(filename, in_place, check):
                                     stdin=subprocess.PIPE)
             diff.communicate(input=new.encode('utf-8'))
 
-            print("Incorrect line wrapping in $file",
-                  file=sys.stderr)
+            print("Incorrect line wrapping in '%s'" %
+                  filename, file=sys.stderr)
             print("Use test-wrap-argv.py to wrap test data files",
                   file=sys.stderr)
             return False

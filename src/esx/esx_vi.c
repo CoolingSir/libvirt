@@ -53,8 +53,7 @@ VIR_LOG_INIT("esx.esx_vi");
     { \
         ESX_VI_CHECK_ARG_LIST(ptrptr); \
  \
-        if (VIR_ALLOC(*ptrptr) < 0) \
-            return -1; \
+        *ptrptr = g_new0(esxVI_##_type, 1); \
         return 0; \
     }
 
@@ -182,8 +181,7 @@ esxVI_CURL_Debug(CURL *curl G_GNUC_UNUSED, curl_infotype type,
      * To handle this properly in order to pass the info string to VIR_DEBUG
      * a zero terminated copy of the info string has to be allocated.
      */
-    if (VIR_ALLOC_N(buffer, size + 1) < 0)
-        return 0;
+    buffer = g_new0(char, size + 1);
 
     memcpy(buffer, info, size);
     buffer[size] = '\0';
@@ -369,8 +367,8 @@ int
 esxVI_CURL_Download(esxVI_CURL *curl, const char *url, char **content,
                     unsigned long long offset, unsigned long long *length)
 {
-    char *range = NULL;
-    virBuffer buffer = VIR_BUFFER_INITIALIZER;
+    g_autofree char *range = NULL;
+    g_auto(virBuffer) buffer = VIR_BUFFER_INITIALIZER;
     int responseCode = 0;
 
     ESX_VI_CHECK_ARG_LIST(content);
@@ -405,12 +403,12 @@ esxVI_CURL_Download(esxVI_CURL *curl, const char *url, char **content,
     virMutexUnlock(&curl->lock);
 
     if (responseCode < 0) {
-        goto cleanup;
+        return -1;
     } else if (responseCode != 200 && responseCode != 206) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("HTTP response code %d for download from '%s'"),
                        responseCode, url);
-        goto cleanup;
+        return -1;
     }
 
     if (length)
@@ -418,13 +416,8 @@ esxVI_CURL_Download(esxVI_CURL *curl, const char *url, char **content,
 
     *content = virBufferContentAndReset(&buffer);
 
- cleanup:
-    VIR_FREE(range);
-
-    if (!(*content)) {
-        virBufferFreeAndReset(&buffer);
+    if (!(*content))
         return -1;
-    }
 
     return 0;
 }
@@ -866,8 +859,7 @@ esxVI_Context_Connect(esxVI_Context *ctx, const char *url,
     ctx->username = g_strdup(username);
     ctx->password = g_strdup(password);
 
-    if (VIR_ALLOC(ctx->sessionLock) < 0)
-        goto cleanup;
+    ctx->sessionLock = g_new0(virMutex, 1);
 
 
     if (virMutexInit(ctx->sessionLock) < 0) {
@@ -1025,7 +1017,7 @@ esxVI_Context_LookupManagedObjectsByPath(esxVI_Context *ctx, const char *path)
     char *saveptr = NULL;
     char *previousItem = NULL;
     char *item = NULL;
-    virBuffer buffer = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buffer = VIR_BUFFER_INITIALIZER;
     esxVI_ManagedObjectReference *root = NULL;
     esxVI_Folder *folder = NULL;
 
@@ -1184,9 +1176,6 @@ esxVI_Context_LookupManagedObjectsByPath(esxVI_Context *ctx, const char *path)
     result = 0;
 
  cleanup:
-    if (result < 0)
-        virBufferFreeAndReset(&buffer);
-
     if (root != ctx->service->rootFolder &&
         (!ctx->datacenter || root != ctx->datacenter->hostFolder)) {
         esxVI_ManagedObjectReference_Free(&root);
@@ -1248,7 +1237,7 @@ esxVI_Context_Execute(esxVI_Context *ctx, const char *methodName,
                       esxVI_Occurrence occurrence)
 {
     int result = -1;
-    virBuffer buffer = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buffer = VIR_BUFFER_INITIALIZER;
     esxVI_Fault *fault = NULL;
     char *xpathExpression = NULL;
     xmlXPathContextPtr xpathContext = NULL;
@@ -1398,7 +1387,7 @@ esxVI_Context_Execute(esxVI_Context *ctx, const char *methodName,
             }
         }
     } else {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_HTTP_ERROR,
                        _("HTTP response code %d for call to '%s'"),
                        (*response)->responseCode, methodName);
         goto cleanup;
@@ -1408,7 +1397,6 @@ esxVI_Context_Execute(esxVI_Context *ctx, const char *methodName,
 
  cleanup:
     if (result < 0) {
-        virBufferFreeAndReset(&buffer);
         esxVI_Response_Free(response);
         esxVI_Fault_Free(&fault);
     }
@@ -2264,7 +2252,7 @@ esxVI_GetBoolean(esxVI_ObjectContent *objectContent, const char *propertyName,
 
 int
 esxVI_GetInt(esxVI_ObjectContent *objectContent, const char *propertyName,
-             esxVI_Int **value, esxVI_Occurrence occurence)
+             esxVI_Int **value, esxVI_Occurrence occurrence)
 {
     esxVI_DynamicProperty *dynamicProperty;
 
@@ -2280,7 +2268,7 @@ esxVI_GetInt(esxVI_ObjectContent *objectContent, const char *propertyName,
         }
     }
 
-    if (!(*value) && occurence == esxVI_Occurrence_RequiredItem) {
+    if (!(*value) && occurrence == esxVI_Occurrence_RequiredItem) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Missing '%s' property"), propertyName);
         return -1;
@@ -3419,7 +3407,7 @@ esxVI_LookupFileInfoByDatastorePath(esxVI_Context *ctx,
 
     if (STREQ(directoryName, directoryAndFileName)) {
         /*
-         * The <path> part of the datatore path didn't contain a '/', assume
+         * The <path> part of the datastore path didn't contain a '/', assume
          * that the <path> part is actually the file name.
          */
         datastorePathWithoutFileName = g_strdup_printf("[%s]", datastoreName);
@@ -3723,8 +3711,7 @@ esxVI_LookupStorageVolumeKeyByDatastorePath(esxVI_Context *ctx,
                 goto cleanup;
             }
 
-            if (VIR_ALLOC_N(*key, VIR_UUID_STRING_BUFLEN) < 0)
-                goto cleanup;
+            *key = g_new0(char, VIR_UUID_STRING_BUFLEN);
 
             if (esxUtil_ReformatUuid(uuid_string, *key) < 0)
                 goto cleanup;
@@ -4130,7 +4117,7 @@ esxVI_HandleVirtualMachineQuestion
 {
     int result = -1;
     esxVI_ElementDescription *elementDescription = NULL;
-    virBuffer buffer = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buffer = VIR_BUFFER_INITIALIZER;
     esxVI_ElementDescription *answerChoice = NULL;
     int answerIndex = 0;
     char *possibleAnswers = NULL;
@@ -4212,9 +4199,6 @@ esxVI_HandleVirtualMachineQuestion
     result = 0;
 
  cleanup:
-    if (result < 0)
-        virBufferFreeAndReset(&buffer);
-
     VIR_FREE(possibleAnswers);
 
     return result;

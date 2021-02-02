@@ -32,7 +32,7 @@
 #include <pwd.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
-#ifdef HAVE_SYSCTLBYNAME
+#ifdef WITH_SYSCTLBYNAME
 # include <sys/sysctl.h>
 #endif
 
@@ -59,7 +59,7 @@
 #include "virnetdevtap.h"
 #include "virnetdevvportprofile.h"
 #include "virpci.h"
-#include "virdbus.h"
+#include "virgdbus.h"
 #include "virfile.h"
 #include "virstring.h"
 #include "viraccessapicheck.h"
@@ -73,6 +73,8 @@
 
 #define VIR_FROM_THIS VIR_FROM_NETWORK
 #define MAX_BRIDGE_ID 256
+
+static virMutex bridgeNameValidateMutex = VIR_MUTEX_INITIALIZER;
 
 /**
  * VIR_NETWORK_DHCP_LEASE_FILE_SIZE_MAX:
@@ -139,6 +141,16 @@ networkDnsmasqCapsRefresh(virNetworkDriverStatePtr driver)
 }
 
 
+extern virXMLNamespace networkDnsmasqXMLNamespace;
+
+typedef struct _networkDnsmasqXmlNsDef networkDnsmasqXmlNsDef;
+typedef networkDnsmasqXmlNsDef *networkDnsmasqXmlNsDefPtr;
+struct _networkDnsmasqXmlNsDef {
+    size_t noptions;
+    char **options;
+};
+
+
 static void
 networkDnsmasqDefNamespaceFree(void *nsdata)
 {
@@ -148,8 +160,9 @@ networkDnsmasqDefNamespaceFree(void *nsdata)
 
     virStringListFreeCount(def->options, def->noptions);
 
-    VIR_FREE(def);
+    g_free(def);
 }
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(networkDnsmasqXmlNsDef, networkDnsmasqDefNamespaceFree);
 
 
 static int
@@ -167,8 +180,7 @@ networkDnsmasqDefNamespaceParseOptions(networkDnsmasqXmlNsDefPtr nsdef,
     if (nnodes == 0)
         return 0;
 
-    if (VIR_ALLOC_N(nsdef->options, nnodes) < 0)
-        return -1;
+    nsdef->options = g_new0(char *, nnodes);
 
     for (i = 0; i < nnodes; i++) {
         if (!(nsdef->options[nsdef->noptions++] = virXMLPropString(nodes[i], "value"))) {
@@ -186,23 +198,15 @@ static int
 networkDnsmasqDefNamespaceParse(xmlXPathContextPtr ctxt,
                                 void **data)
 {
-    networkDnsmasqXmlNsDefPtr nsdata = NULL;
-    int ret = -1;
-
-    if (VIR_ALLOC(nsdata) < 0)
-        return -1;
+    g_autoptr(networkDnsmasqXmlNsDef) nsdata = g_new0(networkDnsmasqXmlNsDef, 1);
 
     if (networkDnsmasqDefNamespaceParseOptions(nsdata, ctxt))
-        goto cleanup;
+        return -1;
 
     if (nsdata->noptions > 0)
         *data = g_steal_pointer(&nsdata);
 
-    ret = 0;
-
- cleanup:
-    networkDnsmasqDefNamespaceFree(nsdata);
-    return ret;
+    return 0;
 }
 
 
@@ -273,7 +277,9 @@ static int
 networkShutdownNetworkExternal(virNetworkObjPtr obj);
 
 static void
-networkReloadFirewallRules(virNetworkDriverStatePtr driver, bool startup);
+networkReloadFirewallRules(virNetworkDriverStatePtr driver,
+                           bool startup,
+                           bool force);
 
 static void
 networkRefreshDaemons(virNetworkDriverStatePtr driver);
@@ -320,25 +326,23 @@ networkRunHook(virNetworkObjPtr obj,
                int sub_op)
 {
     virNetworkDefPtr def;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
-    char *xml = NULL;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+    g_autofree char *xml = NULL;
     int hookret;
-    int ret = -1;
 
     if (virHookPresent(VIR_HOOK_DRIVER_NETWORK)) {
         if (!obj) {
             VIR_DEBUG("Not running hook as @obj is NULL");
-            ret = 0;
-            goto cleanup;
+            return 0;
         }
         def = virNetworkObjGetDef(obj);
 
         virBufferAddLit(&buf, "<hookData>\n");
         virBufferAdjustIndent(&buf, 2);
         if (virNetworkDefFormatBuf(&buf, def, network_driver->xmlopt, 0) < 0)
-            goto cleanup;
+            return -1;
         if (port && virNetworkPortDefFormatBuf(&buf, port) < 0)
-            goto cleanup;
+            return -1;
 
         virBufferAdjustIndent(&buf, -2);
         virBufferAddLit(&buf, "</hookData>");
@@ -351,16 +355,12 @@ networkRunHook(virNetworkObjPtr obj,
          * If the script raised an error, pass it to the callee.
          */
         if (hookret < 0)
-            goto cleanup;
+            return -1;
 
         networkNetworkObjTaint(obj, VIR_NETWORK_TAINT_HOOK);
     }
 
-    ret = 0;
- cleanup:
-    virBufferFreeAndReset(&buf);
-    VIR_FREE(xml);
-    return ret;
+    return 0;
 }
 
 
@@ -424,44 +424,42 @@ static int
 networkRemoveInactive(virNetworkDriverStatePtr driver,
                       virNetworkObjPtr obj)
 {
-    char *leasefile = NULL;
-    char *customleasefile = NULL;
-    char *radvdconfigfile = NULL;
-    char *configfile = NULL;
-    char *radvdpidbase = NULL;
-    char *statusfile = NULL;
-    char *macMapFile = NULL;
-    dnsmasqContext *dctx = NULL;
+    g_autofree char *leasefile = NULL;
+    g_autofree char *customleasefile = NULL;
+    g_autofree char *radvdconfigfile = NULL;
+    g_autofree char *configfile = NULL;
+    g_autofree char *radvdpidbase = NULL;
+    g_autofree char *statusfile = NULL;
+    g_autofree char *macMapFile = NULL;
+    g_autoptr(dnsmasqContext) dctx = NULL;
     virNetworkDefPtr def = virNetworkObjGetPersistentDef(obj);
-
-    int ret = -1;
 
     /* remove the (possibly) existing dnsmasq and radvd files */
     if (!(dctx = dnsmasqContextNew(def->name,
                                    driver->dnsmasqStateDir))) {
-        goto cleanup;
+        return -1;
     }
 
     if (!(leasefile = networkDnsmasqLeaseFileNameDefault(driver, def->name)))
-        goto cleanup;
+        return -1;
 
     if (!(customleasefile = networkDnsmasqLeaseFileNameCustom(driver, def->bridge)))
-        goto cleanup;
+        return -1;
 
     if (!(radvdconfigfile = networkRadvdConfigFileName(driver, def->name)))
-        goto cleanup;
+        return -1;
 
     if (!(radvdpidbase = networkRadvdPidfileBasename(def->name)))
-        goto cleanup;
+        return -1;
 
     if (!(configfile = networkDnsmasqConfigFileName(driver, def->name)))
-        goto cleanup;
+        return -1;
 
     if (!(statusfile = virNetworkConfigFile(driver->stateDir, def->name)))
-        goto cleanup;
+        return -1;
 
     if (!(macMapFile = virMacMapFileName(driver->dnsmasqStateDir, def->bridge)))
-        goto cleanup;
+        return -1;
 
     /* dnsmasq */
     dnsmasqDelete(dctx);
@@ -482,18 +480,7 @@ networkRemoveInactive(virNetworkDriverStatePtr driver,
     /* remove the network definition */
     virNetworkObjRemoveInactive(driver->networks, obj);
 
-    ret = 0;
-
- cleanup:
-    VIR_FREE(leasefile);
-    VIR_FREE(configfile);
-    VIR_FREE(customleasefile);
-    VIR_FREE(radvdconfigfile);
-    VIR_FREE(radvdpidbase);
-    VIR_FREE(statusfile);
-    VIR_FREE(macMapFile);
-    dnsmasqContextFree(dctx);
-    return ret;
+    return 0;
 }
 
 
@@ -543,9 +530,9 @@ networkUpdateState(virNetworkObjPtr obj,
 {
     virNetworkDefPtr def;
     virNetworkDriverStatePtr driver = opaque;
-    dnsmasqCapsPtr dnsmasq_caps = networkGetDnsmasqCaps(driver);
+    g_autoptr(dnsmasqCaps) dnsmasq_caps = networkGetDnsmasqCaps(driver);
     virMacMapPtr macmap;
-    char *macMapFile = NULL;
+    g_autofree char *macMapFile = NULL;
     int ret = -1;
 
     virObjectLock(obj);
@@ -607,7 +594,7 @@ networkUpdateState(virNetworkObjPtr obj,
     if (virNetworkObjIsActive(obj) && def->ips && (def->nips > 0)) {
         pid_t radvdPid;
         pid_t dnsmasqPid;
-        char *radvdpidbase;
+        g_autofree char *radvdpidbase = NULL;
 
         ignore_value(virPidFileReadIfAlive(driver->pidDir,
                                            def->name,
@@ -623,14 +610,11 @@ networkUpdateState(virNetworkObjPtr obj,
                                            radvdpidbase,
                                            &radvdPid, RADVD));
         virNetworkObjSetRadvdPid(obj, radvdPid);
-        VIR_FREE(radvdpidbase);
     }
 
     ret = 0;
  cleanup:
     virObjectUnlock(obj);
-    virObjectUnref(dnsmasq_caps);
-    VIR_FREE(macMapFile);
     return ret;
 }
 
@@ -656,43 +640,39 @@ networkAutostartConfig(virNetworkObjPtr obj,
 
 
 #ifdef WITH_FIREWALLD
-static DBusHandlerResult
-firewalld_dbus_filter_bridge(DBusConnection *connection G_GNUC_UNUSED,
-                             DBusMessage *message,
-                             void *user_data)
+static void
+firewalld_dbus_signal_callback(GDBusConnection *connection G_GNUC_UNUSED,
+                               const char *senderName G_GNUC_UNUSED,
+                               const char *objectPath G_GNUC_UNUSED,
+                               const char *interfaceName,
+                               const char *signalName,
+                               GVariant *parameters,
+                               gpointer user_data)
 {
     virNetworkDriverStatePtr driver = user_data;
     bool reload = false;
 
-    if (dbus_message_is_signal(message,
-                               "org.fedoraproject.FirewallD1", "Reloaded")) {
+    if (STREQ(interfaceName, "org.fedoraproject.FirewallD1") &&
+        STREQ(signalName, "Reloaded")) {
         reload = true;
+        VIR_DEBUG("Reload in bridge_driver because of 'Reloaded' signal");
+    } else if (STREQ(interfaceName, "org.freedesktop.DBus") &&
+               STREQ(signalName, "NameOwnerChanged")) {
+        char *name = NULL;
+        char *old_owner = NULL;
+        char *new_owner = NULL;
 
-    } else if (dbus_message_is_signal(message,
-                                      DBUS_INTERFACE_DBUS, "NameOwnerChanged")) {
+        g_variant_get(parameters, "(&s&s&s)", &name, &old_owner, &new_owner);
 
-        g_autofree char *name = NULL;
-        g_autofree char *old_owner = NULL;
-        g_autofree char *new_owner = NULL;
-
-        if (virDBusMessageDecode(message, "sss", &name, &old_owner, &new_owner) < 0) {
-            VIR_WARN("Failed to decode DBus NameOwnerChanged message");
-            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-        }
-        /*
-         * if new_owner is empty, firewalld is shutting down. If it is
-         * non-empty, then it is starting
-         */
-        if (new_owner && *new_owner)
+        if (new_owner && *new_owner) {
+            VIR_DEBUG("Reload in bridge_driver because of 'NameOwnerChanged' signal, new owner is: '%s'",
+                      new_owner);
             reload = true;
+        }
     }
 
-    if (reload) {
-        VIR_DEBUG("Reload in bridge_driver because of firewalld.");
-        networkReloadFirewallRules(driver, false);
-    }
-
-    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    if (reload)
+        networkReloadFirewallRules(driver, false, true);
 }
 #endif
 
@@ -708,12 +688,11 @@ networkStateInitialize(bool privileged,
                        virStateInhibitCallback callback G_GNUC_UNUSED,
                        void *opaque G_GNUC_UNUSED)
 {
-    int ret = VIR_DRV_STATE_INIT_ERROR;
-    char *configdir = NULL;
-    char *rundir = NULL;
+    g_autofree char *configdir = NULL;
+    g_autofree char *rundir = NULL;
     bool autostart = true;
 #ifdef WITH_FIREWALLD
-    DBusConnection *sysbus = NULL;
+    GDBusConnection *sysbus = NULL;
 #endif
 
     if (root != NULL) {
@@ -722,12 +701,11 @@ networkStateInitialize(bool privileged,
         return -1;
     }
 
-    if (VIR_ALLOC(network_driver) < 0)
-        goto error;
+    network_driver = g_new0(virNetworkDriverState, 1);
 
     network_driver->lockFD = -1;
     if (virMutexInit(&network_driver->lock) < 0) {
-        VIR_FREE(network_driver);
+        g_clear_pointer(&network_driver, g_free);
         goto error;
     }
 
@@ -798,7 +776,7 @@ networkStateInitialize(bool privileged,
     virNetworkObjListPrune(network_driver->networks,
                            VIR_CONNECT_LIST_NETWORKS_INACTIVE |
                            VIR_CONNECT_LIST_NETWORKS_TRANSIENT);
-    networkReloadFirewallRules(network_driver, true);
+    networkReloadFirewallRules(network_driver, true, false);
     networkRefreshDaemons(network_driver);
 
     if (virDriverShouldAutostart(network_driver->stateDir, &autostart) < 0)
@@ -813,39 +791,39 @@ networkStateInitialize(bool privileged,
     network_driver->networkEventState = virObjectEventStateNew();
 
 #ifdef WITH_FIREWALLD
-    if (!(sysbus = virDBusGetSystemBus())) {
+    if (!(sysbus = virGDBusGetSystemBus())) {
         VIR_WARN("DBus not available, disabling firewalld support "
                  "in bridge_network_driver: %s", virGetLastErrorMessage());
     } else {
-        /* add matches for
-         * NameOwnerChanged on org.freedesktop.DBus for firewalld start/stop
-         * Reloaded on org.fedoraproject.FirewallD1 for firewalld reload
-         */
-        dbus_bus_add_match(sysbus,
-                           "type='signal'"
-                           ",interface='"DBUS_INTERFACE_DBUS"'"
-                           ",member='NameOwnerChanged'"
-                           ",arg0='org.fedoraproject.FirewallD1'",
-                           NULL);
-        dbus_bus_add_match(sysbus,
-                           "type='signal'"
-                           ",interface='org.fedoraproject.FirewallD1'"
-                           ",member='Reloaded'",
-                           NULL);
-        dbus_connection_add_filter(sysbus, firewalld_dbus_filter_bridge,
-                                   network_driver, NULL);
+        g_dbus_connection_signal_subscribe(sysbus,
+                                           NULL,
+                                           "org.freedesktop.DBus",
+                                           "NameOwnerChanged",
+                                           NULL,
+                                           "org.fedoraproject.FirewallD1",
+                                           G_DBUS_SIGNAL_FLAGS_NONE,
+                                           firewalld_dbus_signal_callback,
+                                           network_driver,
+                                           NULL);
+        g_dbus_connection_signal_subscribe(sysbus,
+                                           NULL,
+                                           "org.fedoraproject.FirewallD1",
+                                           "Reloaded",
+                                           NULL,
+                                           NULL,
+                                           G_DBUS_SIGNAL_FLAGS_NONE,
+                                           firewalld_dbus_signal_callback,
+                                           network_driver,
+                                           NULL);
     }
 #endif
 
-    ret = VIR_DRV_STATE_INIT_COMPLETE;
- cleanup:
-    VIR_FREE(configdir);
-    VIR_FREE(rundir);
-    return ret;
+    return VIR_DRV_STATE_INIT_COMPLETE;
+
 
  error:
     networkStateCleanup();
-    goto cleanup;
+    return VIR_DRV_STATE_INIT_ERROR;
 }
 
 
@@ -868,7 +846,7 @@ networkStateReload(void)
                                 network_driver->networkConfigDir,
                                 network_driver->networkAutostartDir,
                                 network_driver->xmlopt);
-    networkReloadFirewallRules(network_driver, false);
+    networkReloadFirewallRules(network_driver, false, false);
     networkRefreshDaemons(network_driver);
     virNetworkObjListForEach(network_driver->networks,
                              networkAutostartConfig,
@@ -898,18 +876,18 @@ networkStateCleanup(void)
         virPidFileRelease(network_driver->stateDir, "driver",
                           network_driver->lockFD);
 
-    VIR_FREE(network_driver->networkConfigDir);
-    VIR_FREE(network_driver->networkAutostartDir);
-    VIR_FREE(network_driver->stateDir);
-    VIR_FREE(network_driver->pidDir);
-    VIR_FREE(network_driver->dnsmasqStateDir);
-    VIR_FREE(network_driver->radvdStateDir);
+    g_free(network_driver->networkConfigDir);
+    g_free(network_driver->networkAutostartDir);
+    g_free(network_driver->stateDir);
+    g_free(network_driver->pidDir);
+    g_free(network_driver->dnsmasqStateDir);
+    g_free(network_driver->radvdStateDir);
 
     virObjectUnref(network_driver->dnsmasqCaps);
 
     virMutexDestroy(&network_driver->lock);
 
-    VIR_FREE(network_driver);
+    g_clear_pointer(&network_driver, g_free);
 
     return 0;
 }
@@ -966,6 +944,27 @@ static int networkConnectIsAlive(virConnectPtr conn G_GNUC_UNUSED)
 }
 
 
+static char *
+networkBuildDnsmasqLeaseTime(virNetworkDHCPLeaseTimeDefPtr lease)
+{
+    const char *unit;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+
+    if (!lease)
+        return NULL;
+
+    if (lease->expiry == 0) {
+        virBufferAddLit(&buf, "infinite");
+    } else {
+        unit = virNetworkDHCPLeaseTimeUnitTypeToString(lease->unit);
+        /* We get only first compatible char from string: 's', 'm' or 'h' */
+        virBufferAsprintf(&buf, "%lu%c", lease->expiry, unit[0]);
+    }
+
+    return virBufferContentAndReset(&buf);
+}
+
+
 /* the following does not build a file, it builds a list
  * which is later saved into a file
  */
@@ -980,9 +979,12 @@ networkBuildDnsmasqDhcpHostsList(dnsmasqContext *dctx,
         ipv6 = true;
     for (i = 0; i < ipdef->nhosts; i++) {
         virNetworkDHCPHostDefPtr host = &(ipdef->hosts[i]);
+        g_autofree char *leasetime = networkBuildDnsmasqLeaseTime(host->lease);
+
         if (VIR_SOCKET_ADDR_VALID(&host->ip))
             if (dnsmasqAddDhcpHost(dctx, host->mac, &host->ip,
-                                   host->name, host->id, ipv6) < 0)
+                                   host->name, host->id, leasetime,
+                                   ipv6) < 0)
                 return -1;
     }
 
@@ -1017,10 +1019,11 @@ networkDnsmasqConfLocalPTRs(virBufferPtr buf,
 {
     virNetworkIPDefPtr ip;
     size_t i;
-    char *ptr = NULL;
     int rc;
 
     for (i = 0; i < def->nips; i++) {
+        g_autofree char *ptr = NULL;
+
         ip = def->ips + i;
 
         if (ip->localPTR != VIR_TRISTATE_BOOL_YES)
@@ -1041,7 +1044,6 @@ networkDnsmasqConfLocalPTRs(virBufferPtr buf,
         }
 
         virBufferAsprintf(buf, "local=/%s/\n", ptr);
-        VIR_FREE(ptr);
     }
 
     return 0;
@@ -1052,19 +1054,19 @@ int
 networkDnsmasqConfContents(virNetworkObjPtr obj,
                            const char *pidfile,
                            char **configstr,
+                           char **hostsfilestr,
                            dnsmasqContext *dctx,
                            dnsmasqCapsPtr caps G_GNUC_UNUSED)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    virBuffer configbuf = VIR_BUFFER_INITIALIZER;
-    int r, ret = -1;
+    g_auto(virBuffer) configbuf = VIR_BUFFER_INITIALIZER;
+    int r;
     int nbleases = 0;
     size_t i;
     virNetworkDNSDefPtr dns = &def->dns;
     bool wantDNS = dns->enable != VIR_TRISTATE_BOOL_NO;
     virNetworkIPDefPtr tmpipdef, ipdef, ipv4def, ipv6def;
     bool ipv6SLAAC;
-    char *saddr = NULL, *eaddr = NULL;
 
     *configstr = NULL;
 
@@ -1119,12 +1121,11 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
             if (fwd->domain)
                 virBufferAsprintf(&configbuf, "/%s/", fwd->domain);
             if (VIR_SOCKET_ADDR_VALID(&fwd->addr)) {
-                char *addr = virSocketAddrFormat(&fwd->addr);
+                g_autofree char *addr = virSocketAddrFormat(&fwd->addr);
 
                 if (!addr)
-                    goto cleanup;
+                    return -1;
                 virBufferAsprintf(&configbuf, "%s\n", addr);
-                VIR_FREE(addr);
                 if (!fwd->domain)
                     addNoResolv = true;
             } else {
@@ -1150,7 +1151,7 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
 
     if (wantDNS &&
         networkDnsmasqConfLocalPTRs(&configbuf, def) < 0)
-        goto cleanup;
+        return -1;
 
     if (wantDNS && def->dns.forwardPlainNames == VIR_TRISTATE_BOOL_NO) {
         virBufferAddLit(&configbuf, "domain-needed\n");
@@ -1197,10 +1198,10 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
         for (i = 0;
              (tmpipdef = virNetworkDefGetIPByIndex(def, AF_UNSPEC, i));
              i++) {
-            char *ipaddr = virSocketAddrFormat(&tmpipdef->address);
+            g_autofree char *ipaddr = virSocketAddrFormat(&tmpipdef->address);
 
             if (!ipaddr)
-                goto cleanup;
+                return -1;
 
             /* also part of CVE 2012-3411 - if the host's version of
              * dnsmasq doesn't have bind-dynamic, only allow listening on
@@ -1223,11 +1224,9 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                                  "(as described in RFC1918/RFC3484/RFC4193)."),
                                ipaddr, (int)version / 1000000,
                                (int)(version % 1000000) / 1000);
-                VIR_FREE(ipaddr);
-                goto cleanup;
+                return -1;
             }
             virBufferAsprintf(&configbuf, "listen-address=%s\n", ipaddr);
-            VIR_FREE(ipaddr);
         }
     }
 
@@ -1266,14 +1265,14 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                                _("Missing required 'service' "
                                  "attribute in SRV record of network '%s'"),
                                def->name);
-                goto cleanup;
+                return -1;
             }
             if (!dns->srvs[i].protocol) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("Missing required 'service' "
                                  "attribute in SRV record of network '%s'"),
                                def->name);
-                goto cleanup;
+                return -1;
             }
             /* RFC2782 requires that service and protocol be preceded by
              * an underscore.
@@ -1322,7 +1321,7 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                     virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                                    _("For IPv4, multiple DHCP definitions "
                                      "cannot be specified."));
-                    goto cleanup;
+                    return -1;
                 } else {
                     ipv4def = ipdef;
                 }
@@ -1342,13 +1341,13 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                                    (int)(version % 1000000) / 1000,
                                    DNSMASQ_DHCPv6_MAJOR_REQD,
                                    DNSMASQ_DHCPv6_MINOR_REQD);
-                    goto cleanup;
+                    return -1;
                 }
                 if (ipv6def) {
                     virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                                    _("For IPv6, multiple DHCP definitions "
                                      "cannot be specified."));
-                    goto cleanup;
+                    return -1;
                 } else {
                     ipv6def = ipdef;
                 }
@@ -1377,17 +1376,21 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("bridge '%s' has an invalid prefix"),
                            def->bridge);
-            goto cleanup;
+            return -1;
         }
         for (r = 0; r < ipdef->nranges; r++) {
             int thisRange;
+            virNetworkDHCPRangeDef range = ipdef->ranges[r];
+            g_autofree char *leasetime = NULL;
+            g_autofree char *saddr = NULL;
+            g_autofree char *eaddr = NULL;
 
-            if (!(saddr = virSocketAddrFormat(&ipdef->ranges[r].start)) ||
-                !(eaddr = virSocketAddrFormat(&ipdef->ranges[r].end)))
-                goto cleanup;
+            if (!(saddr = virSocketAddrFormat(&range.addr.start)) ||
+                !(eaddr = virSocketAddrFormat(&range.addr.end)))
+                return -1;
 
             if (VIR_SOCKET_ADDR_IS_FAMILY(&ipdef->address, AF_INET6)) {
-               virBufferAsprintf(&configbuf, "dhcp-range=%s,%s,%d\n",
+               virBufferAsprintf(&configbuf, "dhcp-range=%s,%s,%d",
                                  saddr, eaddr, prefix);
             } else {
                 /* IPv4 - dnsmasq requires a netmask rather than prefix */
@@ -1399,23 +1402,26 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                                    _("Failed to translate bridge '%s' "
                                      "prefix %d to netmask"),
                                    def->bridge, prefix);
-                    goto cleanup;
+                    return -1;
                 }
 
                 if (!(netmaskStr = virSocketAddrFormat(&netmask)))
-                    goto cleanup;
-                virBufferAsprintf(&configbuf, "dhcp-range=%s,%s,%s\n",
+                    return -1;
+                virBufferAsprintf(&configbuf, "dhcp-range=%s,%s,%s",
                                   saddr, eaddr, netmaskStr);
             }
 
-            VIR_FREE(saddr);
-            VIR_FREE(eaddr);
-            thisRange = virSocketAddrGetRange(&ipdef->ranges[r].start,
-                                              &ipdef->ranges[r].end,
+            if ((leasetime = networkBuildDnsmasqLeaseTime(range.lease)))
+                virBufferAsprintf(&configbuf, ",%s", leasetime);
+
+            virBufferAddLit(&configbuf, "\n");
+
+            thisRange = virSocketAddrGetRange(&range.addr.start,
+                                              &range.addr.end,
                                               &ipdef->address,
                                               virNetworkIPDefPrefix(ipdef));
             if (thisRange < 0)
-                goto cleanup;
+                return -1;
             nbleases += thisRange;
         }
 
@@ -1426,19 +1432,18 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
          * support)
          */
         if (!ipdef->nranges && ipdef->nhosts) {
-            char *bridgeaddr = virSocketAddrFormat(&ipdef->address);
+            g_autofree char *bridgeaddr = virSocketAddrFormat(&ipdef->address);
             if (!bridgeaddr)
-                goto cleanup;
+                return -1;
             virBufferAsprintf(&configbuf, "dhcp-range=%s,static",
                               bridgeaddr);
             if (VIR_SOCKET_ADDR_IS_FAMILY(&ipdef->address, AF_INET6))
                 virBufferAsprintf(&configbuf, ",%d", prefix);
             virBufferAddLit(&configbuf, "\n");
-            VIR_FREE(bridgeaddr);
         }
 
         if (networkBuildDnsmasqDhcpHostsList(dctx, ipdef) < 0)
-            goto cleanup;
+            return -1;
 
         /* Note: the following is IPv4 only */
         if (VIR_SOCKET_ADDR_IS_FAMILY(&ipdef->address, AF_INET)) {
@@ -1454,13 +1459,12 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
 
             if (ipdef->bootfile) {
                 if (VIR_SOCKET_ADDR_VALID(&ipdef->bootserver)) {
-                    char *bootserver = virSocketAddrFormat(&ipdef->bootserver);
+                    g_autofree char *bootserver = virSocketAddrFormat(&ipdef->bootserver);
 
                     if (!bootserver)
-                        goto cleanup;
+                        return -1;
                     virBufferAsprintf(&configbuf, "dhcp-boot=%s%s%s\n",
                                       ipdef->bootfile, ",,", bootserver);
-                    VIR_FREE(bootserver);
                 } else {
                     virBufferAsprintf(&configbuf, "dhcp-boot=%s\n", ipdef->bootfile);
                 }
@@ -1474,7 +1478,7 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
 
     /* this is done once per interface */
     if (networkBuildDnsmasqHostsList(dctx, dns) < 0)
-        goto cleanup;
+        return -1;
 
     /* Even if there are currently no static hosts, if we're
      * listening for DHCP, we should write a 0-length hosts
@@ -1505,12 +1509,11 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
                  (ipdef = virNetworkDefGetIPByIndex(def, AF_INET6, i));
                  i++) {
                 if (!(ipdef->nranges || ipdef->nhosts)) {
-                    char *bridgeaddr = virSocketAddrFormat(&ipdef->address);
+                    g_autofree char *bridgeaddr = virSocketAddrFormat(&ipdef->address);
                     if (!bridgeaddr)
-                        goto cleanup;
+                        return -1;
                     virBufferAsprintf(&configbuf,
                                       "dhcp-range=%s,ra-only\n", bridgeaddr);
-                    VIR_FREE(bridgeaddr);
                 }
             }
         }
@@ -1523,15 +1526,12 @@ networkDnsmasqConfContents(virNetworkObjPtr obj,
     }
 
     if (!(*configstr = virBufferContentAndReset(&configbuf)))
-        goto cleanup;
+        return -1;
 
-    ret = 0;
+    *hostsfilestr = dnsmasqDhcpHostsToString(dctx->hostsfile->hosts,
+                                             dctx->hostsfile->nhosts);
 
- cleanup:
-    VIR_FREE(saddr);
-    VIR_FREE(eaddr);
-    virBufferFreeAndReset(&configbuf);
-    return ret;
+    return 0;
 }
 
 
@@ -1544,38 +1544,38 @@ networkBuildDhcpDaemonCommandLine(virNetworkDriverStatePtr driver,
                                   dnsmasqContext *dctx)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    dnsmasqCapsPtr dnsmasq_caps = networkGetDnsmasqCaps(driver);
-    virCommandPtr cmd = NULL;
-    int ret = -1;
-    char *configfile = NULL;
-    char *configstr = NULL;
-    char *leaseshelper_path = NULL;
+    g_autoptr(dnsmasqCaps) dnsmasq_caps = networkGetDnsmasqCaps(driver);
+    g_autoptr(virCommand) cmd = NULL;
+    g_autofree char *configfile = NULL;
+    g_autofree char *configstr = NULL;
+    g_autofree char *hostsfilestr = NULL;
+    g_autofree char *leaseshelper_path = NULL;
 
     virNetworkObjSetDnsmasqPid(obj, -1);
 
-    if (networkDnsmasqConfContents(obj, pidfile, &configstr,
+    if (networkDnsmasqConfContents(obj, pidfile, &configstr, &hostsfilestr,
                                    dctx, dnsmasq_caps) < 0)
-        goto cleanup;
+        return -1;
     if (!configstr)
-        goto cleanup;
+        return -1;
 
     /* construct the filename */
     if (!(configfile = networkDnsmasqConfigFileName(driver, def->name)))
-        goto cleanup;
+        return -1;
 
     /* Write the file */
     if (virFileWriteStr(configfile, configstr, 0600) < 0) {
         virReportSystemError(errno,
                              _("couldn't write dnsmasq config file '%s'"),
                              configfile);
-        goto cleanup;
+        return -1;
     }
 
     /* This helper is used to create custom leases file for libvirt */
     if (!(leaseshelper_path = virFileFindResource("libvirt_leaseshelper",
                                                   abs_top_builddir "/src",
                                                   LIBEXECDIR)))
-        goto cleanup;
+        return -1;
 
     cmd = virCommandNew(dnsmasqCapsGetBinaryPath(dnsmasq_caps));
     virCommandAddArgFormat(cmd, "--conf-file=%s", configfile);
@@ -1584,14 +1584,8 @@ networkBuildDhcpDaemonCommandLine(virNetworkDriverStatePtr driver,
     virCommandAddArgFormat(cmd, "--dhcp-script=%s", leaseshelper_path);
     virCommandAddEnvPair(cmd, "VIR_BRIDGE_NAME", def->bridge);
 
-    *cmdout = cmd;
-    ret = 0;
- cleanup:
-    virObjectUnref(dnsmasq_caps);
-    VIR_FREE(configfile);
-    VIR_FREE(configstr);
-    VIR_FREE(leaseshelper_path);
-    return ret;
+    *cmdout = g_steal_pointer(&cmd);
+    return 0;
 }
 
 
@@ -1603,11 +1597,10 @@ networkStartDhcpDaemon(virNetworkDriverStatePtr driver,
     virNetworkIPDefPtr ipdef;
     size_t i;
     bool needDnsmasq = false;
-    virCommandPtr cmd = NULL;
-    char *pidfile = NULL;
+    g_autoptr(virCommand) cmd = NULL;
+    g_autofree char *pidfile = NULL;
     pid_t dnsmasqPid;
-    int ret = -1;
-    dnsmasqContext *dctx = NULL;
+    g_autoptr(dnsmasqContext) dctx = NULL;
 
     /* see if there are any IP addresses that need a dhcp server */
     i = 0;
@@ -1617,53 +1610,46 @@ networkStartDhcpDaemon(virNetworkDriverStatePtr driver,
             needDnsmasq = true;
     }
 
-    if (i == 0) {
-        /* no IP addresses at all, so we don't need to run */
-        ret = 0;
-        goto cleanup;
-    }
+    /* no IP addresses at all, so we don't need to run */
+    if (i == 0)
+        return 0;
 
-    if (!needDnsmasq && def->dns.enable == VIR_TRISTATE_BOOL_NO) {
-        /* no DHCP services needed, and user disabled DNS service */
-        ret = 0;
-        goto cleanup;
-    }
+    /* no DHCP services needed, and user disabled DNS service */
+    if (!needDnsmasq && def->dns.enable == VIR_TRISTATE_BOOL_NO)
+        return 0;
 
     if (virFileMakePath(driver->pidDir) < 0) {
         virReportSystemError(errno,
                              _("cannot create directory %s"),
                              driver->pidDir);
-        goto cleanup;
+        return -1;
     }
 
     if (!(pidfile = virPidFileBuildPath(driver->pidDir, def->name)))
-        goto cleanup;
+        return -1;
 
     if (virFileMakePath(driver->dnsmasqStateDir) < 0) {
         virReportSystemError(errno,
                              _("cannot create directory %s"),
                              driver->dnsmasqStateDir);
-        goto cleanup;
+        return -1;
     }
 
     dctx = dnsmasqContextNew(def->name, driver->dnsmasqStateDir);
     if (dctx == NULL)
-        goto cleanup;
+        return -1;
 
     if (networkDnsmasqCapsRefresh(driver) < 0)
-        goto cleanup;
+        return -1;
 
-    ret = networkBuildDhcpDaemonCommandLine(driver, obj, &cmd, pidfile, dctx);
-    if (ret < 0)
-        goto cleanup;
+    if (networkBuildDhcpDaemonCommandLine(driver, obj, &cmd, pidfile, dctx) < 0)
+        return -1;
 
-    ret = dnsmasqSave(dctx);
-    if (ret < 0)
-        goto cleanup;
+    if (dnsmasqSave(dctx) < 0)
+        return -1;
 
-    ret = virCommandRun(cmd, NULL);
-    if (ret < 0)
-        goto cleanup;
+    if (virCommandRun(cmd, NULL) < 0)
+        return -1;
 
     /*
      * There really is no race here - when dnsmasq daemonizes, its
@@ -1673,17 +1659,12 @@ networkStartDhcpDaemon(virNetworkDriverStatePtr driver,
      * pid
      */
 
-    ret = virPidFileRead(driver->pidDir, def->name, &dnsmasqPid);
-    if (ret < 0)
-        goto cleanup;
+    if (virPidFileRead(driver->pidDir, def->name, &dnsmasqPid) < 0)
+        return -1;
+
     virNetworkObjSetDnsmasqPid(obj, dnsmasqPid);
 
-    ret = 0;
- cleanup:
-    VIR_FREE(pidfile);
-    virCommandFree(cmd);
-    dnsmasqContextFree(dctx);
-    return ret;
+    return 0;
 }
 
 
@@ -1699,11 +1680,10 @@ networkRefreshDhcpDaemon(virNetworkDriverStatePtr driver,
                          virNetworkObjPtr obj)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    int ret = -1;
     size_t i;
     pid_t dnsmasqPid;
     virNetworkIPDefPtr ipdef, ipv4def, ipv6def;
-    dnsmasqContext *dctx = NULL;
+    g_autoptr(dnsmasqContext) dctx = NULL;
 
     /* if no IP addresses specified, nothing to do */
     if (!virNetworkDefGetIPByIndex(def, AF_UNSPEC, 0))
@@ -1715,10 +1695,8 @@ networkRefreshDhcpDaemon(virNetworkDriverStatePtr driver,
         return networkStartDhcpDaemon(driver, obj);
 
     VIR_INFO("Refreshing dnsmasq for network %s", def->bridge);
-    if (!(dctx = dnsmasqContextNew(def->name,
-                                   driver->dnsmasqStateDir))) {
-        goto cleanup;
-    }
+    if (!(dctx = dnsmasqContextNew(def->name, driver->dnsmasqStateDir)))
+        return -1;
 
     /* Look for first IPv4 address that has dhcp defined.
      * We only support dhcp-host config on one IPv4 subnetwork
@@ -1741,22 +1719,20 @@ networkRefreshDhcpDaemon(virNetworkDriverStatePtr driver,
     }
 
     if (ipv4def && (networkBuildDnsmasqDhcpHostsList(dctx, ipv4def) < 0))
-        goto cleanup;
+        return -1;
 
     if (ipv6def && (networkBuildDnsmasqDhcpHostsList(dctx, ipv6def) < 0))
-        goto cleanup;
+        return -1;
 
     if (networkBuildDnsmasqHostsList(dctx, &def->dns) < 0)
-        goto cleanup;
+        return -1;
 
-    if ((ret = dnsmasqSave(dctx)) < 0)
-        goto cleanup;
+    if (dnsmasqSave(dctx) < 0)
+        return -1;
 
     dnsmasqPid = virNetworkObjGetDnsmasqPid(obj);
-    ret = kill(dnsmasqPid, SIGHUP);
- cleanup:
-    dnsmasqContextFree(dctx);
-    return ret;
+    return kill(dnsmasqPid, SIGHUP);
+
 }
 
 
@@ -1794,8 +1770,7 @@ networkRadvdConfContents(virNetworkObjPtr obj,
                          char **configstr)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    virBuffer configbuf = VIR_BUFFER_INITIALIZER;
-    int ret = -1;
+    g_auto(virBuffer) configbuf = VIR_BUFFER_INITIALIZER;
     size_t i;
     virNetworkIPDefPtr ipdef;
     bool v6present = false, dhcp6 = false;
@@ -1812,10 +1787,8 @@ networkRadvdConfContents(virNetworkObjPtr obj,
     }
 
     /* If there are no IPv6 addresses, then we are done */
-    if (!v6present) {
-        ret = 0;
-        goto cleanup;
-    }
+    if (!v6present)
+        return 0;
 
     /* create radvd config file appropriate for this network;
      * IgnoreIfMissing allows radvd to start even when the bridge is down
@@ -1833,33 +1806,30 @@ networkRadvdConfContents(virNetworkObjPtr obj,
     /* add a section for each IPv6 address in the config */
     for (i = 0; (ipdef = virNetworkDefGetIPByIndex(def, AF_INET6, i)); i++) {
         int prefix;
-        char *netaddr;
+        g_autofree char *netaddr = NULL;
 
         prefix = virNetworkIPDefPrefix(ipdef);
         if (prefix < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("bridge '%s' has an invalid prefix"),
                            def->bridge);
-            goto cleanup;
+            return -1;
         }
         if (!(netaddr = virSocketAddrFormat(&ipdef->address)))
-            goto cleanup;
+            return -1;
+
         virBufferAsprintf(&configbuf,
                           "  prefix %s/%d\n"
                           "  {\n%s  };\n",
                           netaddr, prefix,
                           dhcp6 ? radvd2 : radvd3);
-        VIR_FREE(netaddr);
     }
 
     virBufferAddLit(&configbuf, "};\n");
 
     *configstr = virBufferContentAndReset(&configbuf);
 
-    ret = 0;
- cleanup:
-    virBufferFreeAndReset(&configbuf);
-    return ret;
+    return 0;
 }
 
 
@@ -1870,9 +1840,8 @@ networkRadvdConfWrite(virNetworkDriverStatePtr driver,
                       char **configFile)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    int ret = -1;
-    char *configStr = NULL;
-    char *myConfigFile = NULL;
+    g_autofree char *configStr = NULL;
+    g_autofree char *myConfigFile = NULL;
 
     if (!configFile)
         configFile = &myConfigFile;
@@ -1880,29 +1849,24 @@ networkRadvdConfWrite(virNetworkDriverStatePtr driver,
     *configFile = NULL;
 
     if (networkRadvdConfContents(obj, &configStr) < 0)
-        goto cleanup;
+        return -1;
 
-    if (!configStr) {
-        ret = 0;
-        goto cleanup;
-    }
+    if (!configStr)
+        return 0;
 
     /* construct the filename */
     if (!(*configFile = networkRadvdConfigFileName(driver, def->name)))
-        goto cleanup;
+        return -1;
+
     /* write the file */
     if (virFileWriteStr(*configFile, configStr, 0600) < 0) {
         virReportSystemError(errno,
                              _("couldn't write radvd config file '%s'"),
                              *configFile);
-        goto cleanup;
+        return -1;
     }
 
-    ret = 0;
- cleanup:
-    VIR_FREE(configStr);
-    VIR_FREE(myConfigFile);
-    return ret;
+    return 0;
 }
 
 
@@ -1911,26 +1875,22 @@ networkStartRadvd(virNetworkDriverStatePtr driver,
                   virNetworkObjPtr obj)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    dnsmasqCapsPtr dnsmasq_caps = networkGetDnsmasqCaps(driver);
+    g_autoptr(dnsmasqCaps) dnsmasq_caps = networkGetDnsmasqCaps(driver);
     pid_t radvdPid;
-    char *pidfile = NULL;
-    char *radvdpidbase = NULL;
-    char *configfile = NULL;
-    virCommandPtr cmd = NULL;
-    int ret = -1;
+    g_autofree char *pidfile = NULL;
+    g_autofree char *radvdpidbase = NULL;
+    g_autofree char *configfile = NULL;
+    g_autoptr(virCommand) cmd = NULL;
 
     virNetworkObjSetRadvdPid(obj, -1);
 
     /* Is dnsmasq handling RA? */
-    if (DNSMASQ_RA_SUPPORT(dnsmasq_caps)) {
-        ret = 0;
-        goto cleanup;
-    }
+    if (DNSMASQ_RA_SUPPORT(dnsmasq_caps))
+        return 0;
 
     if (!virNetworkDefGetIPByIndex(def, AF_INET6, 0)) {
         /* no IPv6 addresses, so we don't need to run radvd */
-        ret = 0;
-        goto cleanup;
+        return 0;
     }
 
     if (!virFileIsExecutable(RADVD)) {
@@ -1938,30 +1898,32 @@ networkStartRadvd(virNetworkDriverStatePtr driver,
                              _("Cannot find %s - "
                                "Possibly the package isn't installed"),
                              RADVD);
-        goto cleanup;
+        return -1;
     }
 
     if (virFileMakePath(driver->pidDir) < 0) {
         virReportSystemError(errno,
                              _("cannot create directory %s"),
                              driver->pidDir);
-        goto cleanup;
+        return -1;
     }
+
     if (virFileMakePath(driver->radvdStateDir) < 0) {
         virReportSystemError(errno,
                              _("cannot create directory %s"),
                              driver->radvdStateDir);
-        goto cleanup;
+        return -1;
     }
 
     /* construct pidfile name */
     if (!(radvdpidbase = networkRadvdPidfileBasename(def->name)))
-        goto cleanup;
+        return -1;
+
     if (!(pidfile = virPidFileBuildPath(driver->pidDir, radvdpidbase)))
-        goto cleanup;
+        return -1;
 
     if (networkRadvdConfWrite(driver, obj, &configfile) < 0)
-        goto cleanup;
+        return -1;
 
     /* prevent radvd from daemonizing itself with "--debug 1", and use
      * a dummy pidfile name - virCommand will create the pidfile we
@@ -1981,20 +1943,13 @@ networkStartRadvd(virNetworkDriverStatePtr driver,
     virCommandDaemonize(cmd);
 
     if (virCommandRun(cmd, NULL) < 0)
-        goto cleanup;
+        return -1;
 
     if (virPidFileRead(driver->pidDir, radvdpidbase, &radvdPid) < 0)
-        goto cleanup;
-    virNetworkObjSetRadvdPid(obj, radvdPid);
+        return -1;
 
-    ret = 0;
- cleanup:
-    virObjectUnref(dnsmasq_caps);
-    virCommandFree(cmd);
-    VIR_FREE(configfile);
-    VIR_FREE(radvdpidbase);
-    VIR_FREE(pidfile);
-    return ret;
+    virNetworkObjSetRadvdPid(obj, radvdPid);
+    return 0;
 }
 
 
@@ -2003,14 +1958,13 @@ networkRefreshRadvd(virNetworkDriverStatePtr driver,
                     virNetworkObjPtr obj)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    dnsmasqCapsPtr dnsmasq_caps = networkGetDnsmasqCaps(driver);
+    g_autoptr(dnsmasqCaps) dnsmasq_caps = networkGetDnsmasqCaps(driver);
     g_autofree char *radvdpidbase = NULL;
     g_autofree char *pidfile = NULL;
     pid_t radvdPid;
 
     /* Is dnsmasq handling RA? */
     if (DNSMASQ_RA_SUPPORT(dnsmasq_caps)) {
-        virObjectUnref(dnsmasq_caps);
         if ((radvdpidbase = networkRadvdPidfileBasename(def->name)) &&
             (pidfile = virPidFileBuildPath(driver->pidDir, radvdpidbase))) {
             /* radvd should not be running but in case it is */
@@ -2019,7 +1973,6 @@ networkRefreshRadvd(virNetworkDriverStatePtr driver,
         }
         return 0;
     }
-    virObjectUnref(dnsmasq_caps);
 
     /* if there's no running radvd, just start it */
     radvdPid = virNetworkObjGetRadvdPid(obj);
@@ -2165,14 +2118,16 @@ networkReloadFirewallRulesHelper(virNetworkObjPtr obj,
 
 
 static void
-networkReloadFirewallRules(virNetworkDriverStatePtr driver, bool startup)
+networkReloadFirewallRules(virNetworkDriverStatePtr driver,
+                           bool startup,
+                           bool force)
 {
     VIR_INFO("Reloading iptables rules");
     /* Ideally we'd not even register the driver when unprivilegd
      * but until we untangle the virt driver that's not viable */
     if (!driver->privileged)
         return;
-    networkPreReloadFirewallRules(driver, startup);
+    networkPreReloadFirewallRules(driver, startup, force);
     virNetworkObjListForEach(driver->networks,
                              networkReloadFirewallRulesHelper,
                              NULL);
@@ -2186,7 +2141,7 @@ networkEnableIPForwarding(bool enableIPv4,
                           bool enableIPv6)
 {
     int ret = 0;
-#ifdef HAVE_SYSCTLBYNAME
+#ifdef WITH_SYSCTLBYNAME
     int enabled = 1;
     if (enableIPv4)
         ret = sysctlbyname("net.inet.ip.forwarding", NULL, 0,
@@ -2206,35 +2161,49 @@ networkEnableIPForwarding(bool enableIPv4,
 
 
 static int
+networkSetIPv6Sysctl(const char *bridge,
+                     const char *sysctl_field,
+                     const char *sysctl_setting,
+                     bool ignoreMissing)
+{
+    g_autofree char *field = g_strdup_printf(SYSCTL_PATH "/net/ipv6/conf/%s/%s",
+                                             bridge, sysctl_field);
+
+    if (ignoreMissing && access(field, W_OK) < 0 && errno == ENOENT)
+        return -2;
+
+    if (virFileWriteStr(field, sysctl_setting, 0) < 0) {
+        virReportSystemError(errno,
+                             _("cannot write to '%s' on bridge '%s'"),
+                             field, bridge);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int
 networkSetIPv6Sysctls(virNetworkObjPtr obj)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    char *field = NULL;
-    int ret = -1;
     bool enableIPv6 = !!virNetworkDefGetIPByIndex(def, AF_INET6, 0);
+    int rc;
 
     /* set disable_ipv6 if there are no ipv6 addresses defined for the
      * network. But also unset it if there *are* ipv6 addresses, as we
      * can't be sure of its default value.
      */
-    field = g_strdup_printf(SYSCTL_PATH "/net/ipv6/conf/%s/disable_ipv6",
-                            def->bridge);
-
-    if (access(field, W_OK) < 0 && errno == ENOENT) {
+    rc = networkSetIPv6Sysctl(def->bridge, "disable_ipv6",
+                              enableIPv6 ? "0" : "1", true);
+    if (rc == -2) {
         if (!enableIPv6)
             VIR_DEBUG("ipv6 appears to already be disabled on %s",
                       def->bridge);
-        ret = 0;
-        goto cleanup;
+        return 0;
+    } else if (rc < 0) {
+        return -1;
     }
-
-    if (virFileWriteStr(field, enableIPv6 ? "0" : "1", 0) < 0) {
-        virReportSystemError(errno,
-                             _("cannot write to %s to enable/disable IPv6 "
-                               "on bridge %s"), field, def->bridge);
-        goto cleanup;
-    }
-    VIR_FREE(field);
 
     /* The rest of the ipv6 sysctl tunables should always be set the
      * same, whether or not we're using ipv6 on this bridge.
@@ -2243,31 +2212,16 @@ networkSetIPv6Sysctls(virNetworkObjPtr obj)
     /* Prevent guests from hijacking the host network by sending out
      * their own router advertisements.
      */
-    field = g_strdup_printf(SYSCTL_PATH "/net/ipv6/conf/%s/accept_ra",
-                            def->bridge);
-
-    if (virFileWriteStr(field, "0", 0) < 0) {
-        virReportSystemError(errno,
-                             _("cannot disable %s"), field);
-        goto cleanup;
-    }
-    VIR_FREE(field);
+    if (networkSetIPv6Sysctl(def->bridge, "accept_ra", "0", false) < 0)
+        return -1;
 
     /* All interfaces used as a gateway (which is what this is, by
      * definition), must always have autoconf=0.
      */
-    field = g_strdup_printf(SYSCTL_PATH "/net/ipv6/conf/%s/autoconf", def->bridge);
+    if (networkSetIPv6Sysctl(def->bridge, "autoconf", "0", false) < 0)
+        return -1;
 
-    if (virFileWriteStr(field, "0", 0) < 0) {
-        virReportSystemError(errno,
-                             _("cannot disable %s"), field);
-        goto cleanup;
-    }
-
-    ret = 0;
- cleanup:
-    VIR_FREE(field);
-    return ret;
+    return 0;
 }
 
 
@@ -2294,8 +2248,7 @@ networkAddAddrToBridge(virNetworkObjPtr obj,
 
 
 static int
-networkStartHandleMACTableManagerMode(virNetworkObjPtr obj,
-                                      const char *macTapIfName)
+networkStartHandleMACTableManagerMode(virNetworkObjPtr obj)
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
     const char *brname = def->bridge;
@@ -2304,12 +2257,6 @@ networkStartHandleMACTableManagerMode(virNetworkObjPtr obj,
         def->macTableManager == VIR_NETWORK_BRIDGE_MAC_TABLE_MANAGER_LIBVIRT) {
         if (virNetDevBridgeSetVlanFiltering(brname, true) < 0)
             return -1;
-        if (macTapIfName) {
-            if (virNetDevBridgePortSetLearning(brname, macTapIfName, false) < 0)
-                return -1;
-            if (virNetDevBridgePortSetUnicastFlood(brname, macTapIfName, false) < 0)
-                return -1;
-        }
     }
     return 0;
 }
@@ -2340,32 +2287,6 @@ networkAddRouteToBridge(virNetworkObjPtr obj,
     return 0;
 }
 
-static int
-networkWaitDadFinish(virNetworkObjPtr obj)
-{
-    virNetworkDefPtr def = virNetworkObjGetDef(obj);
-    virNetworkIPDefPtr ipdef;
-    virSocketAddrPtr *addrs = NULL, addr = NULL;
-    size_t naddrs = 0;
-    int ret = -1;
-
-    VIR_DEBUG("Begin waiting for IPv6 DAD on network %s", def->name);
-
-    while ((ipdef = virNetworkDefGetIPByIndex(def, AF_INET6, naddrs))) {
-        addr = &ipdef->address;
-        if (VIR_APPEND_ELEMENT_COPY(addrs, naddrs, addr) < 0)
-            goto cleanup;
-    }
-
-    ret = (naddrs == 0) ? 0 : virNetDevIPWaitDadFinish(addrs, naddrs);
-
- cleanup:
-    VIR_FREE(addrs);
-    VIR_DEBUG("Finished waiting for IPv6 DAD on network %s with status %d",
-              def->name, ret);
-    return ret;
-}
-
 
 static int
 networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
@@ -2377,10 +2298,8 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
     virErrorPtr save_err = NULL;
     virNetworkIPDefPtr ipdef;
     virNetDevIPRoutePtr routedef;
-    char *macTapIfName = NULL;
     virMacMapPtr macmap;
-    char *macMapFile = NULL;
-    int tapfd = -1;
+    g_autofree char *macMapFile = NULL;
     bool dnsmasqStarted = false;
     bool devOnline = false;
     bool firewalRulesAdded = false;
@@ -2407,30 +2326,6 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
     if (virNetDevBridgeCreate(def->bridge, &def->mac) < 0)
         return -1;
 
-    if (def->mac_specified) {
-        /* To set a mac for the bridge, we need to define a dummy tap
-         * device, set its mac, then attach it to the bridge. As long
-         * as its mac address is lower than any other interface that
-         * gets attached, the bridge will always maintain this mac
-         * address.
-         */
-        macTapIfName = networkBridgeDummyNicName(def->bridge);
-        if (!macTapIfName)
-            goto error;
-        /* Keep tun fd open and interface up to allow for IPv6 DAD to happen */
-        if (virNetDevTapCreateInBridgePort(def->bridge,
-                                           &macTapIfName, &def->mac,
-                                           NULL, NULL, &tapfd, 1, NULL, NULL,
-                                           VIR_TRISTATE_BOOL_NO,
-                                           NULL, def->mtu, NULL,
-                                           VIR_NETDEV_TAP_CREATE_USE_MAC_FOR_BRIDGE |
-                                           VIR_NETDEV_TAP_CREATE_IFUP |
-                                           VIR_NETDEV_TAP_CREATE_PERSIST) < 0) {
-            VIR_FREE(macTapIfName);
-            goto error;
-        }
-    }
-
     if (!(macMapFile = virMacMapFileName(driver->dnsmasqStateDir,
                                          def->bridge)) ||
         !(macmap = virMacMapNew(macMapFile)))
@@ -2440,6 +2335,9 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
     macmap = NULL;
 
     /* Set bridge options */
+
+    if (def->mtu && virNetDevSetMTU(def->bridge, def->mtu) < 0)
+        goto error;
 
     /* delay is configured in seconds, but virNetDevBridgeSetSTPDelay
      * expects milliseconds
@@ -2474,11 +2372,11 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
             goto error;
     }
 
-    if (networkStartHandleMACTableManagerMode(obj, macTapIfName) < 0)
+    if (networkStartHandleMACTableManagerMode(obj) < 0)
         goto error;
 
     /* Bring up the bridge interface */
-    if (virNetDevSetOnline(def->bridge, 1) < 0)
+    if (virNetDevSetOnline(def->bridge, true) < 0)
         goto error;
 
     devOnline = true;
@@ -2524,26 +2422,8 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
     if (v6present && networkStartRadvd(driver, obj) < 0)
         goto error;
 
-    /* dnsmasq does not wait for DAD to complete before daemonizing,
-     * so we need to wait for it ourselves.
-     */
-    if (v6present && networkWaitDadFinish(obj) < 0)
-        goto error;
-
-    /* DAD has finished, dnsmasq is now bound to the
-     * bridge's IPv6 address, so we can set the dummy tun down.
-     */
-    if (tapfd >= 0) {
-        if (virNetDevSetOnline(macTapIfName, false) < 0)
-            goto error;
-        VIR_FORCE_CLOSE(tapfd);
-    }
-
     if (virNetDevBandwidthSet(def->bridge, def->bandwidth, true, true) < 0)
         goto error;
-
-    VIR_FREE(macTapIfName);
-    VIR_FREE(macMapFile);
 
     return 0;
 
@@ -2559,24 +2439,17 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
     }
 
     if (devOnline)
-        ignore_value(virNetDevSetOnline(def->bridge, 0));
+        ignore_value(virNetDevSetOnline(def->bridge, false));
 
     if (firewalRulesAdded &&
         def->forward.type != VIR_NETWORK_FORWARD_OPEN)
         networkRemoveFirewallRules(def);
 
-    if (macTapIfName) {
-        VIR_FORCE_CLOSE(tapfd);
-        ignore_value(virNetDevTapDelete(macTapIfName, NULL));
-        VIR_FREE(macTapIfName);
-    }
     virNetworkObjUnrefMacMap(obj);
-    VIR_FREE(macMapFile);
 
     ignore_value(virNetDevBridgeDelete(def->bridge));
 
     virErrorRestore(&save_err);
-    /* coverity[leaked_handle] - 'tapfd' is not leaked */
     return -1;
 }
 
@@ -2596,29 +2469,29 @@ networkShutdownNetworkVirtual(virNetworkDriverStatePtr driver,
 
     radvdPid = virNetworkObjGetRadvdPid(obj);
     if (radvdPid > 0) {
-        char *radvdpidbase;
+        g_autofree char *radvdpidbase = NULL;
 
         kill(radvdPid, SIGTERM);
         /* attempt to delete the pidfile we created */
-        if ((radvdpidbase = networkRadvdPidfileBasename(def->name))) {
+        if ((radvdpidbase = networkRadvdPidfileBasename(def->name)))
             virPidFileDelete(driver->pidDir, radvdpidbase);
-            VIR_FREE(radvdpidbase);
-        }
     }
 
     dnsmasqPid = virNetworkObjGetDnsmasqPid(obj);
     if (dnsmasqPid > 0)
         kill(dnsmasqPid, SIGTERM);
 
+    /* We no longer create a dummy NIC, but if we've upgraded
+     * from old libvirt, we still need to delete any dummy NIC
+     * that might exist. Keep this logic around for a while...
+     */
     if (def->mac_specified) {
-        char *macTapIfName = networkBridgeDummyNicName(def->bridge);
-        if (macTapIfName) {
+        g_autofree char *macTapIfName = networkBridgeDummyNicName(def->bridge);
+        if (macTapIfName && virNetDevExists(macTapIfName))
             ignore_value(virNetDevTapDelete(macTapIfName, NULL));
-            VIR_FREE(macTapIfName);
-        }
     }
 
-    ignore_value(virNetDevSetOnline(def->bridge, 0));
+    ignore_value(virNetDevSetOnline(def->bridge, false));
 
     if (def->forward.type != VIR_NETWORK_FORWARD_OPEN)
         networkRemoveFirewallRules(def);
@@ -2654,7 +2527,7 @@ networkStartNetworkBridge(virNetworkObjPtr obj)
     if (virNetDevBandwidthSet(def->bridge, def->bandwidth, true, true) < 0)
         goto error;
 
-    if (networkStartHandleMACTableManagerMode(obj, NULL) < 0)
+    if (networkStartHandleMACTableManagerMode(obj) < 0)
         goto error;
 
     return 0;
@@ -2709,8 +2582,7 @@ networkCreateInterfacePool(virNetworkDefPtr netdef)
         goto cleanup;
     }
 
-    if (VIR_ALLOC_N(netdef->forward.ifs, numVirtFns) < 0)
-        goto cleanup;
+    netdef->forward.ifs = g_new0(virNetworkForwardIfDef, numVirtFns);
 
     for (i = 0; i < numVirtFns; i++) {
         virPCIDeviceAddressPtr thisVirtFn = virtFns[i];
@@ -2776,19 +2648,19 @@ networkCreateInterfacePool(virNetworkDefPtr netdef)
         for (i = 0; i < netdef->forward.nifs; i++) {
             if (netdef->forward.ifs[i].type
                 == VIR_NETWORK_FORWARD_HOSTDEV_DEVICE_NETDEV)
-                VIR_FREE(netdef->forward.ifs[i].device.dev);
+                g_free(netdef->forward.ifs[i].device.dev);
         }
         netdef->forward.nifs = 0;
     }
     if (netdef->forward.nifs == 0)
-        VIR_FREE(netdef->forward.ifs);
+        g_clear_pointer(&netdef->forward.ifs, g_free);
 
     for (i = 0; i < numVirtFns; i++) {
-        VIR_FREE(vfNames[i]);
-        VIR_FREE(virtFns[i]);
+        g_free(vfNames[i]);
+        g_free(virtFns[i]);
     }
-    VIR_FREE(vfNames);
-    VIR_FREE(virtFns);
+    g_free(vfNames);
+    g_free(virtFns);
     return ret;
 }
 
@@ -2922,7 +2794,7 @@ networkShutdownNetwork(virNetworkDriverStatePtr driver,
 {
     virNetworkDefPtr def = virNetworkObjGetDef(obj);
     int ret = 0;
-    char *stateFile;
+    g_autofree char *stateFile = NULL;
 
     VIR_INFO("Shutting down network '%s'", def->name);
 
@@ -2934,7 +2806,6 @@ networkShutdownNetwork(virNetworkDriverStatePtr driver,
         return -1;
 
     unlink(stateFile);
-    VIR_FREE(stateFile);
 
     switch ((virNetworkForwardType) def->forward.type) {
 
@@ -3206,8 +3077,7 @@ static int
 networkFindUnusedBridgeName(virNetworkObjListPtr nets,
                             virNetworkDefPtr def)
 {
-    int ret = -1, id = 0;
-    char *newname = NULL;
+    int id = 0;
     const char *templ = "virbr%d";
     const char *p;
 
@@ -3217,7 +3087,8 @@ networkFindUnusedBridgeName(virNetworkObjListPtr nets,
         templ = def->bridge;
 
     do {
-        newname = g_strdup_printf(templ, id);
+        g_autofree char *newname = g_strdup_printf(templ, id);
+
         /* check if this name is used in another libvirt network or
          * there is an existing device with that name. ignore errors
          * from virNetDevExists(), just in case it isn't implemented
@@ -3225,22 +3096,16 @@ networkFindUnusedBridgeName(virNetworkObjListPtr nets,
          */
         if (!(virNetworkObjBridgeInUse(nets, newname, def->name) ||
               virNetDevExists(newname) == 1)) {
-            VIR_FREE(def->bridge); /*could contain template */
-            def->bridge = newname;
-            ret = 0;
-            goto cleanup;
+            g_free(def->bridge); /*could contain template */
+            def->bridge = g_steal_pointer(&newname);
+            return 0;
         }
-        VIR_FREE(newname);
     } while (++id <= MAX_BRIDGE_ID);
 
     virReportError(VIR_ERR_INTERNAL_ERROR,
                    _("Bridge generation exceeded max id %d"),
                    MAX_BRIDGE_ID);
-    ret = 0;
- cleanup:
-    if (ret < 0)
-        VIR_FREE(newname);
-    return ret;
+    return -1;
 }
 
 
@@ -3255,20 +3120,27 @@ static int
 networkBridgeNameValidate(virNetworkObjListPtr nets,
                           virNetworkDefPtr def)
 {
+    virMutexLock(&bridgeNameValidateMutex);
+
     if (def->bridge && !strstr(def->bridge, "%d")) {
         if (virNetworkObjBridgeInUse(nets, def->bridge, def->name)) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("bridge name '%s' already in use."),
                            def->bridge);
-            return -1;
+            goto error;
         }
     } else {
         /* Allocate a bridge name */
         if (networkFindUnusedBridgeName(nets, def) < 0)
-            return -1;
+            goto error;
     }
 
+    virMutexUnlock(&bridgeNameValidateMutex);
     return 0;
+
+ error:
+    virMutexUnlock(&bridgeNameValidateMutex);
+    return -1;
 }
 
 
@@ -3383,7 +3255,7 @@ networkValidate(virNetworkDriverStatePtr driver,
      */
     for (i = 0; i < def->forward.nifs; i++) {
         virNetworkForwardIfDefPtr iface = &def->forward.ifs[i];
-        char *sysfs_path = NULL;
+        g_autofree char *sysfs_path = NULL;
 
         switch ((virNetworkForwardHostdevDeviceType)iface->type) {
         case VIR_NETWORK_FORWARD_HOSTDEV_DEVICE_NETDEV:
@@ -3424,10 +3296,8 @@ networkValidate(virNetworkDriverStatePtr driver,
                                _("device '%s' in network '%s' is not "
                                  "an SR-IOV Virtual Function"),
                                sysfs_path, def->name);
-                VIR_FREE(sysfs_path);
                 return -1;
             }
-            VIR_FREE(sysfs_path);
             break;
         }
 
@@ -4103,7 +3973,8 @@ networkSetAutostart(virNetworkPtr net,
     virNetworkDriverStatePtr driver = networkGetDriver();
     virNetworkObjPtr obj;
     virNetworkDefPtr def;
-    char *configFile = NULL, *autostartLink = NULL;
+    g_autofree char *configFile = NULL;
+    g_autofree char *autostartLink = NULL;
     bool new_autostart;
     bool cur_autostart;
     int ret = -1;
@@ -4160,8 +4031,6 @@ networkSetAutostart(virNetworkPtr net,
     ret = 0;
 
  cleanup:
-    VIR_FREE(configFile);
-    VIR_FREE(autostartLink);
     virNetworkObjEndAPI(&obj);
     return ret;
 }
@@ -4174,24 +4043,16 @@ networkGetDHCPLeases(virNetworkPtr net,
                      unsigned int flags)
 {
     virNetworkDriverStatePtr driver = networkGetDriver();
-    size_t i, j;
+    size_t i;
     size_t nleases = 0;
     int rv = -1;
     size_t size = 0;
-    int custom_lease_file_len = 0;
     bool need_results = !!leases;
     long long currtime = 0;
-    long long expirytime_tmp = -1;
-    bool ipv6 = false;
-    char *lease_entries = NULL;
-    char *custom_lease_file = NULL;
-    const char *ip_tmp = NULL;
-    const char *mac_tmp = NULL;
-    virJSONValuePtr lease_tmp = NULL;
-    virJSONValuePtr leases_array = NULL;
-    virNetworkIPDefPtr ipdef_tmp = NULL;
-    virNetworkDHCPLeasePtr lease = NULL;
-    virNetworkDHCPLeasePtr *leases_ret = NULL;
+    g_autofree char *lease_entries = NULL;
+    g_autofree char *custom_lease_file = NULL;
+    g_autoptr(virJSONValue) leases_array = NULL;
+    g_autofree virNetworkDHCPLeasePtr *leases_ret = NULL;
     virNetworkObjPtr obj;
     virNetworkDefPtr def;
     virMacAddr mac_addr;
@@ -4215,9 +4076,9 @@ networkGetDHCPLeases(virNetworkPtr net,
     custom_lease_file = networkDnsmasqLeaseFileNameCustom(driver, def->bridge);
 
     /* Read entire contents */
-    if ((custom_lease_file_len = virFileReadAllQuiet(custom_lease_file,
-                                                     VIR_NETWORK_DHCP_LEASE_FILE_SIZE_MAX,
-                                                     &lease_entries)) < 0) {
+    if (virFileReadAllQuiet(custom_lease_file,
+                            VIR_NETWORK_DHCP_LEASE_FILE_SIZE_MAX,
+                            &lease_entries) < 0) {
         /* Not all networks are guaranteed to have leases file.
          * Only those which run dnsmasq. Therefore, if we failed
          * to read the leases file, don't report error. Return 0
@@ -4229,31 +4090,38 @@ networkGetDHCPLeases(virNetworkPtr net,
                                  _("Unable to read leases file: %s"),
                                  custom_lease_file);
         }
-        goto error;
+        goto cleanup;
     }
 
-    if (custom_lease_file_len) {
-        if (!(leases_array = virJSONValueFromString(lease_entries))) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("invalid json in file: %s"), custom_lease_file);
-            goto error;
-        }
-
-        if (!virJSONValueIsArray(leases_array)) {
-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                           _("Malformed lease_entries array"));
-            goto error;
-        }
-        size = virJSONValueArraySize(leases_array);
+    if (STREQ(lease_entries, "")) {
+        rv = 0;
+        goto cleanup;
     }
+
+    if (!(leases_array = virJSONValueFromString(lease_entries))) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("invalid json in file: %s"), custom_lease_file);
+        goto cleanup;
+    }
+
+    if (!virJSONValueIsArray(leases_array)) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Malformed lease_entries array"));
+        goto cleanup;
+    }
+    size = virJSONValueArraySize(leases_array);
 
     currtime = (long long)time(NULL);
 
     for (i = 0; i < size; i++) {
-        if (!(lease_tmp = virJSONValueArrayGet(leases_array, i))) {
+        virJSONValuePtr lease_tmp = virJSONValueArrayGet(leases_array, i);
+        long long expirytime_tmp = -1;
+        const char *mac_tmp = NULL;
+
+        if (!lease_tmp) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("failed to parse json"));
-            goto error;
+            goto cleanup;
         }
 
         if (!(mac_tmp = virJSONValueObjectGetString(lease_tmp, "mac-address"))) {
@@ -4261,7 +4129,7 @@ networkGetDHCPLeases(virNetworkPtr net,
              * mac-address is known otherwise not */
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("found lease without mac-address"));
-            goto error;
+            goto cleanup;
         }
 
         if (mac && virMacAddrCompare(mac, mac_tmp))
@@ -4271,16 +4139,18 @@ networkGetDHCPLeases(virNetworkPtr net,
             /* A lease cannot be present without expiry-time */
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("found lease without expiry-time"));
-            goto error;
+            goto cleanup;
         }
 
         /* Do not report expired lease */
-        if (expirytime_tmp < currtime)
+        if (expirytime_tmp > 0 && expirytime_tmp < currtime)
             continue;
 
         if (need_results) {
-            if (VIR_ALLOC(lease) < 0)
-                goto error;
+            g_autoptr(virNetworkDHCPLease) lease = g_new0(virNetworkDHCPLease, 1);
+            const char *ip_tmp = NULL;
+            bool ipv6 = false;
+            size_t j;
 
             lease->expirytime = expirytime_tmp;
 
@@ -4288,7 +4158,7 @@ networkGetDHCPLeases(virNetworkPtr net,
                 /* A lease without ip-address makes no sense */
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("found lease without ip-address"));
-                goto error;
+                goto cleanup;
             }
 
             /* Unlike IPv4, IPv6 uses ':' instead of '.' as separator */
@@ -4297,7 +4167,7 @@ networkGetDHCPLeases(virNetworkPtr net,
 
             /* Obtain prefix */
             for (j = 0; j < def->nips; j++) {
-                ipdef_tmp = &def->ips[j];
+                virNetworkIPDefPtr ipdef_tmp = &def->ips[j];
 
                 if (ipv6 && VIR_SOCKET_ADDR_IS_FAMILY(&ipdef_tmp->address,
                                                       AF_INET6)) {
@@ -4305,7 +4175,7 @@ networkGetDHCPLeases(virNetworkPtr net,
                     break;
                 }
                 if (!ipv6 && VIR_SOCKET_ADDR_IS_FAMILY(&ipdef_tmp->address,
-                                                      AF_INET)) {
+                                                       AF_INET)) {
                     lease->prefix = virSocketAddrGetIPPrefix(&ipdef_tmp->address,
                                                              &ipdef_tmp->netmask,
                                                              ipdef_tmp->prefix);
@@ -4322,42 +4192,29 @@ networkGetDHCPLeases(virNetworkPtr net,
             lease->clientid = g_strdup(virJSONValueObjectGetString(lease_tmp, "client-id"));
             lease->hostname = g_strdup(virJSONValueObjectGetString(lease_tmp, "hostname"));
 
-            if (VIR_INSERT_ELEMENT(leases_ret, nleases, nleases, lease) < 0)
-                goto error;
+            if (VIR_APPEND_ELEMENT(leases_ret, nleases, lease) < 0)
+                goto cleanup;
 
         } else {
             nleases++;
         }
-
-        VIR_FREE(lease);
     }
 
     if (leases_ret) {
         /* NULL terminated array */
-        ignore_value(VIR_REALLOC_N(leases_ret, nleases + 1));
-        *leases = leases_ret;
-        leases_ret = NULL;
+        leases_ret = g_renew(virNetworkDHCPLeasePtr, leases_ret, nleases + 1);
+        *leases = g_steal_pointer(&leases_ret);
     }
 
     rv = nleases;
 
  cleanup:
-    VIR_FREE(lease);
-    VIR_FREE(lease_entries);
-    VIR_FREE(custom_lease_file);
-    virJSONValueFree(leases_array);
-
     virNetworkObjEndAPI(&obj);
-
-    return rv;
-
- error:
     if (leases_ret) {
         for (i = 0; i < nleases; i++)
             virNetworkDHCPLeaseFree(leases_ret[i]);
-        VIR_FREE(leases_ret);
     }
-    goto cleanup;
+    return rv;
 }
 
 
@@ -4479,7 +4336,7 @@ networkAllocatePort(virNetworkObjPtr obj,
                 return -1;
     }
     if (portprofile) {
-        VIR_FREE(port->virtPortProfile);
+        g_free(port->virtPortProfile);
         port->virtPortProfile = portprofile;
     }
 
@@ -5541,7 +5398,7 @@ networkPortSetParameters(virNetworkPortPtr port,
     virNetworkDefPtr def;
     virNetworkPortDefPtr portdef;
     virNetDevBandwidthPtr bandwidth = NULL;
-    char *dir = NULL;
+    g_autofree char *dir = NULL;
     int ret = -1;
     size_t i;
 
@@ -5568,10 +5425,9 @@ networkPortSetParameters(virNetworkPortPtr port,
     if (!(dir = virNetworkObjGetPortStatusDir(obj, driver->stateDir)))
         goto cleanup;
 
-    if ((VIR_ALLOC(bandwidth) < 0) ||
-        (VIR_ALLOC(bandwidth->in) < 0) ||
-        (VIR_ALLOC(bandwidth->out) < 0))
-        goto cleanup;
+    bandwidth = g_new0(virNetDevBandwidth, 1);
+    bandwidth->in = g_new0(virNetDevBandwidthRate, 1);
+    bandwidth->out = g_new0(virNetDevBandwidthRate, 1);
 
     for (i = 0; i < nparams; i++) {
         virTypedParameterPtr param = &params[i];
@@ -5597,9 +5453,10 @@ networkPortSetParameters(virNetworkPortPtr port,
      * So if no average or floor is given, we free inbound/outbound
      * here which causes inbound/outbound to not be set. */
     if (!bandwidth->in->average && !bandwidth->in->floor)
-        VIR_FREE(bandwidth->in);
+        g_clear_pointer(&bandwidth->in, g_free);
+
     if (!bandwidth->out->average)
-        VIR_FREE(bandwidth->out);
+        g_clear_pointer(&bandwidth->out, g_free);
 
     if (networkUpdatePortBandwidth(obj,
                                    &portdef->mac,
@@ -5619,7 +5476,6 @@ networkPortSetParameters(virNetworkPortPtr port,
  cleanup:
     virNetDevBandwidthFree(bandwidth);
     virNetworkObjEndAPI(&obj);
-    VIR_FREE(dir);
     return ret;
 }
 

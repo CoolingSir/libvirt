@@ -89,11 +89,10 @@ double virRandom(void)
  */
 uint32_t virRandomInt(uint32_t max)
 {
-    if ((max & (max - 1)) == 0)
+    if (VIR_IS_POW2(max))
         return virRandomBits(__builtin_ffs(max) - 1);
 
-    double val = virRandom();
-    return val * max;
+    return virRandom() * max;
 }
 
 

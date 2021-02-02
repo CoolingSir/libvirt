@@ -76,8 +76,7 @@ virStorageBackendFileSystemNetFindPoolSourcesFunc(char **const groups,
     if (!(src = virStoragePoolSourceListNewSource(&state->list)))
         return -1;
 
-    if (VIR_ALLOC_N(src->hosts, 1) < 0)
-        return -1;
+    src->hosts = g_new0(virStoragePoolSourceHost, 1);
     src->nhost = 1;
 
     src->hosts[0].name = g_strdup(state->host);
@@ -245,7 +244,6 @@ virStorageBackendFileSystemIsMounted(virStoragePoolObjPtr pool)
     FILE *mtab;
     struct mntent ent;
     char buf[1024];
-    int rc1, rc2;
     g_autofree char *src = NULL;
 
     if ((mtab = fopen(_PATH_MOUNTED, "r")) == NULL) {
@@ -262,11 +260,8 @@ virStorageBackendFileSystemIsMounted(virStoragePoolObjPtr pool)
         /* compare both mount destinations and sources to be sure the mounted
          * FS pool is really the one we're looking for
          */
-        if ((rc1 = virFileComparePaths(ent.mnt_dir, def->target.path)) < 0 ||
-            (rc2 = virFileComparePaths(ent.mnt_fsname, src)) < 0)
-            goto cleanup;
-
-        if (rc1 && rc2) {
+        if (virFileComparePaths(ent.mnt_dir, def->target.path) &&
+            virFileComparePaths(ent.mnt_fsname, src)) {
             ret = 1;
             goto cleanup;
         }
@@ -580,9 +575,8 @@ virStoragePoolDefFSNamespaceParse(xmlXPathContextPtr ctxt,
     if (nnodes == 0)
         return 0;
 
-    if (VIR_ALLOC(cmdopts) < 0 ||
-        VIR_ALLOC_N(cmdopts->options, nnodes) < 0)
-        goto cleanup;
+    cmdopts = g_new0(virStoragePoolFSMountOptionsDef, 1);
+    cmdopts->options = g_new0(char *, nnodes);
 
     for (i = 0; i < nnodes; i++) {
         if (!(cmdopts->options[cmdopts->noptions] =

@@ -86,6 +86,7 @@ virDomainCheckpointDefFormat;
 virDomainCheckpointDefNew;
 virDomainCheckpointDefParseString;
 virDomainCheckpointFormatConvertXMLFlags;
+virDomainCheckpointRedefineCommit;
 virDomainCheckpointRedefinePrep;
 virDomainCheckpointTypeFromString;
 virDomainCheckpointTypeToString;
@@ -95,6 +96,7 @@ virDomainCheckpointTypeToString;
 virCPUCacheModeTypeFromString;
 virCPUCacheModeTypeToString;
 virCPUDefAddFeature;
+virCPUDefAddFeatureIfMissing;
 virCPUDefCheckFeatures;
 virCPUDefCopy;
 virCPUDefCopyModel;
@@ -128,6 +130,7 @@ virDeviceInfoPCIAddressIsWanted;
 virDomainDeviceAddressIsValid;
 virDomainDeviceAddressTypeToString;
 virDomainDeviceCcidAddressParseXML;
+virDomainDeviceCCWAddressEqual;
 virDomainDeviceCCWAddressIsValid;
 virDomainDeviceCCWAddressParseXML;
 virDomainDeviceDriveAddressParseXML;
@@ -143,6 +146,7 @@ virPCIDeviceAddressParseXML;
 
 # conf/domain_addr.h
 virDomainCCWAddressAssign;
+virDomainCCWAddressAsString;
 virDomainCCWAddressSetCreateFromDomain;
 virDomainCCWAddressSetFree;
 virDomainPCIAddressBusIsFullyReserved;
@@ -209,7 +213,6 @@ virDomainCapsCPUModelsGet;
 virDomainCapsCPUModelsNew;
 virDomainCapsCPUUsableTypeFromString;
 virDomainCapsCPUUsableTypeToString;
-virDomainCapsDeviceDefValidate;
 virDomainCapsEnumClear;
 virDomainCapsEnumSet;
 virDomainCapsFormat;
@@ -223,7 +226,8 @@ virDiskNameParse;
 virDiskNameToBusDeviceIndex;
 virDiskNameToIndex;
 virDomainActualNetDefFree;
-virDomainActualNetDefValidate;
+virDomainAudioTypeTypeFromString;
+virDomainAudioTypeTypeToString;
 virDomainBlockedReasonTypeFromString;
 virDomainBlockedReasonTypeToString;
 virDomainBlockIoTuneInfoCopy;
@@ -235,6 +239,8 @@ virDomainBlockIoTuneInfoHasMaxLength;
 virDomainBootTypeFromString;
 virDomainBootTypeToString;
 virDomainCapabilitiesPolicyTypeToString;
+virDomainCFPCTypeFromString;
+virDomainCFPCTypeToString;
 virDomainChrConsoleTargetTypeFromString;
 virDomainChrConsoleTargetTypeToString;
 virDomainChrDefForeach;
@@ -294,6 +300,7 @@ virDomainDefCheckABIStability;
 virDomainDefCheckABIStabilityFlags;
 virDomainDefCompatibleDevice;
 virDomainDefCopy;
+virDomainDefFindAudioForSound;
 virDomainDefFindDevice;
 virDomainDefFormat;
 virDomainDefFormatConvertXMLFlags;
@@ -334,7 +341,6 @@ virDomainDefSave;
 virDomainDefSetMemoryTotal;
 virDomainDefSetVcpus;
 virDomainDefSetVcpusMax;
-virDomainDefValidate;
 virDomainDefVcpuOrderClear;
 virDomainDeleteConfig;
 virDomainDeviceAliasIsUserAlias;
@@ -346,7 +352,6 @@ virDomainDeviceGetInfo;
 virDomainDeviceInfoIterate;
 virDomainDeviceSetData;
 virDomainDeviceTypeToString;
-virDomainDeviceValidateAliasForHotplug;
 virDomainDiskBackingStoreFormat;
 virDomainDiskBackingStoreParse;
 virDomainDiskBusTypeToString;
@@ -395,6 +400,7 @@ virDomainDiskSourceFormat;
 virDomainDiskTranslateSourcePool;
 virDomainFeatureTypeFromString;
 virDomainFeatureTypeToString;
+virDomainFSAccessModeTypeToString;
 virDomainFSCacheModeTypeToString;
 virDomainFSDefFree;
 virDomainFSDefNew;
@@ -412,6 +418,7 @@ virDomainGraphicsAuthConnectedTypeFromString;
 virDomainGraphicsAuthConnectedTypeToString;
 virDomainGraphicsDefFree;
 virDomainGraphicsDefHasOpenGL;
+virDomainGraphicsDefNew;
 virDomainGraphicsGetListen;
 virDomainGraphicsGetRenderNode;
 virDomainGraphicsListenAppendAddress;
@@ -454,6 +461,8 @@ virDomainHubTypeFromString;
 virDomainHubTypeToString;
 virDomainHypervTypeFromString;
 virDomainHypervTypeToString;
+virDomainIBSTypeFromString;
+virDomainIBSTypeToString;
 virDomainInputBusTypeToString;
 virDomainInputDefFind;
 virDomainInputDefFree;
@@ -497,7 +506,6 @@ virDomainNetARPInterfaces;
 virDomainNetBandwidthUpdate;
 virDomainNetDefActualFromNetworkPort;
 virDomainNetDefActualToNetworkPort;
-virDomainNetDefClear;
 virDomainNetDefFormat;
 virDomainNetDefFree;
 virDomainNetDefNew;
@@ -581,6 +589,8 @@ virDomainRNGModelTypeToString;
 virDomainRNGRemove;
 virDomainRunningReasonTypeFromString;
 virDomainRunningReasonTypeToString;
+virDomainSBBCTypeFromString;
+virDomainSBBCTypeToString;
 virDomainSCSIDriveAddressIsUsed;
 virDomainSeclabelTypeFromString;
 virDomainSeclabelTypeToString;
@@ -591,6 +601,8 @@ virDomainShmemDefInsert;
 virDomainShmemDefRemove;
 virDomainShmemModelTypeFromString;
 virDomainShmemModelTypeToString;
+virDomainShmemRoleTypeFromString;
+virDomainShmemRoleTypeToString;
 virDomainShutdownReasonTypeFromString;
 virDomainShutdownReasonTypeToString;
 virDomainShutoffReasonTypeFromString;
@@ -649,6 +661,8 @@ virDomainWatchdogActionTypeToString;
 virDomainWatchdogDefFree;
 virDomainWatchdogModelTypeFromString;
 virDomainWatchdogModelTypeToString;
+virDomainXenPassthroughModeTypeFromString;
+virDomainXenPassthroughModeTypeToString;
 virDomainXMLOptionGetNamespace;
 virDomainXMLOptionGetSaveCookie;
 virDomainXMLOptionNew;
@@ -688,6 +702,8 @@ virDomainEventLifecycleNew;
 virDomainEventLifecycleNewFromDef;
 virDomainEventLifecycleNewFromDom;
 virDomainEventLifecycleNewFromObj;
+virDomainEventMemoryFailureNewFromDom;
+virDomainEventMemoryFailureNewFromObj;
 virDomainEventMetadataChangeNewFromDom;
 virDomainEventMetadataChangeNewFromObj;
 virDomainEventMigrationIterationNewFromDom;
@@ -723,6 +739,12 @@ virHostdevIsVFIODevice;
 virDomainConfNWFilterInstantiate;
 virDomainConfNWFilterTeardown;
 virDomainConfVMNWFilterTeardown;
+
+
+# conf/domain_validate.h
+virDomainActualNetDefValidate;
+virDomainDefValidate;
+virDomainDeviceValidateAliasForHotplug;
 
 
 # conf/interface_conf.h
@@ -770,6 +792,8 @@ virNetworkDefParseNode;
 virNetworkDefParseString;
 virNetworkDefParseXML;
 virNetworkDefUpdateSection;
+virNetworkDHCPLeaseTimeUnitTypeFromString;
+virNetworkDHCPLeaseTimeUnitTypeToString;
 virNetworkForwardTypeToString;
 virNetworkIPDefNetmask;
 virNetworkIPDefPrefix;
@@ -802,6 +826,8 @@ virNodeDeviceDefFree;
 virNodeDeviceDefParseFile;
 virNodeDeviceDefParseNode;
 virNodeDeviceDefParseString;
+virNodeDeviceGetAPMatrixDynamicCaps;
+virNodeDeviceGetCSSDynamicCaps;
 virNodeDeviceGetPCIDynamicCaps;
 virNodeDeviceGetSCSIHostCaps;
 virNodeDeviceGetSCSITargetCaps;
@@ -820,20 +846,33 @@ virNodeDeviceDeleteVport;
 virNodeDeviceGetParentName;
 
 # conf/numa_conf.h
+virDomainCacheAssociativityTypeFromString;
+virDomainCacheAssociativityTypeToString;
+virDomainCachePolicyTypeFromString;
+virDomainCachePolicyTypeToString;
 virDomainMemoryAccessTypeFromString;
 virDomainMemoryAccessTypeToString;
+virDomainMemoryLatencyTypeFromString;
+virDomainMemoryLatencyTypeToString;
 virDomainNumaCheckABIStability;
 virDomainNumaEquals;
+virDomainNumaFillCPUsInNode;
 virDomainNumaFree;
 virDomainNumaGetCPUCountTotal;
+virDomainNumaGetInterconnect;
+virDomainNumaGetInterconnectsCount;
 virDomainNumaGetMaxCPUID;
 virDomainNumaGetMemorySize;
+virDomainNumaGetNodeCache;
+virDomainNumaGetNodeCacheCount;
 virDomainNumaGetNodeCount;
 virDomainNumaGetNodeCpumask;
 virDomainNumaGetNodeDiscard;
 virDomainNumaGetNodeDistance;
+virDomainNumaGetNodeInitiator;
 virDomainNumaGetNodeMemoryAccessMode;
 virDomainNumaGetNodeMemorySize;
+virDomainNumaHasHMAT;
 virDomainNumaNew;
 virDomainNumaNodeDistanceIsUsingDefaults;
 virDomainNumaNodesDistancesAreBeingSet;
@@ -895,7 +934,6 @@ virNWFilterIPAddrMapShutdown;
 
 
 # conf/nwfilter_params.h
-virNWFilterHashTableCreate;
 virNWFilterHashTableEqual;
 virNWFilterHashTablePutAll;
 virNWFilterVarAccessGetVarName;
@@ -916,6 +954,7 @@ virNWFilterVarValueFree;
 virNWFilterVarValueGetCardinality;
 virNWFilterVarValueGetNthValue;
 virNWFilterVarValueGetSimple;
+virNWFilterVarValueHashFree;
 
 
 # conf/object_event.h
@@ -1008,10 +1047,68 @@ virStorageVolTypeFromString;
 virStorageVolTypeToString;
 
 
+# conf/storage_encryption_conf.h
+virStorageEncryptionFormat;
+virStorageEncryptionFree;
+virStorageEncryptionParseNode;
+
+
 # conf/storage_event.h
 virStoragePoolEventLifecycleNew;
 virStoragePoolEventRefreshNew;
 virStoragePoolEventStateRegisterID;
+
+
+# conf/storage_source_conf.h
+virStorageAuthDefCopy;
+virStorageAuthDefFormat;
+virStorageAuthDefFree;
+virStorageAuthDefParse;
+virStorageFileFeatureTypeFromString;
+virStorageFileFeatureTypeToString;
+virStorageFileFormatTypeFromString;
+virStorageFileFormatTypeToString;
+virStorageNetHostDefClear;
+virStorageNetHostDefCopy;
+virStorageNetHostDefFree;
+virStorageNetHostTransportTypeFromString;
+virStorageNetHostTransportTypeToString;
+virStorageNetProtocolTypeToString;
+virStoragePRDefFormat;
+virStoragePRDefFree;
+virStoragePRDefIsEqual;
+virStoragePRDefIsManaged;
+virStoragePRDefParseXML;
+virStorageSourceBackingStoreClear;
+virStorageSourceChainHasManagedPR;
+virStorageSourceChainHasNVMe;
+virStorageSourceClear;
+virStorageSourceCopy;
+virStorageSourceGetActualType;
+virStorageSourceGetSecurityLabelDef;
+virStorageSourceHasBacking;
+virStorageSourceInitChainElement;
+virStorageSourceInitiatorClear;
+virStorageSourceInitiatorCopy;
+virStorageSourceInitiatorFormatXML;
+virStorageSourceInitiatorParseXML;
+virStorageSourceIsBacking;
+virStorageSourceIsBlockLocal;
+virStorageSourceIsEmpty;
+virStorageSourceIsLocalStorage;
+virStorageSourceIsRelative;
+virStorageSourceIsSameLocation;
+virStorageSourceNetCookiesValidate;
+virStorageSourceNetworkAssignDefaultPorts;
+virStorageSourceNew;
+virStorageSourceNVMeDefFree;
+virStorageSourcePoolDefFree;
+virStorageSourcePoolModeTypeFromString;
+virStorageSourcePoolModeTypeToString;
+virStorageSourcePrivateDataFormatRelPath;
+virStorageSourcePrivateDataParseRelPath;
+virStorageTypeFromString;
+virStorageTypeToString;
 
 
 # conf/virchrdev.h
@@ -1168,6 +1265,7 @@ virNodeDeviceObjListAssignDef;
 virNodeDeviceObjListExport;
 virNodeDeviceObjListFindByName;
 virNodeDeviceObjListFindBySysfsPath;
+virNodeDeviceObjListFindMediatedDeviceByUUID;
 virNodeDeviceObjListFindSCSIHostByWWNs;
 virNodeDeviceObjListFree;
 virNodeDeviceObjListGetNames;
@@ -1405,6 +1503,7 @@ virDomainCgroupSetupMemtune;
 virDomainDriverGenerateMachineName;
 virDomainDriverGenerateRootHash;
 virDomainDriverMergeBlkioDevice;
+virDomainDriverNodeDeviceGetPCIInfo;
 virDomainDriverParseBlkioDeviceStr;
 virDomainDriverSetupPersistentDefBlkioParams;
 
@@ -1452,6 +1551,7 @@ virHostdevUpdateActiveUSBDevices;
 virConnectSupportsFeature;
 virDomainMigrateBegin3;
 virDomainMigrateBegin3Params;
+virDomainMigrateCheckNotLocal;
 virDomainMigrateConfirm3;
 virDomainMigrateConfirm3Params;
 virDomainMigrateFinish;
@@ -1479,6 +1579,8 @@ virSetSharedStorageDriver;
 virStateCleanup;
 virStateInitialize;
 virStateReload;
+virStateShutdownPrepare;
+virStateShutdownWait;
 virStateStop;
 virStreamInData;
 
@@ -1524,7 +1626,9 @@ virSecurityDriverLookup;
 # security/security_manager.h
 virSecurityManagerCheckAllLabel;
 virSecurityManagerClearSocketLabel;
+virSecurityManagerDomainRestorePathLabel;
 virSecurityManagerDomainSetPathLabel;
+virSecurityManagerDomainSetPathLabelRO;
 virSecurityManagerGenLabel;
 virSecurityManagerGetBaseLabel;
 virSecurityManagerGetDOI;
@@ -1569,6 +1673,49 @@ virSecurityManagerTransactionStart;
 virSecurityManagerVerify;
 
 
+# security/security_util.h
+virSecurityXATTRNamespaceDefined;
+
+
+# storage_file/storage_file_backend.h
+virStorageFileBackendRegister;
+
+
+# storage_file/storage_file_probe.h
+virStorageFileProbeFormat;
+virStorageFileProbeGetMetadata;
+
+
+# storage_file/storage_source.h
+virStorageSourceAccess;
+virStorageSourceChainLookup;
+virStorageSourceChown;
+virStorageSourceCreate;
+virStorageSourceDeinit;
+virStorageSourceFetchRelativeBackingPath;
+virStorageSourceGetMetadata;
+virStorageSourceGetMetadataFromBuf;
+virStorageSourceGetMetadataFromFD;
+virStorageSourceGetRelativeBackingPath;
+virStorageSourceGetUniqueIdentifier;
+virStorageSourceInit;
+virStorageSourceInitAs;
+virStorageSourceNewFromBacking;
+virStorageSourceNewFromBackingAbsolute;
+virStorageSourceParseRBDColonString;
+virStorageSourceRead;
+virStorageSourceReportBrokenChain;
+virStorageSourceStat;
+virStorageSourceSupportsAccess;
+virStorageSourceSupportsBackingChainTraversal;
+virStorageSourceSupportsCreate;
+virStorageSourceSupportsSecurityDriver;
+virStorageSourceUnlink;
+virStorageSourceUpdateBackingSizes;
+virStorageSourceUpdateCapacity;
+virStorageSourceUpdatePhysicalSize;
+
+
 # util/glibcompat.h
 vir_g_canonicalize_filename;
 vir_g_fsync;
@@ -1577,8 +1724,6 @@ vir_g_strdup_vprintf;
 
 
 # util/viralloc.h
-virAlloc;
-virAllocN;
 virAllocVar;
 virDeleteElementsN;
 virDispose;
@@ -1631,7 +1776,6 @@ virAuthConfigNewData;
 virBitmapClearAll;
 virBitmapClearBit;
 virBitmapClearBitExpand;
-virBitmapCopy;
 virBitmapCountBits;
 virBitmapDataFormat;
 virBitmapEqual;
@@ -1646,8 +1790,6 @@ virBitmapLastSetBit;
 virBitmapNew;
 virBitmapNewCopy;
 virBitmapNewData;
-virBitmapNewEmpty;
-virBitmapNewQuiet;
 virBitmapNewString;
 virBitmapNextClearBit;
 virBitmapNextSetBit;
@@ -1756,6 +1898,7 @@ virCgroupHasController;
 virCgroupHasEmptyTasks;
 virCgroupKillPainfully;
 virCgroupKillRecursive;
+virCgroupNew;
 virCgroupNewDetect;
 virCgroupNewDetectMachine;
 virCgroupNewDomainPartition;
@@ -1830,6 +1973,7 @@ virCommandDaemonize;
 virCommandDoAsyncIO;
 virCommandExec;
 virCommandFree;
+virCommandGetArgList;
 virCommandGetGID;
 virCommandGetUID;
 virCommandHandshakeNotify;
@@ -1841,6 +1985,7 @@ virCommandNewVAList;
 virCommandNonblockingFDs;
 virCommandPassFD;
 virCommandPassFDGetFDIndex;
+virCommandPassFDIndex;
 virCommandRawStatus;
 virCommandRequireHandshake;
 virCommandRun;
@@ -1871,7 +2016,6 @@ virCommandToString;
 virCommandWait;
 virCommandWriteArgLog;
 virFork;
-virRun;
 
 
 # util/virconf.h
@@ -1913,25 +2057,9 @@ virDaemonSetupLogging;
 virDaemonUnixSocketPaths;
 
 
-# util/virdbus.h
-virDBusCallMethod;
-virDBusCloseSystemBus;
-virDBusCreateMethod;
-virDBusCreateMethodV;
-virDBusCreateReply;
-virDBusCreateReplyV;
-virDBusErrorIsUnknownMethod;
-virDBusGetSessionBus;
-virDBusGetSystemBus;
-virDBusHasSystemBus;
-virDBusMessageDecode;
-virDBusMessageEncode;
-virDBusMessageUnref;
-virDBusSetSharedBus;
-
-
 # util/virdevmapper.h
 virDevMapperGetTargets;
+virIsDevMapperDevice;
 
 
 # util/virdnsmasq.h
@@ -1947,6 +2075,7 @@ dnsmasqCapsRefresh;
 dnsmasqContextFree;
 dnsmasqContextNew;
 dnsmasqDelete;
+dnsmasqDhcpHostsToString;
 dnsmasqReload;
 dnsmasqSave;
 
@@ -2046,7 +2175,6 @@ virFileFindHugeTLBFS;
 virFileFindMountPoint;
 virFileFindResource;
 virFileFindResourceFull;
-virFileFlock;
 virFileFreeACLs;
 virFileGetACLs;
 virFileGetDefaultHugepage;
@@ -2057,6 +2185,7 @@ virFileGetXAttr;
 virFileGetXAttrQuiet;
 virFileInData;
 virFileIsCDROM;
+virFileIsClusterFS;
 virFileIsDir;
 virFileIsExecutable;
 virFileIsLink;
@@ -2091,12 +2220,14 @@ virFileRelLinkPointsTo;
 virFileRemove;
 virFileRemoveLastComponent;
 virFileRemoveXAttr;
+virFileResize;
 virFileResolveAllLinks;
 virFileResolveLink;
 virFileRewrite;
 virFileRewriteStr;
 virFileSanitizePath;
 virFileSetACLs;
+virFileSetCOW;
 virFileSetupDev;
 virFileSetXAttr;
 virFileTouch;
@@ -2122,6 +2253,7 @@ virFileCacheSetPriv;
 # util/virfirewall.h
 virFirewallAddRuleFull;
 virFirewallApply;
+virFirewallBackendSynchronize;
 virFirewallFree;
 virFirewallNew;
 virFirewallRemoveRule;
@@ -2131,7 +2263,6 @@ virFirewallRuleAddArgList;
 virFirewallRuleAddArgSet;
 virFirewallRuleGetArgCount;
 virFirewallSetBackend;
-virFirewallSetLockOverride;
 virFirewallStartRollback;
 virFirewallStartTransaction;
 
@@ -2153,6 +2284,20 @@ virFirmwareParse;
 virFirmwareParseList;
 
 
+# util/virgdbus.h
+virGDBusCallMethod;
+virGDBusCallMethodWithFD;
+virGDBusCloseSystemBus;
+virGDBusErrorIsUnknownMethod;
+virGDBusGetSessionBus;
+virGDBusGetSystemBus;
+virGDBusHasSystemBus;
+virGDBusIsServiceEnabled;
+virGDBusIsServiceRegistered;
+virGDBusMessageIsSignal;
+virGDBusSetSharedBus;
+
+
 # util/virgettext.h
 virGettextInitialize;
 
@@ -2167,9 +2312,10 @@ virHashAddEntry;
 virHashAtomicNew;
 virHashAtomicSteal;
 virHashAtomicUpdate;
-virHashCreate;
 virHashEqual;
 virHashForEach;
+virHashForEachSafe;
+virHashForEachSorted;
 virHashFree;
 virHashGetItems;
 virHashHasEntry;
@@ -2181,9 +2327,7 @@ virHashRemoveSet;
 virHashSearch;
 virHashSize;
 virHashSteal;
-virHashTableSize;
 virHashUpdateEntry;
-virHashValueFree;
 
 
 # util/virhashcode.h
@@ -2197,6 +2341,7 @@ virHookPresent;
 
 
 # util/virhostcpu.h
+virHostCPUGetAvailableCPUsBitmap;
 virHostCPUGetCount;
 virHostCPUGetInfo;
 virHostCPUGetKVMMaxVCPUs;
@@ -2206,9 +2351,11 @@ virHostCPUGetMSR;
 virHostCPUGetOnline;
 virHostCPUGetOnlineBitmap;
 virHostCPUGetPresentBitmap;
+virHostCPUGetSignature;
 virHostCPUGetStats;
 virHostCPUGetThreadsPerSubcore;
 virHostCPUHasBitmap;
+virHostCPUReadSignature;
 virHostCPUStatsAssign;
 
 
@@ -2349,6 +2496,7 @@ virJSONValueObjectAppendNumberLong;
 virJSONValueObjectAppendNumberUint;
 virJSONValueObjectAppendNumberUlong;
 virJSONValueObjectAppendString;
+virJSONValueObjectAppendStringPrintf;
 virJSONValueObjectCreate;
 virJSONValueObjectCreateVArgs;
 virJSONValueObjectDeflatten;
@@ -2365,6 +2513,7 @@ virJSONValueObjectGetNumberUint;
 virJSONValueObjectGetNumberUlong;
 virJSONValueObjectGetObject;
 virJSONValueObjectGetString;
+virJSONValueObjectGetStringArray;
 virJSONValueObjectGetValue;
 virJSONValueObjectHasKey;
 virJSONValueObjectIsNull;
@@ -2385,8 +2534,7 @@ virKeycodeValueTranslate;
 
 
 # util/virkmod.h
-virKModConfig;
-virKModIsBlacklisted;
+virKModIsProhibited;
 virKModLoad;
 virKModUnload;
 
@@ -2442,7 +2590,6 @@ virLogSetFilters;
 virLogSetFromEnv;
 virLogSetOutputs;
 virLogUnlock;
-virLogVMessage;
 
 
 # util/virmacaddr.h
@@ -2471,9 +2618,12 @@ virMacMapRemove;
 virMacMapWriteFile;
 
 # util/virmdev.h
+virMediatedDeviceAttrFree;
+virMediatedDeviceAttrNew;
 virMediatedDeviceFree;
 virMediatedDeviceGetIOMMUGroupDev;
 virMediatedDeviceGetIOMMUGroupNum;
+virMediatedDeviceGetMdevTypes;
 virMediatedDeviceGetSysfsPath;
 virMediatedDeviceGetUsedBy;
 virMediatedDeviceIsUsed;
@@ -2504,6 +2654,7 @@ virNetDevDelMulti;
 virNetDevExists;
 virNetDevFeatureTypeFromString;
 virNetDevFeatureTypeToString;
+virNetDevGenerateName;
 virNetDevGetFeatures;
 virNetDevGetIndex;
 virNetDevGetLinkInfo;
@@ -2527,6 +2678,7 @@ virNetDevIfStateTypeToString;
 virNetDevIsVirtualFunction;
 virNetDevPFGetVF;
 virNetDevReadNetConfig;
+virNetDevReserveName;
 virNetDevRunEthernetScript;
 virNetDevRxFilterFree;
 virNetDevRxFilterModeTypeFromString;
@@ -2544,9 +2696,11 @@ virNetDevSetOnline;
 virNetDevSetPromiscuous;
 virNetDevSetRcvAllMulti;
 virNetDevSetRcvMulti;
+virNetDevSetRootQDisc;
 virNetDevSetupControl;
 virNetDevSysfsFile;
 virNetDevValidateConfig;
+virNetDevVFInterfaceStats;
 
 
 # util/virnetdevbandwidth.h
@@ -2595,7 +2749,6 @@ virNetDevIPRouteGetAddress;
 virNetDevIPRouteGetGateway;
 virNetDevIPRouteGetMetric;
 virNetDevIPRouteGetPrefix;
-virNetDevIPWaitDadFinish;
 
 
 # util/virnetdevmacvlan.h
@@ -2605,8 +2758,6 @@ virNetDevMacVLanDelete;
 virNetDevMacVLanDeleteWithVPortProfile;
 virNetDevMacVLanIsMacvtap;
 virNetDevMacVLanModeTypeFromString;
-virNetDevMacVLanReleaseName;
-virNetDevMacVLanReserveName;
 virNetDevMacVLanRestartWithVPortProfile;
 virNetDevMacVLanTapOpen;
 virNetDevMacVLanTapSetup;
@@ -2625,6 +2776,7 @@ virNetDevOpenvswitchGetVhostuserIfname;
 virNetDevOpenvswitchInterfaceGetMaster;
 virNetDevOpenvswitchInterfaceParseStats;
 virNetDevOpenvswitchInterfaceStats;
+virNetDevOpenvswitchMaybeUnescapeReply;
 virNetDevOpenvswitchRemovePort;
 virNetDevOpenvswitchSetMigrateData;
 virNetDevOpenvswitchSetTimeout;
@@ -2809,10 +2961,8 @@ virPCIELinkSpeedTypeFromString;
 virPCIELinkSpeedTypeToString;
 virPCIGetDeviceAddressFromSysfsLink;
 virPCIGetHeaderType;
-virPCIGetMdevTypes;
 virPCIGetNetName;
 virPCIGetPhysicalFunction;
-virPCIGetSysfsFile;
 virPCIGetVirtualFunctionIndex;
 virPCIGetVirtualFunctionInfo;
 virPCIGetVirtualFunctions;
@@ -2821,8 +2971,8 @@ virPCIHeaderTypeToString;
 virPCIIsVirtualFunction;
 virPCIStubDriverTypeFromString;
 virPCIStubDriverTypeToString;
-virZPCIDeviceAddressIsEmpty;
-virZPCIDeviceAddressIsValid;
+virZPCIDeviceAddressIsIncomplete;
+virZPCIDeviceAddressIsPresent;
 
 
 # util/virperf.h
@@ -2902,8 +3052,8 @@ virQEMUBuildCommandLineJSON;
 virQEMUBuildCommandLineJSONArrayBitmap;
 virQEMUBuildCommandLineJSONArrayNumbered;
 virQEMUBuildDriveCommandlineFromJSON;
+virQEMUBuildNetdevCommandlineFromJSON;
 virQEMUBuildObjectCommandlineFromJSON;
-virQEMUBuildQemuImgKeySecretOpts;
 
 
 # util/virrandom.h
@@ -3063,113 +3213,18 @@ virSocketAddrSetIPv6AddrNetOrder;
 virSocketAddrSetPort;
 
 
-# util/virstorageencryption.h
-virStorageEncryptionFormat;
-virStorageEncryptionFree;
-virStorageEncryptionParseNode;
-virStorageGenerateQcowPassphrase;
-
-
 # util/virstoragefile.h
-virStorageAuthDefCopy;
-virStorageAuthDefFormat;
-virStorageAuthDefFree;
-virStorageAuthDefParse;
-virStorageFileAccess;
 virStorageFileCanonicalizePath;
-virStorageFileChainGetBroken;
-virStorageFileChainLookup;
-virStorageFileChown;
-virStorageFileCreate;
-virStorageFileDeinit;
-virStorageFileFeatureTypeFromString;
-virStorageFileFeatureTypeToString;
-virStorageFileFormatTypeFromString;
-virStorageFileFormatTypeToString;
-virStorageFileGetBackingStoreStr;
-virStorageFileGetLVMKey;
-virStorageFileGetMetadata;
-virStorageFileGetMetadataFromBuf;
-virStorageFileGetMetadataFromFD;
 virStorageFileGetNPIVKey;
-virStorageFileGetRelativeBackingPath;
 virStorageFileGetSCSIKey;
-virStorageFileGetUniqueIdentifier;
-virStorageFileInit;
-virStorageFileInitAs;
-virStorageFileIsClusterFS;
 virStorageFileParseBackingStoreStr;
-virStorageFileParseChainIndex;
-virStorageFileProbeFormat;
-virStorageFileRead;
-virStorageFileReportBrokenChain;
-virStorageFileResize;
-virStorageFileStat;
-virStorageFileSupportsAccess;
-virStorageFileSupportsBackingChainTraversal;
-virStorageFileSupportsCreate;
-virStorageFileSupportsSecurityDriver;
-virStorageFileUnlink;
-virStorageIsFile;
-virStorageIsRelative;
-virStorageNetHostDefClear;
-virStorageNetHostDefCopy;
-virStorageNetHostDefFree;
-virStorageNetHostTransportTypeFromString;
-virStorageNetHostTransportTypeToString;
-virStorageNetProtocolTypeToString;
-virStoragePRDefFormat;
-virStoragePRDefFree;
-virStoragePRDefIsEqual;
-virStoragePRDefIsManaged;
-virStoragePRDefParseXML;
-virStorageSourceBackingStoreClear;
-virStorageSourceChainHasManagedPR;
-virStorageSourceChainHasNVMe;
-virStorageSourceClear;
-virStorageSourceCopy;
-virStorageSourceFindByNodeName;
-virStorageSourceGetActualType;
-virStorageSourceGetSecurityLabelDef;
-virStorageSourceHasBacking;
-virStorageSourceInitChainElement;
-virStorageSourceInitiatorClear;
-virStorageSourceInitiatorCopy;
-virStorageSourceInitiatorFormatXML;
-virStorageSourceInitiatorParseXML;
-virStorageSourceIsBacking;
-virStorageSourceIsBlockLocal;
-virStorageSourceIsEmpty;
-virStorageSourceIsLocalStorage;
-virStorageSourceIsRelative;
-virStorageSourceIsSameLocation;
-virStorageSourceNetCookiesValidate;
-virStorageSourceNetworkAssignDefaultPorts;
-virStorageSourceNew;
-virStorageSourceNewFromBacking;
-virStorageSourceNewFromBackingAbsolute;
-virStorageSourceNVMeDefFree;
-virStorageSourceParseRBDColonString;
-virStorageSourcePoolDefFree;
-virStorageSourcePoolModeTypeFromString;
-virStorageSourcePoolModeTypeToString;
-virStorageSourcePrivateDataFormatRelPath;
-virStorageSourcePrivateDataParseRelPath;
-virStorageSourceUpdateBackingSizes;
-virStorageSourceUpdateCapacity;
-virStorageSourceUpdatePhysicalSize;
-virStorageTypeFromString;
-virStorageTypeToString;
-
-
-# util/virstoragefilebackend.h
-virStorageFileBackendRegister;
 
 
 # util/virstring.h
 virSkipSpaces;
 virSkipSpacesAndBackslash;
 virSkipSpacesBackwards;
+virSkipToDigit;
 virStrcpy;
 virStringBufferIsPrintable;
 virStringFilterChars;
@@ -3180,8 +3235,6 @@ virStringHasSuffix;
 virStringIsEmpty;
 virStringIsPrintable;
 virStringListAdd;
-virStringListAutoFree;
-virStringListFree;
 virStringListFreeCount;
 virStringListGetFirstWithPrefix;
 virStringListHasString;
@@ -3292,6 +3345,7 @@ virThreadJobSetWorker;
 
 
 # util/virthreadpool.h
+virThreadPoolDrain;
 virThreadPoolFree;
 virThreadPoolGetCurrentWorkers;
 virThreadPoolGetFreeWorkers;
@@ -3302,6 +3356,7 @@ virThreadPoolGetPriorityWorkers;
 virThreadPoolNewFull;
 virThreadPoolSendJob;
 virThreadPoolSetParameters;
+virThreadPoolStop;
 
 
 # util/virtime.h
@@ -3416,7 +3471,8 @@ virGetUserShell;
 virHostGetDRMRenderNode;
 virHostHasIOMMU;
 virIndexToDiskName;
-virIsDevMapperDevice;
+virKernelCmdlineMatchParam;
+virKernelCmdlineNextParam;
 virMemoryLimitIsSet;
 virMemoryLimitTruncate;
 virMemoryMaxValue;
@@ -3464,8 +3520,8 @@ virVsockSetGuestCid;
 
 
 # util/virxml.h
+virParseScaledValue;
 virXMLCheckIllegalChars;
-virXMLChildElementCount;
 virXMLExtractNamespaceXML;
 virXMLFormatElement;
 virXMLNodeContentString;

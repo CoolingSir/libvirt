@@ -108,8 +108,7 @@ virSecurityDACChownListAppend(virSecurityDACChownListPtr list,
     char *tmp = NULL;
     virSecurityDACChownItemPtr item = NULL;
 
-    if (VIR_ALLOC(item) < 0)
-        return -1;
+    item = g_new0(virSecurityDACChownItem, 1);
 
     tmp = g_strdup(path);
 
@@ -227,8 +226,7 @@ virSecurityDACTransactionRun(pid_t pid G_GNUC_UNUSED,
     int ret = -1;
 
     if (list->lock) {
-        if (VIR_ALLOC_N(paths, list->nItems) < 0)
-            return -1;
+        paths = g_new0(const char *, list->nItems);
 
         for (i = 0; i < list->nItems; i++) {
             virSecurityDACChownItemPtr item = list->items[i];
@@ -580,8 +578,7 @@ virSecurityDACTransactionStart(virSecurityManagerPtr mgr)
         return -1;
     }
 
-    if (VIR_ALLOC(list) < 0)
-        return -1;
+    list = g_new0(virSecurityDACChownList, 1);
 
     list->manager = virObjectRef(mgr);
 
@@ -983,14 +980,6 @@ virSecurityDACSetImageLabelRelative(virSecurityManagerPtr mgr,
         if (virSecurityDACSetImageLabelInternal(mgr, def, n, parent, isChainTop) < 0)
             return -1;
 
-        if (n->externalDataStore &&
-            virSecurityDACSetImageLabelRelative(mgr,
-                                                def,
-                                                n->externalDataStore,
-                                                parent,
-                                                flags) < 0)
-            return -1;
-
         if (!(flags & VIR_SECURITY_DOMAIN_IMAGE_LABEL_BACKING_CHAIN))
             break;
 
@@ -1090,13 +1079,6 @@ virSecurityDACRestoreImageLabelInt(virSecurityManagerPtr mgr,
     if (virSecurityDACRestoreImageLabelSingle(mgr, def, src, migrated) < 0)
         return -1;
 
-    if (src->externalDataStore &&
-        virSecurityDACRestoreImageLabelSingle(mgr,
-                                              def,
-                                              src->externalDataStore,
-                                              migrated) < 0)
-        return -1;
-
     return 0;
 }
 
@@ -1132,6 +1114,12 @@ virSecurityDACMoveImageMetadataHelper(pid_t pid G_GNUC_UNUSED,
 
     ret = virSecurityMoveRememberedLabel(SECURITY_DAC_NAME, data->src, data->dst);
     virSecurityManagerMetadataUnlock(data->mgr, &state);
+
+    if (ret == -2) {
+        /* Libvirt built without XATTRS */
+        ret = 0;
+    }
+
     return ret;
 }
 
@@ -1263,7 +1251,7 @@ virSecurityDACSetHostdevLabel(virSecurityManagerPtr mgr,
 
     switch ((virDomainHostdevSubsysType)dev->source.subsys.type) {
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_USB: {
-        virUSBDevicePtr usb;
+        g_autoptr(virUSBDevice) usb = NULL;
 
         if (dev->missing)
             return 0;
@@ -1274,42 +1262,35 @@ virSecurityDACSetHostdevLabel(virSecurityManagerPtr mgr,
         ret = virUSBDeviceFileIterate(usb,
                                       virSecurityDACSetUSBLabel,
                                       &cbdata);
-        virUSBDeviceFree(usb);
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI: {
-        virPCIDevicePtr pci =
-            virPCIDeviceNew(pcisrc->addr.domain, pcisrc->addr.bus,
-                            pcisrc->addr.slot, pcisrc->addr.function);
+        g_autoptr(virPCIDevice) pci = virPCIDeviceNew(&pcisrc->addr);
 
         if (!pci)
             return -1;
 
         if (pcisrc->backend == VIR_DOMAIN_HOSTDEV_PCI_BACKEND_VFIO) {
-            char *vfioGroupDev = virPCIDeviceGetIOMMUGroupDev(pci);
+            g_autofree char *vfioGroupDev = virPCIDeviceGetIOMMUGroupDev(pci);
 
-            if (!vfioGroupDev) {
-                virPCIDeviceFree(pci);
+            if (!vfioGroupDev)
                 return -1;
-            }
+
             ret = virSecurityDACSetHostdevLabelHelper(vfioGroupDev,
                                                       false,
                                                       &cbdata);
-            VIR_FREE(vfioGroupDev);
         } else {
             ret = virPCIDeviceFileIterate(pci,
                                           virSecurityDACSetPCILabel,
                                           &cbdata);
         }
-
-        virPCIDeviceFree(pci);
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI: {
         virDomainHostdevSubsysSCSIHostPtr scsihostsrc = &scsisrc->u.host;
-        virSCSIDevicePtr scsi =
+        g_autoptr(virSCSIDevice) scsi =
             virSCSIDeviceNew(NULL,
                              scsihostsrc->adapter, scsihostsrc->bus,
                              scsihostsrc->target, scsihostsrc->unit,
@@ -1321,13 +1302,11 @@ virSecurityDACSetHostdevLabel(virSecurityManagerPtr mgr,
         ret = virSCSIDeviceFileIterate(scsi,
                                        virSecurityDACSetSCSILabel,
                                        &cbdata);
-        virSCSIDeviceFree(scsi);
-
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI_HOST: {
-        virSCSIVHostDevicePtr host = virSCSIVHostDeviceNew(hostsrc->wwpn);
+        g_autoptr(virSCSIVHostDevice) host = virSCSIVHostDeviceNew(hostsrc->wwpn);
 
         if (!host)
             return -1;
@@ -1335,19 +1314,16 @@ virSecurityDACSetHostdevLabel(virSecurityManagerPtr mgr,
         ret = virSCSIVHostDeviceFileIterate(host,
                                             virSecurityDACSetHostLabel,
                                             &cbdata);
-        virSCSIVHostDeviceFree(host);
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_MDEV: {
-        char *vfiodev = NULL;
+        g_autofree char *vfiodev = NULL;
 
         if (!(vfiodev = virMediatedDeviceGetIOMMUGroupDev(mdevsrc->uuidstr)))
             return -1;
 
         ret = virSecurityDACSetHostdevLabelHelper(vfiodev, true, &cbdata);
-
-        VIR_FREE(vfiodev);
         break;
     }
 
@@ -1433,7 +1409,7 @@ virSecurityDACRestoreHostdevLabel(virSecurityManagerPtr mgr,
 
     switch ((virDomainHostdevSubsysType)dev->source.subsys.type) {
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_USB: {
-        virUSBDevicePtr usb;
+        g_autoptr(virUSBDevice) usb = NULL;
 
         if (dev->missing)
             return 0;
@@ -1442,21 +1418,17 @@ virSecurityDACRestoreHostdevLabel(virSecurityManagerPtr mgr,
             return -1;
 
         ret = virUSBDeviceFileIterate(usb, virSecurityDACRestoreUSBLabel, mgr);
-        virUSBDeviceFree(usb);
-
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI: {
-        virPCIDevicePtr pci =
-            virPCIDeviceNew(pcisrc->addr.domain, pcisrc->addr.bus,
-                            pcisrc->addr.slot, pcisrc->addr.function);
+        g_autoptr(virPCIDevice) pci = virPCIDeviceNew(&pcisrc->addr);
 
         if (!pci)
             return -1;
 
         if (pcisrc->backend == VIR_DOMAIN_HOSTDEV_PCI_BACKEND_VFIO) {
-            char *vfioGroupDev = virPCIDeviceGetIOMMUGroupDev(pci);
+            g_autofree char *vfioGroupDev = virPCIDeviceGetIOMMUGroupDev(pci);
 
             if (!vfioGroupDev) {
                 virPCIDeviceFree(pci);
@@ -1464,17 +1436,15 @@ virSecurityDACRestoreHostdevLabel(virSecurityManagerPtr mgr,
             }
             ret = virSecurityDACRestoreFileLabelInternal(mgr, NULL,
                                                          vfioGroupDev, false);
-            VIR_FREE(vfioGroupDev);
         } else {
             ret = virPCIDeviceFileIterate(pci, virSecurityDACRestorePCILabel, mgr);
         }
-        virPCIDeviceFree(pci);
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI: {
         virDomainHostdevSubsysSCSIHostPtr scsihostsrc = &scsisrc->u.host;
-        virSCSIDevicePtr scsi =
+        g_autoptr(virSCSIDevice) scsi =
             virSCSIDeviceNew(NULL,
                              scsihostsrc->adapter, scsihostsrc->bus,
                              scsihostsrc->target, scsihostsrc->unit,
@@ -1484,13 +1454,11 @@ virSecurityDACRestoreHostdevLabel(virSecurityManagerPtr mgr,
             return -1;
 
         ret = virSCSIDeviceFileIterate(scsi, virSecurityDACRestoreSCSILabel, mgr);
-        virSCSIDeviceFree(scsi);
-
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI_HOST: {
-        virSCSIVHostDevicePtr host = virSCSIVHostDeviceNew(hostsrc->wwpn);
+        g_autoptr(virSCSIVHostDevice) host = virSCSIVHostDeviceNew(hostsrc->wwpn);
 
         if (!host)
             return -1;
@@ -1498,19 +1466,16 @@ virSecurityDACRestoreHostdevLabel(virSecurityManagerPtr mgr,
         ret = virSCSIVHostDeviceFileIterate(host,
                                             virSecurityDACRestoreHostLabel,
                                             mgr);
-        virSCSIVHostDeviceFree(host);
-
         break;
     }
 
     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_MDEV: {
-        char *vfiodev = NULL;
+        g_autofree char *vfiodev = NULL;
 
         if (!(vfiodev = virMediatedDeviceGetIOMMUGroupDev(mdevsrc->uuidstr)))
             return -1;
 
         ret = virSecurityDACRestoreFileLabel(mgr, vfiodev);
-        VIR_FREE(vfiodev);
         break;
     }
 
@@ -1899,8 +1864,9 @@ virSecurityDACRestoreMemoryLabel(virSecurityManagerPtr mgr,
 {
     int ret = -1;
 
-    switch ((virDomainMemoryModel) mem->model) {
+    switch (mem->model) {
     case VIR_DOMAIN_MEMORY_MODEL_NVDIMM:
+    case VIR_DOMAIN_MEMORY_MODEL_VIRTIO_PMEM:
         ret = virSecurityDACRestoreFileLabel(mgr, mem->nvdimmPath);
         break;
 
@@ -1926,6 +1892,24 @@ virSecurityDACRestoreSEVLabel(virSecurityManagerPtr mgr G_GNUC_UNUSED,
 
 
 static int
+virSecurityDACRestoreSysinfoLabel(virSecurityManagerPtr mgr,
+                                  virSysinfoDefPtr def)
+{
+    size_t i;
+
+    for (i = 0; i < def->nfw_cfgs; i++) {
+        virSysinfoFWCfgDefPtr f = &def->fw_cfgs[i];
+
+        if (f->file &&
+            virSecurityDACRestoreFileLabel(mgr, f->file) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+
+static int
 virSecurityDACRestoreAllLabel(virSecurityManagerPtr mgr,
                               virDomainDefPtr def,
                               bool migrated,
@@ -1935,6 +1919,11 @@ virSecurityDACRestoreAllLabel(virSecurityManagerPtr mgr,
     virSecurityLabelDefPtr secdef;
     size_t i;
     int rc = 0;
+
+    struct _virSecuritySELinuxChardevCallbackData chardevData = {
+        .mgr = mgr,
+        .chardevStdioLogd = chardevStdioLogd,
+    };
 
     secdef = virDomainDefGetSecurityLabelDef(def, SECURITY_DAC_NAME);
 
@@ -1977,26 +1966,27 @@ virSecurityDACRestoreAllLabel(virSecurityManagerPtr mgr,
             rc = -1;
     }
 
-    struct _virSecuritySELinuxChardevCallbackData chardevData = {
-        .mgr = mgr,
-        .chardevStdioLogd = chardevStdioLogd,
-    };
-
     if (virDomainChrDefForeach(def,
                                false,
                                virSecurityDACRestoreChardevCallback,
                                &chardevData) < 0)
         rc = -1;
 
-    if (def->tpm) {
+    for (i = 0; i < def->ntpms; i++) {
         if (virSecurityDACRestoreTPMFileLabel(mgr,
                                               def,
-                                              def->tpm) < 0)
+                                              def->tpms[i]) < 0)
             rc = -1;
     }
 
     if (def->sev) {
         if (virSecurityDACRestoreSEVLabel(mgr, def) < 0)
+            rc = -1;
+    }
+
+    for (i = 0; i < def->nsysinfo; i++) {
+        if (virSecurityDACRestoreSysinfoLabel(mgr,
+                                              def->sysinfo[i]) < 0)
             rc = -1;
     }
 
@@ -2048,8 +2038,9 @@ virSecurityDACSetMemoryLabel(virSecurityManagerPtr mgr,
     uid_t user;
     gid_t group;
 
-    switch ((virDomainMemoryModel) mem->model) {
+    switch (mem->model) {
     case VIR_DOMAIN_MEMORY_MODEL_NVDIMM:
+    case VIR_DOMAIN_MEMORY_MODEL_VIRTIO_PMEM:
         seclabel = virDomainDefGetSecurityLabelDef(def, SECURITY_DAC_NAME);
         if (seclabel && !seclabel->relabel)
             return 0;
@@ -2104,9 +2095,30 @@ virSecurityDACSetSEVLabel(virSecurityManagerPtr mgr,
 
 
 static int
+virSecurityDACSetSysinfoLabel(virSecurityManagerPtr mgr,
+                              uid_t user,
+                              gid_t group,
+                              virSysinfoDefPtr def)
+{
+    size_t i;
+
+    for (i = 0; i < def->nfw_cfgs; i++) {
+        virSysinfoFWCfgDefPtr f = &def->fw_cfgs[i];
+
+        if (f->file &&
+            virSecurityDACSetOwnership(mgr, NULL, f->file,
+                                       user, group, true) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+
+static int
 virSecurityDACSetAllLabel(virSecurityManagerPtr mgr,
                           virDomainDefPtr def,
-                          const char *stdin_path G_GNUC_UNUSED,
+                          const char *incomingPath G_GNUC_UNUSED,
                           bool chardevStdioLogd,
                           bool migrated G_GNUC_UNUSED)
 {
@@ -2115,6 +2127,11 @@ virSecurityDACSetAllLabel(virSecurityManagerPtr mgr,
     size_t i;
     uid_t user;
     gid_t group;
+
+    struct _virSecuritySELinuxChardevCallbackData chardevData = {
+        .mgr = mgr,
+        .chardevStdioLogd = chardevStdioLogd,
+    };
 
     secdef = virDomainDefGetSecurityLabelDef(def, SECURITY_DAC_NAME);
 
@@ -2156,21 +2173,16 @@ virSecurityDACSetAllLabel(virSecurityManagerPtr mgr,
             return -1;
     }
 
-    struct _virSecuritySELinuxChardevCallbackData chardevData = {
-        .mgr = mgr,
-        .chardevStdioLogd = chardevStdioLogd,
-    };
-
     if (virDomainChrDefForeach(def,
                                true,
                                virSecurityDACSetChardevCallback,
                                &chardevData) < 0)
         return -1;
 
-    if (def->tpm) {
+    for (i = 0; i < def->ntpms; i++) {
         if (virSecurityDACSetTPMFileLabel(mgr,
                                           def,
-                                          def->tpm) < 0)
+                                          def->tpms[i]) < 0)
             return -1;
     }
 
@@ -2181,6 +2193,11 @@ virSecurityDACSetAllLabel(virSecurityManagerPtr mgr,
 
     if (virSecurityDACGetImageIds(secdef, priv, &user, &group))
         return -1;
+
+    for (i = 0; i < def->nsysinfo; i++) {
+        if (virSecurityDACSetSysinfoLabel(mgr, user, group, def->sysinfo[i]) < 0)
+            return -1;
+    }
 
     if (def->os.loader && def->os.loader->nvram &&
         virSecurityDACSetOwnership(mgr, NULL,
@@ -2213,39 +2230,6 @@ virSecurityDACSetAllLabel(virSecurityManagerPtr mgr,
         return -1;
 
     return 0;
-}
-
-
-static int
-virSecurityDACSetSavedStateLabel(virSecurityManagerPtr mgr,
-                                 virDomainDefPtr def,
-                                 const char *savefile)
-{
-    virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
-    virSecurityLabelDefPtr secdef;
-    uid_t user;
-    gid_t group;
-
-    secdef = virDomainDefGetSecurityLabelDef(def, SECURITY_DAC_NAME);
-
-    if (virSecurityDACGetImageIds(secdef, priv, &user, &group) < 0)
-        return -1;
-
-    return virSecurityDACSetOwnership(mgr, NULL, savefile, user, group, true);
-}
-
-
-static int
-virSecurityDACRestoreSavedStateLabel(virSecurityManagerPtr mgr,
-                                     virDomainDefPtr def G_GNUC_UNUSED,
-                                     const char *savefile)
-{
-    virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
-
-    if (!priv->dynamicOwnership)
-        return 0;
-
-    return virSecurityDACRestoreFileLabel(mgr, savefile);
 }
 
 
@@ -2548,6 +2532,15 @@ virSecurityDACDomainSetPathLabel(virSecurityManagerPtr mgr,
     return virSecurityDACSetOwnership(mgr, NULL, path, user, group, true);
 }
 
+static int
+virSecurityDACDomainRestorePathLabel(virSecurityManagerPtr mgr,
+                                     virDomainDefPtr def G_GNUC_UNUSED,
+                                     const char *path)
+{
+    return virSecurityDACRestoreFileLabel(mgr, path);
+}
+
+
 virSecurityDriver virSecurityDriverDAC = {
     .privateDataLen                     = sizeof(virSecurityDACData),
     .name                               = SECURITY_DAC_NAME,
@@ -2594,9 +2587,6 @@ virSecurityDriver virSecurityDriverDAC = {
     .domainSetSecurityHostdevLabel      = virSecurityDACSetHostdevLabel,
     .domainRestoreSecurityHostdevLabel  = virSecurityDACRestoreHostdevLabel,
 
-    .domainSetSavedStateLabel           = virSecurityDACSetSavedStateLabel,
-    .domainRestoreSavedStateLabel       = virSecurityDACRestoreSavedStateLabel,
-
     .domainSetSecurityImageFDLabel      = virSecurityDACSetImageFDLabel,
     .domainSetSecurityTapFDLabel        = virSecurityDACSetTapFDLabel,
 
@@ -2605,6 +2595,7 @@ virSecurityDriver virSecurityDriverDAC = {
     .getBaseLabel                       = virSecurityDACGetBaseLabel,
 
     .domainSetPathLabel                 = virSecurityDACDomainSetPathLabel,
+    .domainRestorePathLabel             = virSecurityDACDomainRestorePathLabel,
 
     .domainSetSecurityChardevLabel      = virSecurityDACSetChardevLabel,
     .domainRestoreSecurityChardevLabel  = virSecurityDACRestoreChardevLabel,

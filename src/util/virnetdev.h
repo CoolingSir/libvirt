@@ -18,10 +18,6 @@
 
 #pragma once
 
-#ifdef HAVE_NET_IF_H
-# include <net/if.h>
-#endif
-
 #include "virbitmap.h"
 #include "virsocketaddr.h"
 #include "virmacaddr.h"
@@ -29,7 +25,11 @@
 #include "virnetdevvlan.h"
 #include "virenum.h"
 
-#ifdef HAVE_STRUCT_IFREQ
+#ifdef WITH_NET_IF_H
+# include <net/if.h>
+#endif
+
+#ifdef WITH_STRUCT_IFREQ
 typedef struct ifreq virIfreq;
 #else
 typedef void virIfreq;
@@ -38,7 +38,13 @@ typedef void virIfreq;
 /* Used for prefix of ifname of any tap device name generated
  * dynamically by libvirt, cannot be used for a persistent network name.
  */
-#define VIR_NET_GENERATED_TAP_PREFIX "vnet"
+#define VIR_NET_GENERATED_VNET_PREFIX "vnet"
+
+/* libvirt will start macvtap/macvlan interface names with one of
+ * these prefixes when it auto-generates the name
+ */
+#define VIR_NET_GENERATED_MACVTAP_PREFIX "macvtap"
+#define VIR_NET_GENERATED_MACVLAN_PREFIX "macvlan"
 
 typedef enum {
    VIR_NETDEV_RX_FILTER_MODE_NONE = 0,
@@ -145,6 +151,21 @@ struct _virNetDevCoalesce {
     uint32_t rate_sample_interval;
 };
 
+typedef enum {
+    VIR_NET_DEV_GEN_NAME_VNET,
+    VIR_NET_DEV_GEN_NAME_MACVTAP,
+    VIR_NET_DEV_GEN_NAME_MACVLAN,
+    VIR_NET_DEV_GEN_NAME_LAST
+} virNetDevGenNameType;
+
+typedef struct _virNetDevGenName virNetDevGenName;
+typedef virNetDevGenName *virNetDevGenNamePtr;
+struct _virNetDevGenName {
+    int lastID;         /* not "unsigned" because callers use %d */
+    const char *prefix;
+    virMutex mutex;
+};
+
 
 int virNetDevSetupControl(const char *ifname,
                           virIfreq *ifr)
@@ -227,6 +248,10 @@ int virNetDevPFGetVF(const char *pfname, int vf, char **vfname)
 
 int virNetDevGetPhysPortID(const char *ifname,
                            char **physPortID)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
+    G_GNUC_WARN_UNUSED_RESULT;
+int virNetDevGetPhysPortName(const char *ifname,
+                           char **physPortName)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
     G_GNUC_WARN_UNUSED_RESULT;
 
@@ -312,4 +337,16 @@ int virNetDevSysfsFile(char **pf_sysfs_device_link,
 int virNetDevRunEthernetScript(const char *ifname, const char *script)
     G_GNUC_NO_INLINE;
 
+int virNetDevSetRootQDisc(const char *ifname,
+                          const char *qdisc)
+    G_GNUC_NO_INLINE;
+
+int virNetDevVFInterfaceStats(virPCIDeviceAddressPtr vfAddr,
+                              virDomainInterfaceStatsPtr stats)
+ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virNetDevRxFilter, virNetDevRxFilterFree);
+
+void virNetDevReserveName(const char *name);
+
+int virNetDevGenerateName(char **ifname, virNetDevGenNameType type);

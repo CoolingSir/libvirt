@@ -140,6 +140,7 @@ mymain(void)
     DO_TEST("nat-network-dns-forward-plain");
     DO_TEST("nat-network-dns-forwarders");
     DO_TEST("nat-network-dns-forwarder-no-resolv");
+    DO_TEST("nat-network-forward-nat-ipv6");
     DO_TEST("nat-network-forward-nat-address");
     DO_TEST("nat-network-forward-nat-no-address");
     DO_TEST("nat-network-mtu");
@@ -160,6 +161,10 @@ mymain(void)
     DO_TEST("metadata");
     DO_TEST("set-mtu");
     DO_TEST("dnsmasq-options");
+    DO_TEST("leasetime-seconds");
+    DO_TEST("leasetime-minutes");
+    DO_TEST("leasetime-hours");
+    DO_TEST("leasetime-infinite");
     DO_TEST("isolated-ports");
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

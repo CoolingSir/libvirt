@@ -114,7 +114,7 @@ tryLoadOne(const char *dir, bool setAppHome, bool ignoreMissing,
 
     if (hVBoxXPCOMC == NULL) {
         /*
-         * FIXME: Don't warn in this case as it currently breaks make check
+         * FIXME: Don't warn in this case as it currently breaks ninja test
          *        on systems without VirtualBox.
          */
         if (dir != NULL)
@@ -215,25 +215,6 @@ VBoxCGlueInit(unsigned int *version)
     /* No luck, return failure. */
     return -1;
 }
-
-
-/**
- * Terminate the C glue library.
- */
-void
-VBoxCGlueTerm(void)
-{
-    if (hVBoxXPCOMC != NULL) {
-#if 0 /* VBoxRT.so doesn't like being reloaded. See @bugref{3725}. */
-        dlclose(g_hVBoxXPCOMC);
-#endif
-        hVBoxXPCOMC = NULL;
-    }
-
-    pVBoxFuncs_v2_2 = NULL;
-    g_pfnGetFunctions = NULL;
-}
-
 
 
 /*

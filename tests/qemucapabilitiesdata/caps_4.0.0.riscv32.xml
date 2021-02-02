@@ -55,6 +55,7 @@
   <flag name='virtio-mmio'/>
   <flag name='ich9-intel-hda'/>
   <flag name='boot-strict'/>
+  <flag name='enable-fips'/>
   <flag name='spice-file-xfer-disable'/>
   <flag name='usb-kbd'/>
   <flag name='msg-timestamp'/>
@@ -171,14 +172,23 @@
   <flag name='migration-file-drop-cache'/>
   <flag name='drive-nvme'/>
   <flag name='storage.werror'/>
+  <flag name='tcg'/>
+  <flag name='pvscsi'/>
+  <flag name='fw_cfg'/>
+  <flag name='migration-param.bandwidth'/>
+  <flag name='migration-param.downtime'/>
+  <flag name='migration-param.xbzrle-cache-size'/>
+  <flag name='fsdev.createmode'/>
+  <flag name='dc390'/>
+  <flag name='am53c974'/>
   <version>4000000</version>
   <kvmVersion>0</kvmVersion>
   <microcodeVersion>0</microcodeVersion>
   <package>v4.0.0</package>
   <arch>riscv32</arch>
-  <machine type='tcg' name='spike_v1.10' maxCpus='1' default='yes'/>
-  <machine type='tcg' name='virt' maxCpus='8'/>
-  <machine type='tcg' name='sifive_u' maxCpus='4'/>
-  <machine type='tcg' name='sifive_e' maxCpus='1'/>
-  <machine type='tcg' name='spike_v1.9.1' maxCpus='1'/>
+  <machine type='tcg' name='spike_v1.10' maxCpus='1' default='yes' numaMemSupported='yes'/>
+  <machine type='tcg' name='virt' maxCpus='8' numaMemSupported='yes'/>
+  <machine type='tcg' name='sifive_u' maxCpus='4' numaMemSupported='yes'/>
+  <machine type='tcg' name='sifive_e' maxCpus='1' numaMemSupported='yes'/>
+  <machine type='tcg' name='spike_v1.9.1' maxCpus='1' numaMemSupported='yes'/>
 </qemuCaps>

@@ -223,14 +223,8 @@ virCopyError(virErrorPtr from,
 virErrorPtr
 virErrorCopyNew(virErrorPtr err)
 {
-    virErrorPtr ret;
-
-    if (VIR_ALLOC_QUIET(ret) < 0)
-        return NULL;
-
-    if (virCopyError(err, ret) < 0)
-        VIR_FREE(ret);
-
+    virErrorPtr ret = g_new0(virError, 1);
+    virCopyError(err, ret);
     return ret;
 }
 
@@ -241,10 +235,9 @@ virLastErrorObject(void)
     virErrorPtr err;
     err = virThreadLocalGet(&virLastErr);
     if (!err) {
-        if (VIR_ALLOC_QUIET(err) < 0)
-            return NULL;
+        err = g_new0(virError, 1);
         if (virThreadLocalSet(&virLastErr, err) < 0)
-            VIR_FREE(err);
+            g_clear_pointer(&err, g_free);
     }
     return err;
 }
@@ -404,8 +397,7 @@ virSaveLastError(void)
     virErrorPtr to;
     int saved_errno = errno;
 
-    if (VIR_ALLOC_QUIET(to) < 0)
-        return NULL;
+    to = g_new0(virError, 1);
 
     virCopyLastError(to);
     errno = saved_errno;
@@ -1235,6 +1227,12 @@ static const virErrorMsgTuple virErrorMsgStrings[] = {
     [VIR_ERR_NO_HOSTNAME] = {
         N_("no hostname found"),
         N_("no hostname found: %s") },
+    [VIR_ERR_CHECKPOINT_INCONSISTENT] = {
+        N_("checkpoint inconsistent"),
+        N_("checkpoint inconsistent: %s") },
+    [VIR_ERR_MULTIPLE_DOMAINS] = {
+        N_("multiple matching domains found"),
+        N_("multiple matching domains found: %s") },
 };
 
 G_STATIC_ASSERT(G_N_ELEMENTS(virErrorMsgStrings) == VIR_ERR_NUMBER_LAST);
@@ -1335,13 +1333,14 @@ void virReportSystemErrorFull(int domcode,
 
     if (fmt) {
         va_list args;
+        size_t len;
         int n;
 
         va_start(args, fmt);
         n = g_vsnprintf(msgDetailBuf, sizeof(msgDetailBuf), fmt, args);
         va_end(args);
 
-        size_t len = strlen(errnoDetail);
+        len = strlen(errnoDetail);
         if (0 <= n && n + 2 + len < sizeof(msgDetailBuf)) {
           strcpy(msgDetailBuf + n, ": ");
           n += 2;

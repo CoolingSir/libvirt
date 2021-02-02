@@ -66,7 +66,7 @@
  *
  *   virsh command --arg str1,str2,str3
  *
- * This does not play nicely with our completer funtions, because
+ * This does not play nicely with our completer functions, because
  * they have to return strings prepended with user's input. For
  * instance:
  *
@@ -89,8 +89,8 @@ virshCommaStringListComplete(const char *input,
 {
     const size_t optionsLen = virStringListLength(options);
     g_autofree char *inputCopy = NULL;
-    VIR_AUTOSTRINGLIST inputList = NULL;
-    VIR_AUTOSTRINGLIST ret = NULL;
+    g_auto(GStrv) inputList = NULL;
+    g_auto(GStrv) ret = NULL;
     size_t nret = 0;
     size_t i;
 
@@ -105,14 +105,13 @@ virshCommaStringListComplete(const char *input,
         if ((comma = strrchr(inputCopy, ',')))
             *comma = '\0';
         else
-            VIR_FREE(inputCopy);
+            g_clear_pointer(&inputCopy, g_free);
     }
 
     if (inputCopy && !(inputList = virStringSplit(inputCopy, ",", 0)))
         return NULL;
 
-    if (VIR_ALLOC_N(ret, optionsLen + 1) < 0)
-        return NULL;
+    ret = g_new0(char *, optionsLen + 1);
 
     for (i = 0; i < optionsLen; i++) {
         if (virStringListHasString((const char **)inputList, options[i]))

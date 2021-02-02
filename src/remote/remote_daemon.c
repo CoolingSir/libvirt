@@ -63,7 +63,7 @@
 
 #include "configmake.h"
 
-#include "virdbus.h"
+#include "virgdbus.h"
 
 VIR_LOG_INIT("daemon." DAEMON_NAME);
 
@@ -454,7 +454,7 @@ static void daemonShutdownHandler(virNetDaemonPtr dmn,
     virNetDaemonQuit(dmn);
 }
 
-static void daemonReloadHandlerThread(void *opague G_GNUC_UNUSED)
+static void daemonReloadHandlerThread(void *opaque G_GNUC_UNUSED)
 {
     VIR_INFO("Reloading configuration on SIGHUP");
     virHookCall(VIR_HOOK_DRIVER_DAEMON, "-",
@@ -508,9 +508,8 @@ static void daemonInhibitCallback(bool inhibit, void *opaque)
 }
 
 
-#ifdef WITH_DBUS
-static DBusConnection *sessionBus;
-static DBusConnection *systemBus;
+static GDBusConnection *sessionBus;
+static GDBusConnection *systemBus;
 
 static void daemonStopWorker(void *opaque)
 {
@@ -530,49 +529,57 @@ static void daemonStopWorker(void *opaque)
 /* We do this in a thread to not block the main loop */
 static void daemonStop(virNetDaemonPtr dmn)
 {
-    virThread thr;
+    virThreadPtr thr;
     virObjectRef(dmn);
-    if (virThreadCreateFull(&thr, false, daemonStopWorker,
-                            "daemon-stop", false, dmn) < 0)
+
+    thr = g_new0(virThread, 1);
+
+    if (virThreadCreateFull(thr, true,
+                            daemonStopWorker,
+                            "daemon-stop", false, dmn) < 0) {
         virObjectUnref(dmn);
+        g_free(thr);
+        return;
+    }
+
+    virNetDaemonSetStateStopWorkerThread(dmn, &thr);
 }
 
 
-static DBusHandlerResult
-handleSessionMessageFunc(DBusConnection *connection G_GNUC_UNUSED,
-                         DBusMessage *message,
-                         void *opaque)
+static GDBusMessage *
+handleSessionMessageFunc(GDBusConnection *connection G_GNUC_UNUSED,
+                         GDBusMessage *message,
+                         gboolean incoming G_GNUC_UNUSED,
+                         gpointer opaque)
 {
     virNetDaemonPtr dmn = opaque;
 
     VIR_DEBUG("dmn=%p", dmn);
 
-    if (dbus_message_is_signal(message,
-                               DBUS_INTERFACE_LOCAL,
-                               "Disconnected"))
+    if (virGDBusMessageIsSignal(message,
+                                "org.freedesktop.DBus.Local",
+                                "Disconnected"))
         daemonStop(dmn);
 
-    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    return message;
 }
 
 
-static DBusHandlerResult
-handleSystemMessageFunc(DBusConnection *connection G_GNUC_UNUSED,
-                        DBusMessage *message,
-                        void *opaque)
+static void
+handleSystemMessageFunc(GDBusConnection *connection G_GNUC_UNUSED,
+                        const char *senderName G_GNUC_UNUSED,
+                        const char *objectPath G_GNUC_UNUSED,
+                        const char *interfaceName G_GNUC_UNUSED,
+                        const char *signalName G_GNUC_UNUSED,
+                        GVariant *parameters G_GNUC_UNUSED,
+                        gpointer opaque)
 {
     virNetDaemonPtr dmn = opaque;
 
     VIR_DEBUG("dmn=%p", dmn);
 
-    if (dbus_message_is_signal(message,
-                               "org.freedesktop.login1.Manager",
-                               "PrepareForShutdown"))
-        daemonStop(dmn);
-
-    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    daemonStop(dmn);
 }
-#endif
 
 
 static void daemonRunStateInit(void *opaque)
@@ -608,25 +615,28 @@ static void daemonRunStateInit(void *opaque)
 
     driversInitialized = true;
 
-#ifdef WITH_DBUS
     /* Tie the non-privileged daemons to the session/shutdown lifecycle */
     if (!virNetDaemonIsPrivileged(dmn)) {
 
-        sessionBus = virDBusGetSessionBus();
+        sessionBus = virGDBusGetSessionBus();
         if (sessionBus != NULL)
-            dbus_connection_add_filter(sessionBus,
-                                       handleSessionMessageFunc, dmn, NULL);
+            g_dbus_connection_add_filter(sessionBus,
+                                         handleSessionMessageFunc, dmn, NULL);
 
-        systemBus = virDBusGetSystemBus();
-        if (systemBus != NULL) {
-            dbus_connection_add_filter(systemBus,
-                                       handleSystemMessageFunc, dmn, NULL);
-            dbus_bus_add_match(systemBus,
-                               "type='signal',sender='org.freedesktop.login1', interface='org.freedesktop.login1.Manager'",
-                               NULL);
-        }
+        systemBus = virGDBusGetSystemBus();
+        if (systemBus != NULL)
+            g_dbus_connection_signal_subscribe(systemBus,
+                                               "org.freedesktop.login1",
+                                               "org.freedesktop.login1.Manager",
+                                               "PrepareForShutdown",
+                                               NULL,
+                                               NULL,
+                                               G_DBUS_SIGNAL_FLAGS_NONE,
+                                               handleSystemMessageFunc,
+                                               dmn,
+                                               NULL);
     }
-#endif
+
     /* Only now accept clients from network */
     virNetDaemonUpdateServices(dmn, true);
  cleanup:
@@ -781,7 +791,7 @@ int main(int argc, char **argv) {
 # endif /* ! LIBVIRTD */
 #endif /* ! WITH_IP */
     struct daemonConfig *config;
-    bool privileged = geteuid() == 0 ? true : false;
+    bool privileged = geteuid() == 0;
     bool implicit_conf = false;
     char *run_dir = NULL;
     mode_t old_umask;
@@ -1193,6 +1203,9 @@ int main(int argc, char **argv) {
 #endif
 
     /* Run event loop. */
+    virNetDaemonSetShutdownCallbacks(dmn,
+                                     virStateShutdownPrepare,
+                                     virStateShutdownWait);
     virNetDaemonRun(dmn);
 
     ret = 0;
@@ -1201,9 +1214,6 @@ int main(int argc, char **argv) {
                 0, "shutdown", NULL, NULL);
 
  cleanup:
-    /* Keep cleanup order in inverse order of startup */
-    virNetDaemonClose(dmn);
-
     virNetlinkEventServiceStopAll();
 
     if (driversInitialized) {

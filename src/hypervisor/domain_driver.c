@@ -86,7 +86,7 @@ virDomainDriverGenerateMachineName(const char *drivername,
                                    const char *name,
                                    bool privileged)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     if (root) {
         g_autofree char *hash = NULL;
@@ -100,10 +100,9 @@ virDomainDriverGenerateMachineName(const char *drivername,
         if (!privileged) {
 
             g_autofree char *username = NULL;
-            if (!(username = virGetUserName(geteuid()))) {
-                virBufferFreeAndReset(&buf);
+            if (!(username = virGetUserName(geteuid())))
                 return NULL;
-            }
+
             virBufferAsprintf(&buf, "%s-", username);
         }
     }
@@ -220,8 +219,7 @@ virDomainDriverParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
 
     ndevices = (nsep + 1) / 2;
 
-    if (VIR_ALLOC_N(result, ndevices) < 0)
-        return -1;
+    result = g_new0(virBlkioDevice, ndevices);
 
     i = 0;
     temp = blkioDeviceStr;
@@ -337,4 +335,33 @@ virDomainDriverSetupPersistentDefBlkioParams(virDomainDefPtr persistentDef,
     }
 
     return ret;
+}
+
+
+int
+virDomainDriverNodeDeviceGetPCIInfo(virNodeDeviceDefPtr def,
+                                    virPCIDeviceAddressPtr devAddr)
+{
+    virNodeDevCapsDefPtr cap;
+
+    cap = def->caps;
+    while (cap) {
+        if (cap->data.type == VIR_NODE_DEV_CAP_PCI_DEV) {
+            devAddr->domain = cap->data.pci_dev.domain;
+            devAddr->bus = cap->data.pci_dev.bus;
+            devAddr->slot = cap->data.pci_dev.slot;
+            devAddr->function = cap->data.pci_dev.function;
+            break;
+        }
+
+        cap = cap->next;
+    }
+
+    if (!cap) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("device %s is not a PCI device"), def->name);
+        return -1;
+    }
+
+    return 0;
 }

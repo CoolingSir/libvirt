@@ -27,8 +27,8 @@
 #include "virerror.h"
 #include "viralloc.h"
 #include "internal.h"
-#include "virstoragefile.h"
 #include "storage_backend.h"
+#include "storage_source_conf.h"
 #include "virlog.h"
 #include "virmodule.h"
 #include "virfile.h"
@@ -91,8 +91,8 @@ virStorageDriverLoadBackendModule(const char *name,
 
     if (!(modfile = virFileFindResourceFull(name,
                                             "libvirt_storage_backend_",
-                                            ".so",
-                                            abs_top_builddir "/src/.libs",
+                                            VIR_FILE_MODULE_EXT,
+                                            abs_top_builddir "/src",
                                             STORAGE_BACKEND_MODULE_DIR,
                                             "LIBVIRT_STORAGE_BACKEND_DIR")))
         return -1;

@@ -362,8 +362,7 @@ daemonCreateClientStream(virNetServerClientPtr client,
     VIR_DEBUG("client=%p, proc=%d, serial=%u, st=%p",
               client, header->proc, header->serial, st);
 
-    if (VIR_ALLOC(stream) < 0)
-        return NULL;
+    stream = g_new0(daemonClientStream, 1);
 
     stream->refs = 1;
     stream->priv = priv;
@@ -434,9 +433,10 @@ int daemonAddClientStream(virNetServerClientPtr client,
                           daemonClientStream *stream,
                           bool transmit)
 {
+    daemonClientPrivatePtr priv = virNetServerClientGetPrivateData(client);
+
     VIR_DEBUG("client=%p, proc=%d, serial=%u, st=%p, transmit=%d",
               client, stream->procedure, stream->serial, stream->st, transmit);
-    daemonClientPrivatePtr priv = virNetServerClientGetPrivateData(client);
 
     if (stream->filterID != -1) {
         VIR_WARN("Filter already added to client %p", client);
@@ -484,11 +484,12 @@ int
 daemonRemoveClientStream(virNetServerClientPtr client,
                          daemonClientStream *stream)
 {
-    VIR_DEBUG("client=%p, proc=%d, serial=%u, st=%p",
-              client, stream->procedure, stream->serial, stream->st);
     daemonClientPrivatePtr priv = virNetServerClientGetPrivateData(client);
     daemonClientStream *curr = priv->streams;
     daemonClientStream *prev = NULL;
+
+    VIR_DEBUG("client=%p, proc=%d, serial=%u, st=%p",
+              client, stream->procedure, stream->serial, stream->st);
 
     if (stream->filterID != -1) {
         virNetServerClientRemoveFilter(client,
@@ -648,10 +649,11 @@ daemonStreamHandleAbort(virNetServerClientPtr client,
                         daemonClientStream *stream,
                         virNetMessagePtr msg)
 {
-    VIR_DEBUG("client=%p, stream=%p, proc=%d, serial=%u",
-              client, stream, msg->header.proc, msg->header.serial);
     int ret;
     bool raise_error = false;
+
+    VIR_DEBUG("client=%p, stream=%p, proc=%d, serial=%u",
+              client, stream, msg->header.proc, msg->header.serial);
 
     stream->closed = true;
     virStreamEventRemoveCallback(stream->st);
@@ -850,8 +852,7 @@ daemonStreamHandleRead(virNetServerClientPtr client,
 
     memset(&rerr, 0, sizeof(rerr));
 
-    if (VIR_ALLOC_N(buffer, bufferLen) < 0)
-        return -1;
+    buffer = g_new0(char, bufferLen);
 
     if (!(msg = virNetMessageNew(false)))
         goto cleanup;

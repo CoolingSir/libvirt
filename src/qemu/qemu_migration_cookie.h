@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "qemu_domain.h"
+#include "qemu_domainjob.h"
 #include "qemu_migration_params.h"
 #include "virenum.h"
 
@@ -151,26 +153,31 @@ struct _qemuMigrationCookie {
 };
 
 
+qemuMigrationCookiePtr
+qemuMigrationCookieNew(const virDomainDef *def,
+                       const char *origname);
+
 int
-qemuMigrationBakeCookie(qemuMigrationCookiePtr mig,
-                        virQEMUDriverPtr driver,
-                        virDomainObjPtr dom,
-                        qemuMigrationParty party,
-                        char **cookieout,
-                        int *cookieoutlen,
-                        unsigned int flags);
+qemuMigrationCookieFormat(qemuMigrationCookiePtr mig,
+                          virQEMUDriverPtr driver,
+                          virDomainObjPtr dom,
+                          qemuMigrationParty party,
+                          char **cookieout,
+                          int *cookieoutlen,
+                          unsigned int flags);
 
 qemuMigrationCookiePtr
-qemuMigrationEatCookie(virQEMUDriverPtr driver,
-                       const virDomainDef *def,
-                       const char *origname,
-                       qemuDomainObjPrivatePtr priv,
-                       const char *cookiein,
-                       int cookieinlen,
-                       unsigned int flags);
+qemuMigrationCookieParse(virQEMUDriverPtr driver,
+                        const virDomainDef *def,
+                        const char *origname,
+                        qemuDomainObjPrivatePtr priv,
+                        const char *cookiein,
+                        int cookieinlen,
+                        unsigned int flags);
 
 void
 qemuMigrationCookieFree(qemuMigrationCookiePtr mig);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(qemuMigrationCookie, qemuMigrationCookieFree);
 
 int
 qemuMigrationCookieAddPersistent(qemuMigrationCookiePtr mig,
@@ -178,3 +185,10 @@ qemuMigrationCookieAddPersistent(qemuMigrationCookiePtr mig,
 
 virDomainDefPtr
 qemuMigrationCookieGetPersistent(qemuMigrationCookiePtr mig);
+
+/* qemuMigrationCookieXMLFormat is exported for test use only! */
+int
+qemuMigrationCookieXMLFormat(virQEMUDriverPtr driver,
+                             virQEMUCapsPtr qemuCaps,
+                             virBufferPtr buf,
+                             qemuMigrationCookiePtr mig);

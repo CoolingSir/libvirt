@@ -101,6 +101,10 @@ virNodeNumOfDevices(virConnectPtr conn, const char *cap, unsigned int flags)
  *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_MDEV_TYPES
  *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_MDEV
  *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_CCW_DEV
+ *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_CSS_DEV
+ *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_CARD
+ *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_QUEUE
+ *   VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_MATRIX
  *
  * Returns the number of node devices found or -1 and sets @devices to NULL in
  * case of error.  On success, the array stored into @devices is guaranteed to
@@ -477,7 +481,7 @@ virNodeDeviceFree(virNodeDevicePtr dev)
 int
 virNodeDeviceRef(virNodeDevicePtr dev)
 {
-    VIR_DEBUG("dev=%p refs=%d", dev, dev ? dev->parent.u.s.refs : 0);
+    VIR_DEBUG("dev=%p", dev);
 
     virResetLastError();
 
@@ -492,7 +496,7 @@ virNodeDeviceRef(virNodeDevicePtr dev)
  * virNodeDeviceDettach:
  * @dev: pointer to the node device
  *
- * Dettach the node device from the node itself so that it may be
+ * Detach the node device from the node itself so that it may be
  * assigned to a guest domain.
  *
  * Depending on the hypervisor, this may involve operations such

@@ -152,7 +152,7 @@
       values for which a firmware "descriptor file" exists on the host.
       Firmware descriptor file is a small JSON document that describes
       details about a given BIOS or UEFI binary on the host, e.g. the
-      fimware binary path, its architecture, supported machine types,
+      firmware binary path, its architecture, supported machine types,
       NVRAM template, etc. This ensures that the reported values won't
       cause a failure on guest boot.
     </p>
@@ -201,7 +201,12 @@
 &lt;domainCapabilities&gt;
   ...
   &lt;cpu&gt;
-    &lt;mode name='host-passthrough' supported='yes'/&gt;
+    &lt;mode name='host-passthrough' supported='yes'&gt;
+      &lt;enum name='hostPassthroughMigratable'&gt;
+        &lt;value&gt;on&lt;/value&gt;
+        &lt;value&gt;off&lt;/value&gt;
+      &lt;/enum&gt;
+    &lt;/mode&gt;
     &lt;mode name='host-model' supported='yes'&gt;
       &lt;model fallback='allow'&gt;Broadwell&lt;/model&gt;
       &lt;vendor&gt;Intel&lt;/vendor&gt;
@@ -227,7 +232,11 @@
 
     <dl>
       <dt><code>host-passthrough</code></dt>
-      <dd>No mode specific details are provided.</dd>
+      <dd>
+        The <code>hostPassthroughMigratable</code> enum shows possible values
+        of the <code>migratable</code> attribute for the &lt;cpu&gt; element
+        with <code>mode='host-passthrough'</code> in the domain XML.
+      </dd>
 
       <dt><code>host-model</code></dt>
       <dd>
@@ -562,6 +571,7 @@
     <p>Reports whether the hypervisor will obey the &lt;backingStore&gt;
     elements configured for a &lt;disk&gt; when booting the guest, hotplugging
     the disk to a running guest, or similar.
+    <span class="since">(Since 5.10)</span>
     </p>
 
     <h4><a id="featureBackup">backup</a></h4>

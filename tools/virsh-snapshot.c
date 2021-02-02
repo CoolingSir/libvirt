@@ -24,9 +24,7 @@
 #include <assert.h>
 
 #include <libxml/parser.h>
-#include <libxml/tree.h>
 #include <libxml/xpath.h>
-#include <libxml/xmlsave.h>
 
 #include "internal.h"
 #include "virbuffer.h"
@@ -253,7 +251,7 @@ virshParseSnapshotMemspec(vshControl *ctl, virBufferPtr buf, const char *str)
  cleanup:
     if (ret < 0)
         vshError(ctl, _("unable to parse memspec: %s"), str);
-    virStringListFree(array);
+    g_strfreev(array);
     return ret;
 }
 
@@ -321,7 +319,7 @@ virshParseSnapshotDiskspec(vshControl *ctl, virBufferPtr buf, const char *str)
  cleanup:
     if (ret < 0)
         vshError(ctl, _("unable to parse diskspec: %s"), str);
-    virStringListFree(array);
+    g_strfreev(array);
     return ret;
 }
 
@@ -395,7 +393,7 @@ cmdSnapshotCreateAs(vshControl *ctl, const vshCmd *cmd)
     const char *name = NULL;
     const char *desc = NULL;
     const char *memspec = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     unsigned int flags = VIR_DOMAIN_SNAPSHOT_CREATE_VALIDATE;
     const vshCmdOpt *opt = NULL;
 
@@ -456,7 +454,6 @@ cmdSnapshotCreateAs(vshControl *ctl, const vshCmd *cmd)
     ret = virshSnapshotCreate(ctl, dom, buffer, flags, NULL);
 
  cleanup:
-    virBufferFreeAndReset(&buf);
     VIR_FREE(buffer);
     virshDomainFree(dom);
 
@@ -514,7 +511,7 @@ static const vshCmdInfo info_snapshot_edit[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_edit[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_STRING,
      .help = N_("snapshot name"),
@@ -627,7 +624,7 @@ static const vshCmdInfo info_snapshot_current[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_current[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "name",
      .type = VSH_OT_BOOL,
      .help = N_("list the name, rather than the full xml")
@@ -859,7 +856,7 @@ static const vshCmdInfo info_snapshot_info[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_info[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_STRING,
      .help = N_("snapshot name"),
@@ -1072,7 +1069,7 @@ virshSnapshotListCollect(vshControl *ctl, virDomainPtr dom,
     bool descendants = false;
     bool roots = false;
     virDomainSnapshotPtr *snaps;
-    virshSnapshotListPtr snaplist = vshMalloc(ctl, sizeof(*snaplist));
+    virshSnapshotListPtr snaplist = g_new0(struct virshSnapshotList, 1);
     virshSnapshotListPtr ret = NULL;
     const char *fromname = NULL;
     int start_index = -1;
@@ -1105,8 +1102,10 @@ virshSnapshotListCollect(vshControl *ctl, virDomainPtr dom,
     if (count >= 0) {
         /* When mixing --from and --tree, we also want a copy of from
          * in the list, but with no parent for that one entry.  */
-        snaplist->snaps = vshCalloc(ctl, count + (tree && from),
-                                    sizeof(*snaplist->snaps));
+        if (tree && from)
+            snaplist->snaps = g_new0(struct virshSnap, count + 1);
+        else
+            snaplist->snaps = g_new0(struct virshSnap, count);
         snaplist->nsnaps = count;
         for (i = 0; i < count; i++)
             snaplist->snaps[i].snap = snaps[i];
@@ -1222,7 +1221,7 @@ virshSnapshotListCollect(vshControl *ctl, virDomainPtr dom,
     if (!count)
         goto success;
 
-    names = vshCalloc(ctl, sizeof(*names), count);
+    names = g_new0(char *, count);
 
     /* Now that we have a count, collect the list.  */
     if (from && !priv->useSnapshotOld) {
@@ -1243,7 +1242,7 @@ virshSnapshotListCollect(vshControl *ctl, virDomainPtr dom,
     if (count < 0)
         goto cleanup;
 
-    snaplist->snaps = vshCalloc(ctl, sizeof(*snaplist->snaps), count);
+    snaplist->snaps = g_new0(struct virshSnap, count);
     snaplist->nsnaps = count;
     for (i = 0; i < count; i++) {
         snaplist->snaps[i].snap = virDomainSnapshotLookupByName(dom,
@@ -1311,7 +1310,7 @@ virshSnapshotListCollect(vshControl *ctl, virDomainPtr dom,
             }
         }
         if (!changed) {
-            ret = vshMalloc(ctl, sizeof(*snaplist));
+            ret = g_new0(struct virshSnapshotList, 1);
             goto cleanup;
         }
         while (changed && remaining) {
@@ -1409,7 +1408,7 @@ static const vshCmdInfo info_snapshot_list[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_list[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "parent",
      .type = VSH_OT_BOOL,
      .help = N_("add a column showing parent snapshot")
@@ -1672,7 +1671,7 @@ static const vshCmdInfo info_snapshot_dumpxml[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_dumpxml[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_DATA,
      .flags = VSH_OFLAG_REQ,
@@ -1736,7 +1735,7 @@ static const vshCmdInfo info_snapshot_parent[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_parent[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_STRING,
      .help = N_("find parent of snapshot name"),
@@ -1796,7 +1795,7 @@ static const vshCmdInfo info_snapshot_revert[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_revert[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_STRING,
      .help = N_("snapshot name"),
@@ -1881,7 +1880,7 @@ static const vshCmdInfo info_snapshot_delete[] = {
 };
 
 static const vshCmdOptDef opts_snapshot_delete[] = {
-    VIRSH_COMMON_OPT_DOMAIN_FULL(0),
+    VIRSH_COMMON_OPT_DOMAIN_FULL(VIR_CONNECT_LIST_DOMAINS_HAS_SNAPSHOT),
     {.name = "snapshotname",
      .type = VSH_OT_STRING,
      .help = N_("snapshot name"),

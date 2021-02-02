@@ -42,7 +42,7 @@ struct xentoollog_logger_libvirt {
     const char *logDir;
 
     /* map storing the opened fds: "domid" -> FILE* */
-    virHashTablePtr files;
+    GHashTable *files;
     FILE *defaultLogFile;
 };
 
@@ -153,7 +153,7 @@ libxlLoggerNew(const char *logDir, virLogPriority minLevel)
     }
     logger.logDir = logDir;
 
-    if ((logger.files = virHashCreate(3, libxlLoggerFileFree)) == NULL)
+    if ((logger.files = virHashNew(libxlLoggerFileFree)) == NULL)
         return NULL;
 
     path = g_strdup_printf("%s/libxl-driver.log", logDir);

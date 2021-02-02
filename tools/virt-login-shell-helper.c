@@ -84,7 +84,7 @@ static int virLoginShellAllowedUser(virConfPtr conf,
                          name, conf_file);
  cleanup:
     VIR_FREE(gname);
-    virStringListFree(users);
+    g_strfreev(users);
     return ret;
 }
 
@@ -99,12 +99,11 @@ static int virLoginShellGetShellArgv(virConfPtr conf,
         return -1;
 
     if (rv == 0) {
-        if (VIR_ALLOC_N(*shargv, 2) < 0)
-            return -1;
+        *shargv = g_new0(char *, 2);
         (*shargv)[0] = g_strdup("/bin/sh");
         *shargvlen = 1;
     } else {
-        *shargvlen = virStringListLength((const char *const *)shargv);
+        *shargvlen = virStringListLength((const char *const *)*shargv);
     }
     return 0;
 }
@@ -302,10 +301,8 @@ main(int argc, char **argv)
 
     if ((nfdlist = virDomainLxcOpenNamespace(dom, &fdlist, 0)) < 0)
         goto cleanup;
-    if (VIR_ALLOC(secmodel) < 0)
-        goto cleanup;
-    if (VIR_ALLOC(seclabel) < 0)
-        goto cleanup;
+    secmodel = g_new0(virSecurityModel, 1);
+    seclabel = g_new0(virSecurityLabel, 1);
     if (virNodeGetSecurityModel(conn, secmodel) < 0)
         goto cleanup;
     if (virDomainGetSecurityLabel(dom, seclabel) < 0)
@@ -329,12 +326,9 @@ main(int argc, char **argv)
     if (autoshell) {
         tmp = virGetUserShell(uid);
         if (tmp) {
-            virStringListFree(shargv);
+            g_strfreev(shargv);
             shargvlen = 1;
-            if (VIR_ALLOC_N(shargv[0], shargvlen + 1) < 0) {
-                VIR_FREE(tmp);
-                goto cleanup;
-            }
+            shargv = g_new0(char *, shargvlen + 1);
             shargv[0] = tmp;
             shargv[1] = NULL;
         }
@@ -410,7 +404,7 @@ main(int argc, char **argv)
         virDomainFree(dom);
     if (conn)
         virConnectClose(conn);
-    virStringListFree(shargv);
+    g_strfreev(shargv);
     VIR_FREE(shcmd);
     VIR_FREE(term);
     VIR_FREE(name);

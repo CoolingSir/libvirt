@@ -20,7 +20,6 @@
  */
 
 #include <config.h>
-#include <unistd.h>
 
 #include "virt-host-validate-qemu.h"
 #include "virt-host-validate-common.h"
@@ -125,6 +124,10 @@ int virHostValidateQEMU(void)
 
     if (virHostValidateIOMMU("QEMU",
                              VIR_HOST_VALIDATE_WARN) < 0)
+        ret = -1;
+
+    if (virHostValidateSecureGuests("QEMU",
+                                    VIR_HOST_VALIDATE_WARN) < 0)
         ret = -1;
 
     return ret;

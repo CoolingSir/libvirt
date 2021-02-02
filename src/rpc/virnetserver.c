@@ -211,8 +211,7 @@ virNetServerDispatchNewMessage(virNetServerClientPtr client,
     if (virThreadPoolGetMaxWorkers(srv->workers) > 0)  {
         virNetServerJobPtr job;
 
-        if (VIR_ALLOC(job) < 0)
-            goto error;
+        job = g_new0(virNetServerJob, 1);
 
         job->client = virObjectRef(client);
         job->msg = msg;
@@ -306,8 +305,9 @@ int virNetServerAddClient(virNetServerPtr srv,
                                     virNetServerDispatchNewMessage,
                                     srv);
 
-    virNetServerClientInitKeepAlive(client, srv->keepaliveInterval,
-                                    srv->keepaliveCount);
+    if (virNetServerClientInitKeepAlive(client, srv->keepaliveInterval,
+                                        srv->keepaliveCount) < 0)
+        goto error;
 
     virObjectUnlock(srv);
     return 0;
@@ -941,7 +941,15 @@ void virNetServerClose(virNetServerPtr srv)
     for (i = 0; i < srv->nclients; i++)
         virNetServerClientClose(srv->clients[i]);
 
+    virThreadPoolStop(srv->workers);
+
     virObjectUnlock(srv);
+}
+
+void
+virNetServerShutdownWait(virNetServerPtr srv)
+{
+    virThreadPoolDrain(srv->workers);
 }
 
 static inline size_t
@@ -1230,7 +1238,7 @@ virNetServerUpdateTlsFiles(virNetServerPtr srv)
 {
     int ret = -1;
     virNetTLSContextPtr ctxt = NULL;
-    bool privileged = geteuid() == 0 ? true : false;
+    bool privileged = geteuid() == 0;
 
     ctxt = virNetServerGetTLSContext(srv);
     if (!ctxt) {

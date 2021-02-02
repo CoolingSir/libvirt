@@ -20,7 +20,7 @@
 
 #include <signal.h>
 #include <unistd.h>
-#ifdef HAVE_IFADDRS_H
+#ifdef WITH_IFADDRS_H
 # include <ifaddrs.h>
 #endif
 
@@ -32,12 +32,13 @@
 #include "virstring.h"
 
 #include "rpc/virnetsocket.h"
+#include "rpc/virnetclient.h"
 
 #define VIR_FROM_THIS VIR_FROM_RPC
 
 VIR_LOG_INIT("tests.netsockettest");
 
-#if HAVE_IFADDRS_H
+#if WITH_IFADDRS_H
 # define BASE_PORT 5672
 
 static int
@@ -55,11 +56,14 @@ checkProtocols(bool *hasIPv4, bool *hasIPv6,
         return -1;
 
     for (i = 0; i < 50; i++) {
-        int only = 1;
-        if ((s4 = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-            goto cleanup;
+        if (*hasIPv4) {
+            if ((s4 = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+                goto cleanup;
+        }
 
         if (*hasIPv6) {
+            int only = 1;
+
             if ((s6 = socket(AF_INET6, SOCK_STREAM, 0)) < 0)
                 goto cleanup;
 
@@ -77,13 +81,15 @@ checkProtocols(bool *hasIPv4, bool *hasIPv6,
         in6.sin6_port = htons(BASE_PORT + i);
         in6.sin6_addr = in6addr_loopback;
 
-        if (bind(s4, (struct sockaddr *)&in4, sizeof(in4)) < 0) {
-            if (errno == EADDRINUSE) {
-                VIR_FORCE_CLOSE(s4);
-                VIR_FORCE_CLOSE(s6);
-                continue;
+        if (*hasIPv4) {
+            if (bind(s4, (struct sockaddr *)&in4, sizeof(in4)) < 0) {
+                if (errno == EADDRINUSE) {
+                    VIR_FORCE_CLOSE(s4);
+                    VIR_FORCE_CLOSE(s6);
+                    continue;
+                }
+                goto cleanup;
             }
-            goto cleanup;
         }
 
         if (*hasIPv6) {
@@ -200,11 +206,7 @@ testSocketAccept(const void *opaque)
         if (virNetSocketNewListenUNIX(path, 0700, -1, getegid(), &usock) < 0)
             goto cleanup;
 
-        if (VIR_ALLOC_N(lsock, 1) < 0) {
-            virObjectUnref(usock);
-            goto cleanup;
-        }
-
+        lsock = g_new0(virNetSocketPtr, 1);
         lsock[0] = usock;
         nlsock = 1;
 
@@ -463,6 +465,11 @@ static int testSocketSSH(const void *opaque)
     virNetSocketPtr csock = NULL; /* Client socket */
     int ret = -1;
     char buf[1024];
+    g_autofree char *command = virNetClientSSHHelperCommand(VIR_NET_CLIENT_PROXY_AUTO,
+                                                            data->netcat,
+                                                            data->path,
+                                                            "qemu:///session",
+                                                            true);
 
     if (virNetSocketNewConnectSSH(data->nodename,
                                   data->service,
@@ -470,9 +477,8 @@ static int testSocketSSH(const void *opaque)
                                   data->username,
                                   data->noTTY,
                                   data->noVerify,
-                                  data->netcat,
                                   data->keyfile,
-                                  data->path,
+                                  command,
                                   &csock) < 0)
         goto cleanup;
 
@@ -517,7 +523,7 @@ static int
 mymain(void)
 {
     int ret = 0;
-#ifdef HAVE_IFADDRS_H
+#ifdef WITH_IFADDRS_H
     bool hasIPv4, hasIPv6;
     int freePort;
 #endif
@@ -528,7 +534,7 @@ mymain(void)
 
     virEventRegisterDefaultImpl();
 
-#ifdef HAVE_IFADDRS_H
+#ifdef WITH_IFADDRS_H
     if (checkProtocols(&hasIPv4, &hasIPv6, &freePort) < 0) {
         fprintf(stderr, "Cannot identify IPv4/6 availability\n");
         return EXIT_FAILURE;
@@ -567,9 +573,11 @@ mymain(void)
     if (virTestRun("Socket External Command /dev/does-not-exist", testSocketCommandFail, NULL) < 0)
         ret = -1;
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
     struct testSSHData sshData1 = {
         .nodename = "somehost",
         .path = "/tmp/socket",
+        .netcat = "nc",
         .expectOut = "-T -e none -- somehost sh -c '"
                      "if 'nc' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
                          "ARG=-q0;"
@@ -630,6 +638,7 @@ mymain(void)
     struct testSSHData sshData5 = {
         .nodename = "crashyhost",
         .path = "/tmp/socket",
+        .netcat = "nc",
         .expectOut = "-T -e none -- crashyhost sh -c "
                      "'if 'nc' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
                          "ARG=-q0;"
@@ -645,6 +654,7 @@ mymain(void)
     struct testSSHData sshData6 = {
         .nodename = "example.com",
         .path = "/tmp/socket",
+        .netcat = "nc",
         .keyfile = "/root/.ssh/example_key",
         .noVerify = true,
         .expectOut = "-i /root/.ssh/example_key -T -e none -o StrictHostKeyChecking=no -- example.com sh -c '"
@@ -670,6 +680,7 @@ mymain(void)
                      "fi;"
                      "'''\\''/tmp/fo o/nc'\\'''' $ARG -U /tmp/socket'\n",
     };
+    VIR_WARNINGS_RESET
     if (virTestRun("SSH test 7", testSocketSSH, &sshData7) < 0)
         ret = -1;
 

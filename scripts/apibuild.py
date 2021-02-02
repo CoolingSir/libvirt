@@ -12,6 +12,7 @@ import os
 import sys
 import glob
 import re
+import argparse
 
 quiet = True
 warnings = 0
@@ -80,6 +81,7 @@ ignored_words = {
 
 ignored_functions = {
     "virConnectSupportsFeature": "private function for remote access",
+    "virDomainMigrateCheckNotLocal": "private function for migration",
     "virDomainMigrateFinish": "private function for migration",
     "virDomainMigrateFinish2": "private function for migration",
     "virDomainMigratePerform": "private function for migration",
@@ -494,6 +496,28 @@ class CLexer:
                 if self.tokens[0][1] == "#":
                     self.tokens[0] = ('preproc', "#" + self.tokens[1][1])
                     del self.tokens[1]
+
+                if self.tokens[0][1] == "#define" and "(" in self.tokens[1][1]:
+                    newtokens = [self.tokens[0]]
+
+                    endArg = self.tokens[1][1].find(")")
+                    if endArg != -1:
+                        extra = self.tokens[1][1][endArg + 1:]
+                        name = self.tokens[1][1][0:endArg + 1]
+                        newtokens.append(('preproc', name))
+                        if extra != "":
+                            newtokens.append(('preproc', extra))
+                    else:
+                        name = self.tokens[1][1]
+                        for token in self.tokens[2:]:
+                            if name is not None:
+                                name = name + token[1]
+                                if ")" in token[1]:
+                                    newtokens.append(('preproc', name))
+                                    name = None
+                            else:
+                                newtokens.append(token)
+                    self.tokens = newtokens
                 break
             nline = len(line)
             if line[0] == '"' or line[0] == "'":
@@ -991,10 +1015,12 @@ class CParser:
                        token[1][0] != '#'):
                     lst.append(token[1])
                     token = self.lexer.token()
-                try:
-                    name = name.split('(')[0]
-                except Exception:
-                    pass
+
+                paramStart = name.find("(")
+                params = None
+                if paramStart != -1:
+                    params = name[paramStart + 1:-1]
+                    name = name[0:paramStart]
 
                 # skip hidden macros
                 if name in hidden_macros:
@@ -1003,11 +1029,14 @@ class CParser:
                     return token
 
                 strValue = None
+                rawValue = None
                 if len(lst) == 1 and lst[0][0] == '"' and lst[0][-1] == '"':
                     strValue = lst[0][1:-1]
+                else:
+                    rawValue = " ".join(lst)
                 (args, desc) = self.parseMacroComment(name, not self.is_header)
                 self.index_add(name, self.filename, not self.is_header,
-                               "macro", (args, desc, strValue))
+                               "macro", (args, desc, params, strValue, rawValue))
                 return token
 
         #
@@ -2152,12 +2181,18 @@ class docBuilder:
         if id.info is None:
             args = []
             desc = None
+            params = None
             strValue = None
+            rawValue = None
         else:
-            (args, desc, strValue) = id.info
+            (args, desc, params, strValue, rawValue) = id.info
 
+        if params is not None:
+            output.write(" params='%s'" % params)
         if strValue is not None:
             output.write(" string='%s'" % strValue)
+        else:
+            output.write(" raw='%s'" % escape(rawValue))
         output.write(">\n")
 
         if desc is not None and desc != "":
@@ -2333,7 +2368,7 @@ class docBuilder:
         if not quiet:
             print("Saving XML description %s" % (filename))
         output = open(filename, "w")
-        output.write('<?xml version="1.0" encoding="ISO-8859-1"?>\n')
+        output.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         output.write("<api name='%s'>\n" % self.name)
         output.write("  <files>\n")
         headers = sorted(self.headers.keys())
@@ -2371,13 +2406,11 @@ class app:
         warnings = warnings + 1
         print(msg)
 
-    def rebuild(self, name):
+    def rebuild(self, name, srcdir, builddir):
         if name not in ["libvirt", "libvirt-qemu", "libvirt-lxc", "libvirt-admin"]:
             self.warning("rebuild() failed, unknown module %s" % name)
             return None
         builder = None
-        srcdir = os.path.abspath((os.environ["srcdir"]))
-        builddir = os.path.abspath((os.environ["builddir"]))
         if glob.glob(srcdir + "/../src/libvirt.c") != []:
             if not quiet:
                 print("Rebuilding API description for %s" % name)
@@ -2405,15 +2438,24 @@ class app:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="XML API builder")
+    parser.add_argument("srcdir", type=str, help="path to docs source dir")
+    parser.add_argument("builddir", type=str, help="path to docs build dir")
+    parser.add_argument("-d", "--debug", type=str, help="path to source file")
+
+    args = parser.parse_args()
+
     app = app()
-    if len(sys.argv) > 1:
+
+    if args.debug:
         debug = 1
-        app.parse(sys.argv[1])
+        app.parse(args.debug)
     else:
-        app.rebuild("libvirt")
-        app.rebuild("libvirt-qemu")
-        app.rebuild("libvirt-lxc")
-        app.rebuild("libvirt-admin")
+        app.rebuild("libvirt", args.srcdir, args.builddir)
+        app.rebuild("libvirt-qemu", args.srcdir, args.builddir)
+        app.rebuild("libvirt-lxc", args.srcdir, args.builddir)
+        app.rebuild("libvirt-admin", args.srcdir, args.builddir)
+
     if warnings > 0:
         sys.exit(2)
     else:

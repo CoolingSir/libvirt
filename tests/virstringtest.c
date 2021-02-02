@@ -134,7 +134,7 @@ static int testSplit(const void *args)
 
     ret = 0;
  cleanup:
-    virStringListFree(got);
+    g_strfreev(got);
 
     return ret;
 }
@@ -176,9 +176,8 @@ static int testAdd(const void *args)
             goto cleanup;
     }
 
-    if (!list &&
-        VIR_ALLOC(list) < 0)
-        goto cleanup;
+    if (!list)
+        list = g_new0(char *, 1);
 
     if (!(got = virStringListJoin((const char **)list, data->delim))) {
         VIR_DEBUG("Got no result");
@@ -192,7 +191,7 @@ static int testAdd(const void *args)
 
     ret = 0;
  cleanup:
-    virStringListFree(list);
+    g_strfreev(list);
     VIR_FREE(got);
     return ret;
 }
@@ -227,7 +226,7 @@ static int testRemove(const void *args)
 
     ret = 0;
  cleanup:
-    virStringListFree(list);
+    g_strfreev(list);
     return ret;
 }
 
@@ -331,7 +330,7 @@ testStringSearch(const void *opaque)
     ret = 0;
 
  cleanup:
-    virStringListFree(matches);
+    g_strfreev(matches);
     return ret;
 }
 
@@ -556,8 +555,7 @@ testVirStringListFreeCount(const void *opaque G_GNUC_UNUSED)
 {
     char **list;
 
-    if (VIR_ALLOC_N(list, 4) < 0)
-        return -1;
+    list = g_new0(char *, 4);
 
     list[0] = g_strdup("test1");
     list[2] = g_strdup("test2");
@@ -691,6 +689,7 @@ mymain(void)
             ret = -1; \
     } while (0)
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
     const char *tokens1[] = { NULL };
     TEST_SPLIT("", " ", 0, tokens1);
 
@@ -714,6 +713,7 @@ mymain(void)
 
     const char *tokens8[] = { "gluster", "rdma", NULL };
     TEST_SPLIT("gluster+rdma", "+", 2, tokens8);
+    VIR_WARNINGS_RESET
 
     if (virTestRun("virStringSortCompare", testStringSortCompare, NULL) < 0)
         ret = -1;
@@ -741,6 +741,7 @@ mymain(void)
     /* None matching */
     TEST_SEARCH("foo", "(bar)", 10, 0, NULL, false);
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
     /* Full match */
     const char *matches1[] = { "foo" };
     TEST_SEARCH("foo", "(foo)", 10, 1, matches1, false);
@@ -752,6 +753,7 @@ mymain(void)
     /* Multi matches, limited returns */
     const char *matches3[] = { "foo", "bar" };
     TEST_SEARCH("1foo2bar3eek", "([a-z]+)", 2, 2, matches3, false);
+    VIR_WARNINGS_RESET
 
 #define TEST_MATCH(s, r, m) \
     do { \

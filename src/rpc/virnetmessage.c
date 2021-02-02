@@ -38,8 +38,7 @@ virNetMessagePtr virNetMessageNew(bool tracked)
 {
     virNetMessagePtr msg;
 
-    if (VIR_ALLOC(msg) < 0)
-        return NULL;
+    msg = g_new0(virNetMessage, 1);
 
     msg->tracked = tracked;
     VIR_DEBUG("msg=%p tracked=%d", msg, tracked);
@@ -328,8 +327,8 @@ int virNetMessageDecodeNumFDs(virNetMessagePtr msg)
 
     if (msg->nfds == 0) {
         msg->nfds = numFDs;
-        if (VIR_ALLOC_N(msg->fds, msg->nfds) < 0)
-            goto cleanup;
+        msg->fds = g_new0(int, msg->nfds);
+
         for (i = 0; i < msg->nfds; i++)
             msg->fds[i] = -1;
     }
@@ -511,6 +510,8 @@ int virNetMessageEncodePayloadEmpty(virNetMessagePtr msg)
 
 void virNetMessageSaveError(virNetMessageErrorPtr rerr)
 {
+    virErrorPtr verr;
+
     /* This func may be called several times & the first
      * error is the one we want because we don't want
      * cleanup code overwriting the first one.
@@ -519,26 +520,34 @@ void virNetMessageSaveError(virNetMessageErrorPtr rerr)
         return;
 
     memset(rerr, 0, sizeof(*rerr));
-    virErrorPtr verr = virGetLastError();
+    verr = virGetLastError();
     if (verr) {
         rerr->code = verr->code;
         rerr->domain = verr->domain;
-        if (verr->message && VIR_ALLOC(rerr->message) == 0)
+        if (verr->message) {
+            rerr->message = g_new0(char *, 1);
             *rerr->message = g_strdup(verr->message);
+        }
         rerr->level = verr->level;
-        if (verr->str1 && VIR_ALLOC(rerr->str1) == 0)
+        if (verr->str1) {
+            rerr->str1 = g_new0(char *, 1);
             *rerr->str1 = g_strdup(verr->str1);
-        if (verr->str2 && VIR_ALLOC(rerr->str2) == 0)
+        }
+        if (verr->str2) {
+            rerr->str2 = g_new0(char *, 1);
             *rerr->str2 = g_strdup(verr->str2);
-        if (verr->str3 && VIR_ALLOC(rerr->str3) == 0)
+        }
+        if (verr->str3) {
+            rerr->str3 = g_new0(char *, 1);
             *rerr->str3 = g_strdup(verr->str3);
+        }
         rerr->int1 = verr->int1;
         rerr->int2 = verr->int2;
     } else {
         rerr->code = VIR_ERR_INTERNAL_ERROR;
         rerr->domain = VIR_FROM_RPC;
-        if (VIR_ALLOC_QUIET(rerr->message) == 0)
-            *rerr->message = g_strdup(_("Library function returned error but did not set virError"));
+        rerr->message = g_new0(virNetMessageNonnullString, 1);
+        *rerr->message = g_strdup(_("Library function returned error but did not set virError"));
         rerr->level = VIR_ERR_ERROR;
     }
 }

@@ -33,7 +33,7 @@
 #define VIR_FROM_THIS VIR_FROM_NWFILTER
 
 static virMutex ipAddressMapLock = VIR_MUTEX_INITIALIZER;
-static virHashTablePtr ipAddressMap;
+static GHashTable *ipAddressMap;
 
 
 /* Add an IP address to the list of IP addresses an interface is
@@ -149,7 +149,7 @@ virNWFilterIPAddrMapGetIPAddr(const char *ifname)
 int
 virNWFilterIPAddrMapInit(void)
 {
-    ipAddressMap = virNWFilterHashTableCreate(0);
+    ipAddressMap = virHashNew(virNWFilterVarValueHashFree);
     if (!ipAddressMap)
         return -1;
 

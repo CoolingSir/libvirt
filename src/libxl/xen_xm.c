@@ -42,8 +42,9 @@ xenParseXMOS(virConfPtr conf, virDomainDefPtr def)
     if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
         g_autofree char *boot = NULL;
 
-        if (VIR_ALLOC(def->os.loader) < 0 ||
-            xenConfigCopyString(conf, "kernel", &def->os.loader->path) < 0)
+        def->os.loader = g_new0(virDomainLoaderDef, 1);
+
+        if (xenConfigCopyString(conf, "kernel", &def->os.loader->path) < 0)
             return -1;
 
         if (xenConfigGetString(conf, "boot", &boot, "c") < 0)
@@ -128,14 +129,11 @@ xenParseXMDisk(char *entry, int hvm)
 
     if (offset == head) {
         /* No source file given, eg CDROM with no media */
-        ignore_value(virDomainDiskSetSource(disk, NULL));
+        virDomainDiskSetSource(disk, NULL);
     } else {
         tmp = g_strndup(head, offset - head);
 
-        if (virDomainDiskSetSource(disk, tmp) < 0) {
-            VIR_FREE(tmp);
-            goto error;
-        }
+        virDomainDiskSetSource(disk, tmp);
         VIR_FREE(tmp);
     }
 
@@ -148,8 +146,7 @@ xenParseXMDisk(char *entry, int hvm)
     if (!(offset = strchr(head, ',')))
         goto error;
 
-    if (VIR_ALLOC_N(disk->dst, (offset - head) + 1) < 0)
-        goto error;
+    disk->dst = g_new0(char, (offset - head) + 1);
 
     if (virStrncpy(disk->dst, head, offset - head,
                    (offset - head) + 1) < 0) {
@@ -168,15 +165,11 @@ xenParseXMDisk(char *entry, int hvm)
             len = tmp - src;
             tmp = g_strndup(src, len);
 
-            if (virDomainDiskSetDriver(disk, tmp) < 0) {
-                VIR_FREE(tmp);
-                goto error;
-            }
+            virDomainDiskSetDriver(disk, tmp);
             VIR_FREE(tmp);
 
             /* Strip the prefix we found off the source file name */
-            if (virDomainDiskSetSource(disk, src + len + 1) < 0)
-                goto error;
+            virDomainDiskSetSource(disk, src + len + 1);
 
             src = virDomainDiskGetSource(disk);
         }
@@ -206,16 +199,14 @@ xenParseXMDisk(char *entry, int hvm)
             }
 
             /* Strip the prefix we found off the source file name */
-            if (virDomainDiskSetSource(disk, src + len + 1) < 0)
-                goto error;
+            virDomainDiskSetSource(disk, src + len + 1);
             src = virDomainDiskGetSource(disk);
         }
     }
 
     /* No source, or driver name, so fix to phy: */
-    if (!virDomainDiskGetDriver(disk) &&
-        virDomainDiskSetDriver(disk, "phy") < 0)
-        goto error;
+    if (!virDomainDiskGetDriver(disk))
+        virDomainDiskSetDriver(disk, "phy");
 
     /* phy: type indicates a block device */
     virDomainDiskSetType(disk,
@@ -281,7 +272,7 @@ xenParseXMDiskList(virConfPtr conf, virDomainDefPtr def)
     ret = 0;
 
  cleanup:
-    virStringListFree(disks);
+    g_strfreev(disks);
     return ret;
 }
 
@@ -290,7 +281,7 @@ static int
 xenFormatXMDisk(virConfValuePtr list,
                 virDomainDiskDefPtr disk)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virConfValuePtr val, tmp;
     const char *src = virDomainDiskGetSource(disk);
     int format = virDomainDiskGetFormat(disk);
@@ -322,7 +313,7 @@ xenFormatXMDisk(virConfValuePtr list,
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("unsupported disk type %s"),
                                virStorageTypeToString(virDomainDiskGetType(disk)));
-                goto cleanup;
+                return -1;
             }
         }
         virBufferAdd(&buf, src, -1);
@@ -345,9 +336,7 @@ xenFormatXMDisk(virConfValuePtr list,
         return -1;
     }
 
-    if (VIR_ALLOC(val) < 0)
-        goto cleanup;
-
+    val = g_new0(virConfValue, 1);
     val->type = VIR_CONF_STRING;
     val->str = virBufferContentAndReset(&buf);
     tmp = list->list;
@@ -359,10 +348,6 @@ xenFormatXMDisk(virConfValuePtr list,
         list->list = val;
 
     return 0;
-
- cleanup:
-    virBufferFreeAndReset(&buf);
-    return -1;
 }
 
 
@@ -372,8 +357,7 @@ xenFormatXMDisks(virConfPtr conf, virDomainDefPtr def)
     virConfValuePtr diskVal = NULL;
     size_t i = 0;
 
-    if (VIR_ALLOC(diskVal) < 0)
-        goto cleanup;
+    diskVal = g_new0(virConfValue, 1);
 
     diskVal->type = VIR_CONF_LIST;
     diskVal->list = NULL;
@@ -415,8 +399,7 @@ xenParseXMInputDevs(virConfPtr conf, virDomainDefPtr def)
                  STREQ(str, "mouse") ||
                  STREQ(str, "keyboard"))) {
             virDomainInputDefPtr input;
-            if (VIR_ALLOC(input) < 0)
-                return -1;
+            input = g_new0(virDomainInputDef, 1);
 
             input->bus = VIR_DOMAIN_INPUT_BUS_USB;
             if (STREQ(str, "mouse"))

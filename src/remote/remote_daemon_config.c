@@ -94,16 +94,15 @@ daemonConfigNew(bool privileged G_GNUC_UNUSED)
 {
     struct daemonConfig *data;
 
-    if (VIR_ALLOC(data) < 0)
-        return NULL;
+    data = g_new0(struct daemonConfig, 1);
 
 #ifdef WITH_IP
 # ifdef LIBVIRTD
-    data->listen_tls = 1; /* Only honoured if --listen is set */
+    data->listen_tls = true; /* Only honoured if --listen is set */
 # else /* ! LIBVIRTD */
-    data->listen_tls = 0; /* Always honoured, --listen doesn't exist. */
+    data->listen_tls = false; /* Always honoured, --listen doesn't exist. */
 # endif /* ! LIBVIRTD */
-    data->listen_tcp = 0;
+    data->listen_tcp = false;
 
     data->tls_port = g_strdup(LIBVIRTD_TLS_PORT);
     data->tcp_port = g_strdup(LIBVIRTD_TCP_PORT);
@@ -146,7 +145,7 @@ daemonConfigNew(bool privileged G_GNUC_UNUSED)
     data->max_client_requests = 5;
 
     data->audit_level = 1;
-    data->audit_logging = 0;
+    data->audit_logging = false;
 
     data->keepalive_interval = 5;
     data->keepalive_count = 5;

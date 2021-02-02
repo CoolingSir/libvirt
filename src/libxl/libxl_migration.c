@@ -92,8 +92,7 @@ libxlMigrationCookieNew(virDomainObjPtr dom)
 {
     libxlMigrationCookiePtr mig = NULL;
 
-    if (VIR_ALLOC(mig) < 0)
-        goto error;
+    mig = g_new0(libxlMigrationCookie, 1);
 
     mig->name = g_strdup(dom->def->name);
 
@@ -117,7 +116,7 @@ libxlMigrationBakeCookie(libxlMigrationCookiePtr mig,
                          char **cookieout,
                          int *cookieoutlen)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!cookieout || !cookieoutlen)
@@ -160,8 +159,7 @@ libxlMigrationEatCookie(const char *cookiein,
      * specify a stream version.
      */
     if (!cookiein || !cookieinlen) {
-        if (VIR_ALLOC(mig) < 0)
-            return -1;
+        mig = g_new0(libxlMigrationCookie, 1);
 
         mig->xenMigStreamVer = 1;
         *migout = mig;
@@ -176,8 +174,7 @@ libxlMigrationEatCookie(const char *cookiein,
 
     VIR_DEBUG("cookielen=%d cookie='%s'", cookieinlen, NULLSTR(cookiein));
 
-    if (VIR_ALLOC(mig) < 0)
-        return -1;
+    mig = g_new0(libxlMigrationCookie, 1);
 
     if (!(doc = virXMLParseStringCtxt(cookiein,
                                       _("(libxl_migration_cookie)"),
@@ -313,8 +310,7 @@ libxlMigrateDstReceive(virNetSocketPtr sock,
      */
     args->recvfd = recvfd;
     VIR_FREE(priv->migrationDstReceiveThr);
-    if (VIR_ALLOC(priv->migrationDstReceiveThr) < 0)
-        goto fail;
+    priv->migrationDstReceiveThr = g_new0(virThread, 1);
 
     name = g_strdup_printf("mig-%s", args->vm->def->name);
     if (virThreadCreateFull(priv->migrationDstReceiveThr, true,
@@ -449,7 +445,6 @@ libxlDomainMigrationDstPrepareDef(libxlDriverPrivatePtr driver,
 {
     libxlDriverConfigPtr cfg = libxlDriverConfigGet(driver);
     virDomainDefPtr def;
-    char *name = NULL;
 
     if (!dom_xml) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -464,13 +459,12 @@ libxlDomainMigrationDstPrepareDef(libxlDriverPrivatePtr driver,
         goto cleanup;
 
     if (dname) {
-        name = def->name;
+        VIR_FREE(def->name);
         def->name = g_strdup(dname);
     }
 
  cleanup:
     virObjectUnref(cfg);
-    VIR_FREE(name);
     return def;
 }
 
@@ -616,8 +610,7 @@ libxlDomainMigrationDstPrepareTunnel3(virConnectPtr dconn,
     mig = NULL;
 
     VIR_FREE(priv->migrationDstReceiveThr);
-    if (VIR_ALLOC(priv->migrationDstReceiveThr) < 0)
-        goto error;
+    priv->migrationDstReceiveThr = g_new0(virThread, 1);
     name = g_strdup_printf("mig-%s", args->vm->def->name);
     if (virThreadCreateFull(priv->migrationDstReceiveThr, true,
                             libxlDoMigrateDstReceive,
@@ -851,8 +844,7 @@ static void libxlTunnel3MigrationSrcFunc(void *arg)
     struct pollfd fds[1];
     int timeout = -1;
 
-    if (VIR_ALLOC_N(buffer, TUNNEL_SEND_BUF_SIZE) < 0)
-        return;
+    buffer = g_new0(char, TUNNEL_SEND_BUF_SIZE);
 
     fds[0].fd = data->srcFD;
     for (;;) {
@@ -922,8 +914,7 @@ libxlMigrationSrcStartTunnel(libxlDriverPrivatePtr driver,
     int ret = -1;
     g_autofree char *name = NULL;
 
-    if (VIR_ALLOC(tc) < 0)
-        goto out;
+    tc = g_new0(struct libxlTunnelControl, 1);
     *tnl = tc;
 
     tc->dataFD[0] = -1;
@@ -1155,7 +1146,7 @@ libxlDomainMigrationSrcPerformP2P(libxlDriverPrivatePtr driver,
                                   unsigned int flags)
 {
     int ret = -1;
-    bool useParams;
+    int useParams;
     virConnectPtr dconn = NULL;
     virErrorPtr orig_err = NULL;
     libxlDriverConfigPtr cfg = libxlDriverConfigGet(driver);
@@ -1180,9 +1171,11 @@ libxlDomainMigrationSrcPerformP2P(libxlDriverPrivatePtr driver,
                                          VIR_DRV_FEATURE_MIGRATION_PARAMS);
     virObjectLock(vm);
 
-    if (!useParams) {
-        virReportError(VIR_ERR_OPERATION_FAILED, "%s",
-                       _("Destination libvirt does not support migration with extensible parameters"));
+    if (useParams <= 0) {
+        if (useParams == 0)
+            virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                           _("Destination libvirt does not support migration"
+                             " with extensible parameters"));
         goto cleanup;
     }
 

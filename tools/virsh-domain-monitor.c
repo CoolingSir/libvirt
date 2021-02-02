@@ -23,9 +23,7 @@
 #include "virsh-util.h"
 
 #include <libxml/parser.h>
-#include <libxml/tree.h>
 #include <libxml/xpath.h>
-#include <libxml/xmlsave.h>
 
 #include "internal.h"
 #include "conf/virdomainobjlist.h"
@@ -470,6 +468,8 @@ cmdDomblkinfo(vshControl *ctl, const vshCmd *cmd)
     char *alloc = NULL;
     char *phy = NULL;
     vshTablePtr table = NULL;
+
+    VSH_EXCLUSIVE_OPTIONS("all", "device");
 
     if (!(dom = virshCommandOptDomain(ctl, cmd, NULL)))
         return false;
@@ -1063,8 +1063,7 @@ cmdDomblkstat(vshControl *ctl, const vshCmd *cmd)
         DOMBLKSTAT_LEGACY_PRINT(3, stats.wr_bytes);
         DOMBLKSTAT_LEGACY_PRINT(4, stats.errs);
     } else {
-        params = vshCalloc(ctl, nparams, sizeof(*params));
-
+        params = g_new0(virTypedParameter, nparams);
         if (virDomainBlockStatsFlags(dom, device, params, &nparams, 0) < 0) {
             vshError(ctl, _("Failed to get block stats for domain '%s' device '%s'"), name, device);
             goto cleanup;
@@ -1234,8 +1233,7 @@ cmdDomBlkError(vshControl *ctl, const vshCmd *cmd)
     ndisks = count;
 
     if (ndisks) {
-        if (VIR_ALLOC_N(disks, ndisks) < 0)
-            goto cleanup;
+        disks = g_new0(virDomainDiskError, ndisks);
 
         if ((count = virDomainGetDiskErrors(dom, disks, ndisks, 0)) == -1)
             goto cleanup;
@@ -1378,10 +1376,7 @@ cmdDominfo(vshControl *ctl, const vshCmd *cmd)
             vshPrint(ctl, "%-15s %s\n", _("Security DOI:"), secmodel.doi);
 
             /* Security labels are only valid for active domains */
-            if (VIR_ALLOC(seclabel) < 0) {
-                virshDomainFree(dom);
-                return false;
-            }
+            seclabel = g_new0(virSecurityLabel, 1);
 
             if (virDomainGetSecurityLabel(dom, seclabel) == -1) {
                 virshDomainFree(dom);
@@ -1612,10 +1607,8 @@ virshDomainListFree(virshDomainListPtr domlist)
     size_t i;
 
     if (domlist && domlist->domains) {
-        for (i = 0; i < domlist->ndomains; i++) {
-            if (domlist->domains[i])
-                virshDomainFree(domlist->domains[i]);
-        }
+        for (i = 0; i < domlist->ndomains; i++)
+            virshDomainFree(domlist->domains[i]);
         VIR_FREE(domlist->domains);
     }
     VIR_FREE(domlist);
@@ -1624,7 +1617,7 @@ virshDomainListFree(virshDomainListPtr domlist)
 static virshDomainListPtr
 virshDomainListCollect(vshControl *ctl, unsigned int flags)
 {
-    virshDomainListPtr list = vshMalloc(ctl, sizeof(*list));
+    virshDomainListPtr list = g_new0(struct virshDomainList, 1);
     size_t i;
     int ret;
     int *ids = NULL;
@@ -1686,7 +1679,7 @@ virshDomainListCollect(vshControl *ctl, unsigned int flags)
         }
 
         if (nids) {
-            ids = vshMalloc(ctl, sizeof(int) * nids);
+            ids = g_new0(int, nids);
 
             if ((nids = virConnectListDomains(priv->conn, ids, nids)) < 0) {
                 vshError(ctl, "%s", _("Failed to list active domains"));
@@ -1703,7 +1696,7 @@ virshDomainListCollect(vshControl *ctl, unsigned int flags)
         }
 
         if (nnames) {
-            names = vshMalloc(ctl, sizeof(char *) * nnames);
+            names = g_new0(char *, nnames);
 
             if ((nnames = virConnectListDefinedDomains(priv->conn, names,
                                                       nnames)) < 0) {
@@ -1713,7 +1706,7 @@ virshDomainListCollect(vshControl *ctl, unsigned int flags)
         }
     }
 
-    list->domains = vshMalloc(ctl, sizeof(virDomainPtr) * (nids + nnames));
+    list->domains = g_new0(virDomainPtr, nids + nnames);
     list->ndomains = 0;
 
     /* get active domains */
@@ -1926,6 +1919,10 @@ static const vshCmdOptDef opts_list[] = {
      .type = VSH_OT_BOOL,
      .help = N_("list domain names only")
     },
+    {.name = "id",
+     .type = VSH_OT_BOOL,
+     .help = N_("list domain IDs only")
+    },
     {.name = "table",
      .type = VSH_OT_BOOL,
      .help = N_("list table (default)")
@@ -1952,6 +1949,7 @@ cmdList(vshControl *ctl, const vshCmd *cmd)
     bool optTable = vshCommandOptBool(cmd, "table");
     bool optUUID = vshCommandOptBool(cmd, "uuid");
     bool optName = vshCommandOptBool(cmd, "name");
+    bool optID = vshCommandOptBool(cmd, "id");
     size_t i;
     char *title;
     char uuid[VIR_UUID_STRING_BUFLEN];
@@ -1995,8 +1993,9 @@ cmdList(vshControl *ctl, const vshCmd *cmd)
 
     VSH_EXCLUSIVE_OPTIONS("table", "name");
     VSH_EXCLUSIVE_OPTIONS("table", "uuid");
+    VSH_EXCLUSIVE_OPTIONS("table", "id");
 
-    if (!optUUID && !optName)
+    if (!optUUID && !optName && !optID)
         optTable = true;
 
     if (!(list = virshDomainListCollect(ctl, flags)))
@@ -2014,6 +2013,8 @@ cmdList(vshControl *ctl, const vshCmd *cmd)
     }
 
     for (i = 0; i < list->ndomains; i++) {
+        const char *sep = "";
+
         dom = list->domains[i];
         id = virDomainGetID(dom);
         if (id != (unsigned int) -1)
@@ -2051,20 +2052,28 @@ cmdList(vshControl *ctl, const vshCmd *cmd)
                     goto cleanup;
             }
 
-        } else if (optUUID && optName) {
-            if (virDomainGetUUIDString(dom, uuid) < 0) {
-                vshError(ctl, "%s", _("Failed to get domain's UUID"));
-                goto cleanup;
+        } else {
+            if (optUUID) {
+                if (virDomainGetUUIDString(dom, uuid) < 0) {
+                    vshError(ctl, "%s", _("Failed to get domain's UUID"));
+                    goto cleanup;
+                }
+                vshPrint(ctl, "%s", uuid);
+                sep = " ";
             }
-            vshPrint(ctl, "%-36s %-30s\n", uuid, virDomainGetName(dom));
-        } else if (optUUID) {
-            if (virDomainGetUUIDString(dom, uuid) < 0) {
-                vshError(ctl, "%s", _("Failed to get domain's UUID"));
-                goto cleanup;
+            if (optID) {
+                /* If we are asked to print IDs only then do that
+                 * only for live domains. */
+                if (id == (unsigned int) -1 && !optUUID && !optName)
+                    continue;
+                vshPrint(ctl, "%s%s", sep, id_buf);
+                sep = " ";
             }
-            vshPrint(ctl, "%s\n", uuid);
-        } else if (optName) {
-            vshPrint(ctl, "%s\n", virDomainGetName(dom));
+            if (optName) {
+                vshPrint(ctl, "%s%s", sep, virDomainGetName(dom));
+                sep = " ";
+            }
+            vshPrint(ctl, "\n");
         }
     }
 
@@ -2282,8 +2291,7 @@ cmdDomstats(vshControl *ctl, const vshCmd *cmd)
         flags |= VIR_CONNECT_GET_ALL_DOMAINS_STATS_NOWAIT;
 
     if (vshCommandOptBool(cmd, "domain")) {
-        if (VIR_ALLOC_N(domlist, 1) < 0)
-            goto cleanup;
+        domlist = g_new0(virDomainPtr, 1);
         ndoms = 1;
 
         while ((opt = vshCommandOptArgv(ctl, cmd, opt))) {
@@ -2413,7 +2421,7 @@ cmdDomIfAddr(vshControl *ctl, const vshCmd *cmd)
         }
 
         for (j = 0; j < iface->naddrs; j++) {
-            virBuffer buf = VIR_BUFFER_INITIALIZER;
+            g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
             switch (iface->addrs[j].type) {
             case VIR_IP_ADDR_TYPE_IPV4:
@@ -2442,7 +2450,6 @@ cmdDomIfAddr(vshControl *ctl, const vshCmd *cmd)
                 vshPrint(ctl, " %-10s %-17s    %s\n",
                          "-", "-", ip_addr_str);
 
-            virBufferFreeAndReset(&buf);
             VIR_FREE(ip_addr_str);
         }
     }

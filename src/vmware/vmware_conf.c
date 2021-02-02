@@ -132,8 +132,6 @@ vmwareLoadDomains(struct vmware_driver *driver)
     char *vmxPath = NULL;
     char *vmx = NULL;
     vmwareDomainPtr pDomain;
-    char *directoryName = NULL;
-    char *fileName = NULL;
     int ret = -1;
     virVMXContext ctx;
     char *outbuf = NULL;
@@ -141,7 +139,7 @@ vmwareLoadDomains(struct vmware_driver *driver)
     char *saveptr = NULL;
     virCommandPtr cmd;
 
-    ctx.parseFileName = vmwareCopyVMXFileName;
+    ctx.parseFileName = vmwareParseVMXFileName;
     ctx.formatFileName = NULL;
     ctx.autodetectSCSIControllerModel = NULL;
     ctx.datacenterPath = NULL;
@@ -197,8 +195,6 @@ vmwareLoadDomains(struct vmware_driver *driver)
     virCommandFree(cmd);
     VIR_FREE(outbuf);
     virDomainDefFree(vmdef);
-    VIR_FREE(directoryName);
-    VIR_FREE(fileName);
     VIR_FREE(vmx);
     virObjectUnref(vm);
     return ret;
@@ -436,8 +432,7 @@ vmwareVmxPath(virDomainDefPtr vmdef, char **vmxPath)
 int
 vmwareMoveFile(char *srcFile, char *dstFile)
 {
-    const char *cmdmv[] =
-        { "mv", PROGRAM_SENTINEL, PROGRAM_SENTINEL, NULL };
+    g_autoptr(virCommand) cmd = NULL;
 
     if (!virFileExists(srcFile)) {
         virReportError(VIR_ERR_INTERNAL_ERROR, _("file %s does not exist"),
@@ -448,9 +443,9 @@ vmwareMoveFile(char *srcFile, char *dstFile)
     if (STREQ(srcFile, dstFile))
         return 0;
 
-    vmwareSetSentinal(cmdmv, srcFile);
-    vmwareSetSentinal(cmdmv, dstFile);
-    if (virRun(cmdmv, NULL) < 0) {
+    cmd = virCommandNewArgList("mv", srcFile, dstFile, NULL);
+
+    if (virCommandRun(cmd, NULL) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("failed to move file to %s "), dstFile);
         return -1;
@@ -512,11 +507,20 @@ vmwareExtractPid(const char * vmxPath)
     return pid_value;
 }
 
-char *
-vmwareCopyVMXFileName(const char *datastorePath, void *opaque G_GNUC_UNUSED)
+int
+vmwareParseVMXFileName(const char *datastorePath,
+                       void *opaque G_GNUC_UNUSED,
+                       char **out,
+                       bool allow_missing G_GNUC_UNUSED)
 {
-    char *path;
+    *out = g_strdup(datastorePath);
 
-    path = g_strdup(datastorePath);
-    return path;
+    return *out ? 0 : -1;
+}
+
+char *
+vmwareFormatVMXFileName(const char *datastorePath,
+                        void *opaque G_GNUC_UNUSED)
+{
+    return g_strdup(datastorePath);
 }

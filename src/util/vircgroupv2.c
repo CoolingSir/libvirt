@@ -122,12 +122,6 @@ virCgroupV2ValidateMachineGroup(virCgroupPtr group,
     if (!(tmp = strrchr(group->unified.placement, '/')))
         return false;
 
-    if (STREQ(tmp, "/emulator")) {
-        *tmp = '\0';
-
-        if (!(tmp = strrchr(group->unified.placement, '/')))
-            return false;
-    }
     tmp++;
 
     if (STRNEQ(tmp, partmachinename) &&
@@ -155,22 +149,19 @@ virCgroupV2CopyPlacement(virCgroupPtr group,
                          const char *path,
                          virCgroupPtr parent)
 {
+    bool delim = STREQ(parent->unified.placement, "/") || STREQ(path, "");
+
     VIR_DEBUG("group=%p path=%s parent=%p", group, path, parent);
 
-    if (path[0] == '/') {
-        group->unified.placement = g_strdup(path);
-    } else {
-        bool delim = STREQ(parent->unified.placement, "/") || STREQ(path, "");
-        /*
-         * parent == "/" + path="" => "/"
-         * parent == "/libvirt.service" + path == "" => "/libvirt.service"
-         * parent == "/libvirt.service" + path == "foo" => "/libvirt.service/foo"
-         */
-        group->unified.placement = g_strdup_printf("%s%s%s",
-                                                   parent->unified.placement,
-                                                   delim ? "" : "/",
-                                                   path);
-    }
+    /*
+     * parent == "/" + path="" => "/"
+     * parent == "/libvirt.service" + path == "" => "/libvirt.service"
+     * parent == "/libvirt.service" + path == "foo" => "/libvirt.service/foo"
+     */
+    group->unified.placement = g_strdup_printf("%s%s%s",
+                                               parent->unified.placement,
+                                               delim ? "" : "/",
+                                               path);
 
     return 0;
 }
@@ -198,6 +189,9 @@ virCgroupV2DetectPlacement(virCgroupPtr group,
                            const char *controllers,
                            const char *selfpath)
 {
+    g_autofree char *placement = g_strdup(selfpath);
+    char *tmp = NULL;
+
     if (group->unified.placement)
         return 0;
 
@@ -208,13 +202,29 @@ virCgroupV2DetectPlacement(virCgroupPtr group,
     if (STRNEQ(controllers, ""))
         return 0;
 
+    /* Running VM will have the main thread placed in emulator cgroup
+     * but we need to get the main cgroup. */
+    tmp = g_strrstr(placement, "/emulator");
+    if (tmp)
+        *tmp = '\0';
+
     /*
      * selfpath == "/" + path="" -> "/"
      * selfpath == "/libvirt.service" + path == "" -> "/libvirt.service"
      * selfpath == "/libvirt.service" + path == "foo" -> "/libvirt.service/foo"
      */
-    group->unified.placement = g_strdup_printf("%s%s%s", selfpath,
+    group->unified.placement = g_strdup_printf("%s%s%s", placement,
                                                (STREQ(selfpath, "/") || STREQ(path, "") ? "" : "/"), path);
+
+    return 0;
+}
+
+
+static int
+virCgroupV2SetPlacement(virCgroupPtr group,
+                        const char *path)
+{
+    group->unified.placement = g_strdup(path);
 
     return 0;
 }
@@ -252,7 +262,7 @@ virCgroupV2ParseControllersFile(virCgroupPtr group,
     char **tmp;
 
     if (parent) {
-        contFile = g_strdup_printf("%s%s/cgroup.subtree_control",
+        contFile = g_strdup_printf("%s%s/cgroup.controllers",
                                    parent->unified.mountPoint,
                                    NULLSTR_EMPTY(parent->unified.placement));
     } else {
@@ -284,7 +294,7 @@ virCgroupV2ParseControllersFile(virCgroupPtr group,
         tmp++;
     }
 
-    virStringListFree(contList);
+    g_strfreev(contList);
 
     return 0;
 }
@@ -410,8 +420,6 @@ virCgroupV2MakeGroup(virCgroupPtr parent,
         return 0;
     }
 
-    VIR_DEBUG("Make group %s", group->path);
-
     controller = virCgroupV2GetAnyController(group);
     if (virCgroupV2PathOfController(group, controller, "", &path) < 0)
         return -1;
@@ -421,7 +429,7 @@ virCgroupV2MakeGroup(virCgroupPtr parent,
     if (!virFileExists(path) &&
         (!create || (mkdir(path, 0755) < 0 && errno != EEXIST))) {
         virReportSystemError(errno, _("Failed to create v2 cgroup '%s'"),
-                             group->path);
+                             path);
         return -1;
     }
 
@@ -521,7 +529,7 @@ virCgroupV2HasEmptyTasks(virCgroupPtr cgroup,
     int ret = -1;
     g_autofree char *content = NULL;
 
-    ret = virCgroupGetValueStr(cgroup, controller, "cgroup.procs", &content);
+    ret = virCgroupGetValueStr(cgroup, controller, "cgroup.threads", &content);
 
     if (ret == 0 && content[0] == '\0')
         ret = 1;
@@ -533,7 +541,7 @@ virCgroupV2HasEmptyTasks(virCgroupPtr cgroup,
 static int
 virCgroupV2KillRecursive(virCgroupPtr group,
                          int signum,
-                         virHashTablePtr pids)
+                         GHashTable *pids)
 {
     int controller = virCgroupV2GetAnyController(group);
 
@@ -548,9 +556,8 @@ virCgroupV2KillRecursive(virCgroupPtr group,
 static int
 virCgroupV2BindMount(virCgroupPtr group,
                      const char *oldroot,
-                     const char *mountopts)
+                     const char *mountopts G_GNUC_UNUSED)
 {
-    g_autofree char *opts = NULL;
     g_autofree char *src = NULL;
 
     VIR_DEBUG("Mounting cgroups at '%s'", group->unified.mountPoint);
@@ -560,8 +567,6 @@ virCgroupV2BindMount(virCgroupPtr group,
                              group->unified.mountPoint);
         return -1;
     }
-
-    opts = g_strdup_printf("mode=755,size=65536%s", mountopts);
 
     src = g_strdup_printf("%s%s", oldroot, group->unified.mountPoint);
 
@@ -1477,12 +1482,12 @@ virCgroupV2SetCpuCfsPeriod(virCgroupPtr group,
     g_autofree char *str = NULL;
     char *tmp;
 
-    /* The cfs_period should be greater or equal than 1ms, and less or equal
-     * than 1s.
-     */
-    if (cfs_period < 1000 || cfs_period > 1000000) {
+    if (cfs_period < VIR_CGROUP_CPU_PERIOD_MIN ||
+        cfs_period > VIR_CGROUP_CPU_PERIOD_MAX) {
         virReportError(VIR_ERR_INVALID_ARG,
-                       _("cfs_period '%llu' must be in range (1000, 1000000)"),
+                       _("cfs_period '%llu' must be in range (%llu, %llu)"),
+                       VIR_CGROUP_CPU_PERIOD_MIN,
+                       VIR_CGROUP_CPU_PERIOD_MAX,
                        cfs_period);
         return -1;
     }
@@ -1538,17 +1543,18 @@ static int
 virCgroupV2SetCpuCfsQuota(virCgroupPtr group,
                           long long cfs_quota)
 {
-    /* The cfs_quota should be greater or equal than 1ms */
     if (cfs_quota >= 0 &&
-        (cfs_quota < 1000 ||
-         cfs_quota > ULLONG_MAX / 1000)) {
+        (cfs_quota < VIR_CGROUP_CPU_QUOTA_MIN ||
+         cfs_quota > VIR_CGROUP_CPU_QUOTA_MAX)) {
         virReportError(VIR_ERR_INVALID_ARG,
-                       _("cfs_quota '%lld' must be in range (1000, %llu)"),
-                       cfs_quota, ULLONG_MAX / 1000);
+                       _("cfs_quota '%lld' must be in range (%llu, %llu)"),
+                       cfs_quota,
+                       VIR_CGROUP_CPU_QUOTA_MIN,
+                       VIR_CGROUP_CPU_QUOTA_MAX);
         return -1;
     }
 
-    if (cfs_quota == ULLONG_MAX / 1000) {
+    if (cfs_quota == VIR_CGROUP_CPU_QUOTA_MAX) {
         return virCgroupSetValueStr(group,
                                     VIR_CGROUP_CONTROLLER_CPU,
                                     "cpu.max", "max");
@@ -1573,7 +1579,7 @@ virCgroupV2GetCpuCfsQuota(virCgroupPtr group,
     }
 
     if (STREQLEN(str, "max", 3)) {
-        *cfs_quota = ULLONG_MAX / 1000;
+        *cfs_quota = VIR_CGROUP_CPU_QUOTA_MAX;
         return 0;
     }
 
@@ -1791,7 +1797,9 @@ virCgroupV2DenyDevice(virCgroupPtr group,
         return 0;
     }
 
-    if (newval == val) {
+    val = val & ~newval;
+
+    if (val == 0) {
         if (virBPFDeleteElem(group->unified.devices.mapfd, &key) < 0) {
             virReportSystemError(errno, "%s",
                                  _("failed to remove device from BPF cgroup map"));
@@ -1799,7 +1807,6 @@ virCgroupV2DenyDevice(virCgroupPtr group,
         }
         group->unified.devices.count--;
     } else {
-        val ^= val & newval;
         if (virBPFUpdateElem(group->unified.devices.mapfd, &key, &val) < 0) {
             virReportSystemError(errno, "%s",
                                  _("failed to update device in BPF cgroup map"));
@@ -1847,6 +1854,7 @@ virCgroupBackend virCgroupV2Backend = {
     .copyPlacement = virCgroupV2CopyPlacement,
     .detectMounts = virCgroupV2DetectMounts,
     .detectPlacement = virCgroupV2DetectPlacement,
+    .setPlacement = virCgroupV2SetPlacement,
     .validatePlacement = virCgroupV2ValidatePlacement,
     .stealPlacement = virCgroupV2StealPlacement,
     .detectControllers = virCgroupV2DetectControllers,

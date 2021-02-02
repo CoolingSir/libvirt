@@ -45,13 +45,15 @@ struct _testQemuMonitorJSONSimpleFuncData {
     int (* func) (qemuMonitorPtr mon);
     virDomainXMLOptionPtr xmlopt;
     const char *reply;
-    virHashTablePtr schema;
+    GHashTable *schema;
+    bool allowDeprecated;
+    bool allowRemoved;
 };
 
 typedef struct _testGenericData testGenericData;
 struct _testGenericData {
     virDomainXMLOptionPtr xmlopt;
-    virHashTablePtr schema;
+    GHashTable *schema;
 };
 
 const char *queryBlockReply =
@@ -609,123 +611,7 @@ testQemuMonitorJSONGetTPMModels(const void *opaque)
     ret = 0;
 
  cleanup:
-    virStringListFree(tpmmodels);
-    return ret;
-}
-
-
-static int
-testQemuMonitorJSONGetCommandLineOptionParameters(const void *opaque)
-{
-    const testGenericData *data = opaque;
-    virDomainXMLOptionPtr xmlopt = data->xmlopt;
-    int ret = -1;
-    char **params = NULL;
-    int nparams = 0;
-    bool found = false;
-    g_autoptr(qemuMonitorTest) test = NULL;
-
-    if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
-        return -1;
-
-    if (qemuMonitorTestAddItem(test, "query-command-line-options",
-                               "{ "
-                               "  \"return\": [ "
-                               "  {\"parameters\": [], \"option\": \"acpi\" },"
-                               "  {\"parameters\": ["
-                               "    {\"name\": \"romfile\", "
-                               "     \"type\": \"string\"}, "
-                               "    {\"name\": \"bootindex\", "
-                               "     \"type\": \"number\"}], "
-                               "   \"option\": \"option-rom\"}"
-                               "  ]"
-                               "}") < 0)
-        goto cleanup;
-
-    /* present with params */
-    if ((nparams = qemuMonitorGetCommandLineOptionParameters(qemuMonitorTestGetMonitor(test),
-                                                             "option-rom",
-                                                             &params,
-                                                             NULL)) < 0)
-        goto cleanup;
-
-    if (nparams != 2) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "nparams was %d, expected 2", nparams);
-        goto cleanup;
-    }
-
-#define CHECK(i, wantname) \
-    do { \
-        if (STRNEQ(params[i], (wantname))) { \
-            virReportError(VIR_ERR_INTERNAL_ERROR, \
-                           "name was %s, expected %s", \
-                           params[i], (wantname)); \
-            goto cleanup; \
-        } \
-    } while (0)
-
-    CHECK(0, "romfile");
-    CHECK(1, "bootindex");
-
-#undef CHECK
-
-    virStringListFree(params);
-    params = NULL;
-
-    /* present but empty */
-    if ((nparams = qemuMonitorGetCommandLineOptionParameters(qemuMonitorTestGetMonitor(test),
-                                                             "acpi",
-                                                             &params,
-                                                             &found)) < 0)
-        goto cleanup;
-
-    if (nparams != 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "nparams was %d, expected 0", nparams);
-        goto cleanup;
-    }
-    if (!found) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       "found was false, expected true");
-        goto cleanup;
-    }
-    if (params && params[0]) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       "unexpected array contents");
-        goto cleanup;
-    }
-
-    virStringListFree(params);
-    params = NULL;
-
-    /* no such option */
-    if ((nparams = qemuMonitorGetCommandLineOptionParameters(qemuMonitorTestGetMonitor(test),
-                                                             "foobar",
-                                                             &params,
-                                                             &found)) < 0)
-        goto cleanup;
-
-    if (nparams != 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "nparams was %d, expected 0", nparams);
-        goto cleanup;
-    }
-    if (found) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       "found was true, expected false");
-        goto cleanup;
-    }
-    if (params && params[0]) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       "unexpected array contents");
-        goto cleanup;
-    }
-
-    ret = 0;
-
- cleanup:
-    virStringListFree(params);
+    g_strfreev(tpmmodels);
     return ret;
 }
 
@@ -769,7 +655,7 @@ testQemuMonitorJSONAttachChardev(const void *opaque)
 
 static int
 qemuMonitorJSONTestAttachOneChardev(virDomainXMLOptionPtr xmlopt,
-                                    virHashTablePtr schema,
+                                    GHashTable *schema,
                                     const char *label,
                                     virDomainChrSourceDefPtr chr,
                                     const char *expectargs,
@@ -796,6 +682,8 @@ qemuMonitorJSONTestAttachOneChardev(virDomainXMLOptionPtr xmlopt,
     if (!(data.test = qemuMonitorTestNewSchema(xmlopt, schema)))
         goto cleanup;
 
+    qemuMonitorTestAllowUnusedCommands(data.test);
+
     if (qemuMonitorTestAddItemExpect(data.test, "chardev-add",
                                      expectargs, true, jsonreply) < 0)
         goto cleanup;
@@ -814,7 +702,7 @@ qemuMonitorJSONTestAttachOneChardev(virDomainXMLOptionPtr xmlopt,
 
 static int
 qemuMonitorJSONTestAttachChardev(virDomainXMLOptionPtr xmlopt,
-                                 virHashTablePtr schema)
+                                 GHashTable *schema)
 {
     virDomainChrSourceDef chr;
     int ret = 0;
@@ -1182,7 +1070,7 @@ testQemuMonitorJSONGetDeviceAliases(const void *opaque)
     }
 
  cleanup:
-    virStringListFree(aliases);
+    g_strfreev(aliases);
     return ret;
 }
 
@@ -1277,6 +1165,9 @@ testQemuMonitorJSON ## funcName(const void *opaque) \
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema))) \
         return -1; \
  \
+    if (data->allowDeprecated) \
+        qemuMonitorTestSkipDeprecatedValidation(test, data->allowRemoved); \
+ \
     if (!reply) \
         reply = "{\"return\":{}}"; \
  \
@@ -1308,7 +1199,6 @@ GEN_TEST_FUNC(qemuMonitorJSONDump, "dummy_protocol", "elf",
               true)
 GEN_TEST_FUNC(qemuMonitorJSONGraphicsRelocate, VIR_DOMAIN_GRAPHICS_TYPE_SPICE,
               "localhost", 12345, 12346, "certsubjectval")
-GEN_TEST_FUNC(qemuMonitorJSONAddNetdev, "id=net0,type=user")
 GEN_TEST_FUNC(qemuMonitorJSONRemoveNetdev, "net0")
 GEN_TEST_FUNC(qemuMonitorJSONDelDevice, "ide0")
 GEN_TEST_FUNC(qemuMonitorJSONAddDevice, "some_dummy_devicestr")
@@ -1428,14 +1318,12 @@ testQemuMonitorJSONqemuMonitorJSONQueryCPUs(const void *opaque)
             {2, 17626, (char *) "/machine/unattached/device[2]", true},
             {3, 17628, NULL, true},
     };
-    struct qemuMonitorQueryCpusEntry expect_fast[] = {
-            {0, 17629, (char *) "/machine/unattached/device[0]", false},
-            {1, 17630, (char *) "/machine/unattached/device[1]", false},
-    };
     g_autoptr(qemuMonitorTest) test = NULL;
 
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
         return -1;
+
+    qemuMonitorTestSkipDeprecatedValidation(test, true);
 
     if (qemuMonitorTestAddItem(test, "query-cpus",
                                "{"
@@ -1476,6 +1364,29 @@ testQemuMonitorJSONqemuMonitorJSONQueryCPUs(const void *opaque)
                                "}") < 0)
         return -1;
 
+    /* query-cpus */
+    if (testQEMUMonitorJSONqemuMonitorJSONQueryCPUsHelper(test, expect_slow,
+                                                          false, 4))
+        return -1;
+
+    return 0;
+}
+
+
+static int
+testQemuMonitorJSONqemuMonitorJSONQueryCPUsFast(const void *opaque)
+{
+    const testGenericData *data = opaque;
+    virDomainXMLOptionPtr xmlopt = data->xmlopt;
+    struct qemuMonitorQueryCpusEntry expect_fast[] = {
+            {0, 17629, (char *) "/machine/unattached/device[0]", false},
+            {1, 17630, (char *) "/machine/unattached/device[1]", false},
+    };
+    g_autoptr(qemuMonitorTest) test = NULL;
+
+    if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
+        return -1;
+
     if (qemuMonitorTestAddItem(test, "query-cpus-fast",
                                "{"
                                "    \"return\": ["
@@ -1492,11 +1403,6 @@ testQemuMonitorJSONqemuMonitorJSONQueryCPUs(const void *opaque)
                                "    ],"
                                "    \"id\": \"libvirt-8\""
                                "}") < 0)
-        return -1;
-
-    /* query-cpus */
-    if (testQEMUMonitorJSONqemuMonitorJSONQueryCPUsHelper(test, expect_slow,
-                                                          false, 4))
         return -1;
 
     /* query-cpus-fast */
@@ -1539,57 +1445,6 @@ testQemuMonitorJSONqemuMonitorJSONGetBalloonInfo(const void *opaque)
     return 0;
 }
 
-static int
-testQemuMonitorJSONqemuMonitorJSONGetVirtType(const void *opaque)
-{
-    const testGenericData *data = opaque;
-    virDomainXMLOptionPtr xmlopt = data->xmlopt;
-    virDomainVirtType virtType;
-    g_autoptr(qemuMonitorTest) test = NULL;
-
-    if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
-        return -1;
-
-    if (qemuMonitorTestAddItem(test, "query-kvm",
-                               "{"
-                               "    \"return\": {"
-                               "        \"enabled\": true,"
-                               "        \"present\": true"
-                               "    },"
-                               "    \"id\": \"libvirt-8\""
-                               "}") < 0 ||
-        qemuMonitorTestAddItem(test, "query-kvm",
-                               "{"
-                               "    \"return\": {"
-                               "        \"enabled\": false,"
-                               "        \"present\": true"
-                               "    },"
-                               "    \"id\": \"libvirt-7\""
-                               "}") < 0)
-        return -1;
-
-    if (qemuMonitorJSONGetVirtType(qemuMonitorTestGetMonitor(test), &virtType) < 0)
-        return -1;
-
-    if (virtType != VIR_DOMAIN_VIRT_KVM) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "Unexpected virt type: %d, expecting %d", virtType, VIR_DOMAIN_VIRT_KVM);
-        return -1;
-    }
-
-    if (qemuMonitorJSONGetVirtType(qemuMonitorTestGetMonitor(test), &virtType) < 0)
-        return -1;
-
-    if (virtType != VIR_DOMAIN_VIRT_QEMU) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "Unexpected virt type: %d, expecting %d", virtType, VIR_DOMAIN_VIRT_QEMU);
-        return -1;
-    }
-
-    return 0;
-}
-
-
 static void
 testQemuMonitorJSONGetBlockInfoPrint(const struct qemuDomainDiskInfo *d)
 {
@@ -1620,19 +1475,19 @@ testQemuMonitorJSONqemuMonitorJSONGetBlockInfo(const void *opaque)
     const testGenericData *data = opaque;
     virDomainXMLOptionPtr xmlopt = data->xmlopt;
     int ret = -1;
-    virHashTablePtr blockDevices = NULL, expectedBlockDevices = NULL;
+    GHashTable *blockDevices = NULL;
+    GHashTable *expectedBlockDevices = NULL;
     struct qemuDomainDiskInfo *info;
     g_autoptr(qemuMonitorTest) test = NULL;
 
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
         return -1;
 
-    if (!(blockDevices = virHashCreate(32, virHashValueFree)) ||
-        !(expectedBlockDevices = virHashCreate(32, virHashValueFree)))
+    if (!(blockDevices = virHashNew(g_free)) ||
+        !(expectedBlockDevices = virHashNew(g_free)))
         goto cleanup;
 
-    if (VIR_ALLOC(info) < 0)
-        goto cleanup;
+    info = g_new0(struct qemuDomainDiskInfo, 1);
 
     if (virHashAddEntry(expectedBlockDevices, "virtio-disk0", info) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -1640,8 +1495,7 @@ testQemuMonitorJSONqemuMonitorJSONGetBlockInfo(const void *opaque)
         goto cleanup;
     }
 
-    if (VIR_ALLOC(info) < 0)
-        goto cleanup;
+    info = g_new0(struct qemuDomainDiskInfo, 1);
 
     if (virHashAddEntry(expectedBlockDevices, "virtio-disk1", info) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -1649,8 +1503,7 @@ testQemuMonitorJSONqemuMonitorJSONGetBlockInfo(const void *opaque)
         goto cleanup;
     }
 
-    if (VIR_ALLOC(info) < 0)
-        goto cleanup;
+    info = g_new0(struct qemuDomainDiskInfo, 1);
 
     info->removable = true;
     info->tray = true;
@@ -1661,8 +1514,7 @@ testQemuMonitorJSONqemuMonitorJSONGetBlockInfo(const void *opaque)
         goto cleanup;
     }
 
-    if (VIR_ALLOC(info) < 0)
-        goto cleanup;
+    info = g_new0(struct qemuDomainDiskInfo, 1);
 
     info->removable = true;
     info->tray = true;
@@ -1698,7 +1550,7 @@ testQemuMonitorJSONqemuMonitorJSONGetAllBlockStatsInfo(const void *opaque)
 {
     const testGenericData *data = opaque;
     virDomainXMLOptionPtr xmlopt = data->xmlopt;
-    virHashTablePtr blockstats = NULL;
+    GHashTable *blockstats = NULL;
     qemuBlockStatsPtr stats;
     int ret = -1;
     g_autoptr(qemuMonitorTest) test = NULL;
@@ -1793,7 +1645,7 @@ testQemuMonitorJSONqemuMonitorJSONGetAllBlockStatsInfo(const void *opaque)
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
         return -1;
 
-    if (!(blockstats = virHashCreate(10, virHashValueFree)))
+    if (!(blockstats = virHashNew(g_free)))
         goto cleanup;
 
     if (qemuMonitorTestAddItem(test, "query-blockstats", reply) < 0)
@@ -1865,6 +1717,8 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationCacheSize(const void *opaque)
 
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
         return -1;
+
+    qemuMonitorTestSkipDeprecatedValidation(test, true);
 
     if (qemuMonitorTestAddItem(test, "query-migrate-cache-size",
                                "{"
@@ -1988,7 +1842,8 @@ testQemuMonitorJSONqemuMonitorJSONGetChardevInfo(const void *opaque)
     const testGenericData *data = opaque;
     virDomainXMLOptionPtr xmlopt = data->xmlopt;
     int ret = -1;
-    virHashTablePtr info = NULL, expectedInfo = NULL;
+    GHashTable *info = NULL;
+    GHashTable *expectedInfo = NULL;
     qemuMonitorChardevInfo info0 = { NULL, VIR_DOMAIN_CHR_DEVICE_STATE_DEFAULT };
     qemuMonitorChardevInfo info1 = { (char *) "/dev/pts/21", VIR_DOMAIN_CHR_DEVICE_STATE_CONNECTED };
     qemuMonitorChardevInfo info2 = { (char *) "/dev/pts/20", VIR_DOMAIN_CHR_DEVICE_STATE_DEFAULT };
@@ -1998,8 +1853,8 @@ testQemuMonitorJSONqemuMonitorJSONGetChardevInfo(const void *opaque)
     if (!(test = qemuMonitorTestNewSchema(xmlopt, data->schema)))
         return -1;
 
-    if (!(info = virHashCreate(32, qemuMonitorChardevInfoFree)) ||
-        !(expectedInfo = virHashCreate(32, NULL)))
+    if (!(info = virHashNew(qemuMonitorChardevInfoFree)) ||
+        !(expectedInfo = virHashNew(NULL)))
         goto cleanup;
 
     if (virHashAddEntry(expectedInfo, "charserial1", &info1) < 0 ||
@@ -2195,11 +2050,10 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationCapabilities(const void *opaque)
 {
     const testGenericData *data = opaque;
     virDomainXMLOptionPtr xmlopt = data->xmlopt;
-    int ret = -1;
     const char *cap;
-    char **caps = NULL;
-    virBitmapPtr bitmap = NULL;
-    virJSONValuePtr json = NULL;
+    g_auto(GStrv) caps = NULL;
+    g_autoptr(virBitmap) bitmap = NULL;
+    g_autoptr(virJSONValue) json = NULL;
     const char *reply =
         "{"
         "    \"return\": ["
@@ -2218,36 +2072,26 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationCapabilities(const void *opaque)
     if (qemuMonitorTestAddItem(test, "query-migrate-capabilities", reply) < 0 ||
         qemuMonitorTestAddItem(test, "migrate-set-capabilities",
                                "{\"return\":{}}") < 0)
-        goto cleanup;
+        return -1;
 
     if (qemuMonitorGetMigrationCapabilities(qemuMonitorTestGetMonitor(test),
                                             &caps) < 0)
-        goto cleanup;
+        return -1;
 
     cap = qemuMigrationCapabilityTypeToString(QEMU_MIGRATION_CAP_XBZRLE);
     if (!virStringListHasString((const char **) caps, cap)) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        "Expected capability %s is missing", cap);
-        goto cleanup;
+        return -1;
     }
 
     bitmap = virBitmapNew(QEMU_MIGRATION_CAP_LAST);
-    if (!bitmap)
-        goto cleanup;
-
     ignore_value(virBitmapSetBit(bitmap, QEMU_MIGRATION_CAP_XBZRLE));
     if (!(json = qemuMigrationCapsToJSON(bitmap, bitmap)))
-        goto cleanup;
+        return -1;
 
-    ret = qemuMonitorJSONSetMigrationCapabilities(qemuMonitorTestGetMonitor(test),
-                                                  json);
-    json = NULL;
-
- cleanup:
-    virJSONValueFree(json);
-    virStringListFree(caps);
-    virBitmapFree(bitmap);
-    return ret;
+    return qemuMonitorJSONSetMigrationCapabilities(qemuMonitorTestGetMonitor(test),
+                                                   &json);
 }
 
 static int
@@ -2387,7 +2231,7 @@ testQemuMonitorJSONqemuMonitorJSONGetDumpGuestMemoryCapability(const void *opaqu
 struct testCPUData {
     const char *name;
     virDomainXMLOptionPtr xmlopt;
-    virHashTablePtr schema;
+    GHashTable *schema;
 };
 
 
@@ -2525,8 +2369,8 @@ testQemuMonitorJSONGetIOThreads(const void *opaque)
                                "}") < 0)
         goto cleanup;
 
-    if ((ninfo = qemuMonitorGetIOThreads(qemuMonitorTestGetMonitor(test),
-                                         &info)) < 0)
+    if (qemuMonitorGetIOThreads(qemuMonitorTestGetMonitor(test),
+                                &info, &ninfo) < 0)
         goto cleanup;
 
     if (ninfo != 2) {
@@ -2571,7 +2415,7 @@ struct testCPUInfoData {
     size_t maxvcpus;
     virDomainXMLOptionPtr xmlopt;
     bool fast;
-    virHashTablePtr schema;
+    GHashTable *schema;
 };
 
 
@@ -2579,7 +2423,7 @@ static char *
 testQemuMonitorCPUInfoFormat(qemuMonitorCPUInfoPtr vcpus,
                              size_t nvcpus)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     qemuMonitorCPUInfoPtr vcpu;
     size_t i;
 
@@ -2675,10 +2519,12 @@ testQemuMonitorCPUInfo(const void *opaque)
                                queryHotpluggableStr) < 0)
         goto cleanup;
 
-    if (data->fast)
+    if (data->fast) {
         queryCpusFunction = "query-cpus-fast";
-    else
+    } else {
         queryCpusFunction = "query-cpus";
+        qemuMonitorTestSkipDeprecatedValidation(test, true);
+    }
 
     if (qemuMonitorTestAddItem(test, queryCpusFunction, queryCpusStr) < 0)
         goto cleanup;
@@ -2713,7 +2559,7 @@ testQemuMonitorCPUInfo(const void *opaque)
 
 static int
 testBlockNodeNameDetectFormat(void *payload,
-                              const void *name,
+                              const char *name,
                               void *opaque)
 {
     qemuBlockNodeNameBackingChainDataPtr entry = payload;
@@ -2754,8 +2600,8 @@ testBlockNodeNameDetect(const void *opaque)
     char *actual = NULL;
     virJSONValuePtr namedNodesJson = NULL;
     virJSONValuePtr blockstatsJson = NULL;
-    virHashTablePtr nodedata = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    GHashTable *nodedata = NULL;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     int ret = -1;
 
     resultFile = g_strdup_printf("%s/%s%s.result", abs_srcdir, pathprefix,
@@ -2773,7 +2619,7 @@ testBlockNodeNameDetect(const void *opaque)
                                                       blockstatsJson)))
         goto cleanup;
 
-    virHashForEach(nodedata, testBlockNodeNameDetectFormat, &buf);
+    virHashForEachSorted(nodedata, testBlockNodeNameDetectFormat, &buf);
 
     virBufferTrim(&buf, "\n");
 
@@ -2796,7 +2642,7 @@ testBlockNodeNameDetect(const void *opaque)
 
 
 struct testQAPISchemaData {
-    virHashTablePtr schema;
+    GHashTable *schema;
     const char *name;
     const char *query;
     const char *json;
@@ -2829,7 +2675,7 @@ static int
 testQAPISchemaValidate(const void *opaque)
 {
     const struct testQAPISchemaData *data = opaque;
-    virBuffer debug = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) debug = VIR_BUFFER_INITIALIZER;
     virJSONValuePtr schemaroot;
     virJSONValuePtr json = NULL;
     int ret = -1;
@@ -2840,7 +2686,8 @@ testQAPISchemaValidate(const void *opaque)
     if (!(json = virJSONValueFromString(data->json)))
         goto cleanup;
 
-    if ((testQEMUSchemaValidate(json, schemaroot, data->schema, &debug) == 0) != data->success) {
+    if ((testQEMUSchemaValidate(json, schemaroot, data->schema, false,
+                                &debug) == 0) != data->success) {
         if (!data->success)
             VIR_TEST_VERBOSE("\nschema validation should have failed");
     } else {
@@ -2856,9 +2703,57 @@ testQAPISchemaValidate(const void *opaque)
 
 
  cleanup:
-    virBufferFreeAndReset(&debug);
     virJSONValueFree(json);
     return ret;
+}
+
+
+/**
+ * testQAPISchemaObjectDeviceAdd:
+ *
+ * Purpose of this test is to add a last-resort notification that 'object-add'
+ * and 'device_add' are not covered by the QMP schema by surprise. Ideally QEMU
+ * developers will notify us before they switch so we have time to adapt our
+ * generators first. This didn't work out when netdev-add was converted.
+ *
+ * We validate that the QMP schema describes only the expected types and nothing
+ * else assuming that no new field will be added until final conversion.
+ */
+static int
+testQAPISchemaObjectDeviceAdd(const void *opaque)
+{
+    GHashTable *schema = (GHashTable *) opaque;
+    virJSONValuePtr entry;
+
+    if (virQEMUQAPISchemaPathGet("device_add/arg-type", schema, &entry) < 0) {
+        fprintf(stderr, "schema for 'device_add' not found\n");
+        return -1;
+    }
+
+    if (testQEMUSchemaEntryMatchTemplate(entry,
+                                         "str:driver",
+                                         "str:bus",
+                                         "str:id",
+                                         NULL) < 0) {
+        VIR_TEST_VERBOSE("device_add has unexpected members in schema");
+        return -1;
+    }
+
+    if (virQEMUQAPISchemaPathGet("object-add/arg-type", schema, &entry) < 0) {
+        fprintf(stderr, "schema for 'objectadd' not found\n");
+        return -1;
+    }
+
+    if (testQEMUSchemaEntryMatchTemplate(entry,
+                                         "str:qom-type",
+                                         "str:id",
+                                         "any:props",
+                                         NULL) < 0) {
+        VIR_TEST_VERBOSE("object-add has unexpected members in schema");
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -2891,7 +2786,7 @@ testQueryJobs(const void *opaque)
     g_autofree char *filenameResult = NULL;
     g_autofree char *actual = NULL;
     qemuMonitorJobInfoPtr *jobs = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t njobs = 0;
     size_t i;
     int ret = -1;
@@ -2977,6 +2872,29 @@ testQemuMonitorJSONTransaction(const void *opaque)
     return 0;
 }
 
+
+static int
+testQemuMonitorJSONBlockExportAdd(const void *opaque)
+{
+    const testGenericData *data = opaque;
+    g_autoptr(qemuMonitorTest) test = NULL;
+    g_autoptr(virJSONValue) nbddata = NULL;
+    const char *bitmaps[] = { "bitmap1", "bitmap2", NULL };
+
+    if (!(test = qemuMonitorTestNewSchema(data->xmlopt, data->schema)))
+        return -1;
+
+    if (!(nbddata = qemuBlockExportGetNBDProps("nodename", "exportname", true, bitmaps)))
+        return -1;
+
+    if (qemuMonitorTestAddItem(test, "block-export-add", "{\"return\":{}}") < 0)
+        return -1;
+
+    if (qemuMonitorJSONBlockExportAdd(qemuMonitorTestGetMonitor(test), &nbddata) < 0)
+        return -1;
+
+    return 0;
+}
 
 static int
 testQemuMonitorJSONqemuMonitorJSONGetCPUModelComparison(const void *opaque)
@@ -3097,7 +3015,7 @@ mymain(void)
 
     virEventRegisterDefaultImpl();
 
-    if (!(qapiData.schema = testQEMUSchemaLoad("x86_64"))) {
+    if (!(qapiData.schema = testQEMUSchemaLoadLatest("x86_64"))) {
         VIR_TEST_VERBOSE("failed to load qapi schema");
         ret = -1;
         goto cleanup;
@@ -3118,12 +3036,18 @@ mymain(void)
     if (virTestRun(# FNC, testQemuMonitorJSONSimpleFunc, &simpleFunc) < 0) \
         ret = -1
 
-#define DO_TEST_GEN(name, ...) \
+#define DO_TEST_GEN_FULL(name, dpr, rmvd, ...) \
     simpleFunc = (testQemuMonitorJSONSimpleFuncData) {.xmlopt = driver.xmlopt, \
+                                                      .allowDeprecated = dpr, \
+                                                      .allowRemoved = rmvd, \
                                                       .schema = qapiData.schema \
                                                      __VA_ARGS__ }; \
     if (virTestRun(# name, testQemuMonitorJSON ## name, &simpleFunc) < 0) \
         ret = -1
+
+#define DO_TEST_GEN(name, ...) DO_TEST_GEN_FULL(name, false, false, __VA_ARGS__)
+#define DO_TEST_GEN_DEPRECATED(name, removed, ...) \
+    DO_TEST_GEN_FULL(name, true, removed, __VA_ARGS__)
 
 #define DO_TEST_CPU_DATA(name) \
     do { \
@@ -3157,7 +3081,6 @@ mymain(void)
     DO_TEST(GetCPUDefinitions);
     DO_TEST(GetCommands);
     DO_TEST(GetTPMModels);
-    DO_TEST(GetCommandLineOptionParameters);
     if (qemuMonitorJSONTestAttachChardev(driver.xmlopt, qapiData.schema) < 0)
         ret = -1;
     DO_TEST(DetachChardev);
@@ -3169,6 +3092,7 @@ mymain(void)
     DO_TEST(GetNonExistingCPUData);
     DO_TEST(GetIOThreads);
     DO_TEST(Transaction);
+    DO_TEST(BlockExportAdd);
     DO_TEST_SIMPLE("qmp_capabilities", qemuMonitorJSONSetCapabilities);
     DO_TEST_SIMPLE("system_powerdown", qemuMonitorJSONSystemPowerdown);
     DO_TEST_SIMPLE("system_reset", qemuMonitorJSONSystemReset);
@@ -3182,17 +3106,16 @@ mymain(void)
     DO_TEST_GEN(qemuMonitorJSONSetPassword);
     DO_TEST_GEN(qemuMonitorJSONExpirePassword);
     DO_TEST_GEN(qemuMonitorJSONSetBalloon);
-    DO_TEST_GEN(qemuMonitorJSONSetCPU);
+    DO_TEST_GEN_DEPRECATED(qemuMonitorJSONSetCPU, true);
     DO_TEST_GEN(qemuMonitorJSONEjectMedia);
-    DO_TEST_GEN(qemuMonitorJSONChangeMedia);
+    DO_TEST_GEN_DEPRECATED(qemuMonitorJSONChangeMedia, true);
     DO_TEST_GEN(qemuMonitorJSONSaveVirtualMemory);
     DO_TEST_GEN(qemuMonitorJSONSavePhysicalMemory);
-    DO_TEST_GEN(qemuMonitorJSONSetMigrationSpeed);
-    DO_TEST_GEN(qemuMonitorJSONSetMigrationDowntime);
+    DO_TEST_GEN_DEPRECATED(qemuMonitorJSONSetMigrationSpeed, true);
+    DO_TEST_GEN_DEPRECATED(qemuMonitorJSONSetMigrationDowntime, true);
     DO_TEST_GEN(qemuMonitorJSONMigrate);
     DO_TEST_GEN(qemuMonitorJSONDump);
     DO_TEST_GEN(qemuMonitorJSONGraphicsRelocate);
-    DO_TEST_GEN(qemuMonitorJSONAddNetdev);
     DO_TEST_GEN(qemuMonitorJSONRemoveNetdev);
     DO_TEST_GEN(qemuMonitorJSONDelDevice);
     DO_TEST_GEN(qemuMonitorJSONAddDevice);
@@ -3203,7 +3126,7 @@ mymain(void)
     DO_TEST_GEN(qemuMonitorJSONDrivePivot);
     DO_TEST_GEN(qemuMonitorJSONScreendump);
     DO_TEST_GEN(qemuMonitorJSONOpenGraphics);
-    DO_TEST_GEN(qemuMonitorJSONNBDServerAdd);
+    DO_TEST_GEN_DEPRECATED(qemuMonitorJSONNBDServerAdd, true);
     DO_TEST_GEN(qemuMonitorJSONDetachCharDev);
     DO_TEST_GEN(qemuMonitorJSONBlockdevTrayOpen);
     DO_TEST_GEN(qemuMonitorJSONBlockdevTrayClose);
@@ -3222,7 +3145,7 @@ mymain(void)
     DO_TEST(qemuMonitorJSONGetTargetArch);
     DO_TEST(qemuMonitorJSONGetMigrationCapabilities);
     DO_TEST(qemuMonitorJSONQueryCPUs);
-    DO_TEST(qemuMonitorJSONGetVirtType);
+    DO_TEST(qemuMonitorJSONQueryCPUsFast);
     DO_TEST(qemuMonitorJSONSendKey);
     DO_TEST(qemuMonitorJSONGetDumpGuestMemoryCapability);
     DO_TEST(qemuMonitorJSONSendKeyHoldtime);
@@ -3348,6 +3271,10 @@ mymain(void)
 
 #undef DO_TEST_QAPI_VALIDATE
 
+    if (virTestRun("validate that object-add and device_add don't have schema",
+                   testQAPISchemaObjectDeviceAdd, qapiData.schema) < 0)
+        ret = -1;
+
 #define DO_TEST_QUERY_JOBS(name) \
     do { \
         struct testQueryJobsData data = { name, driver.xmlopt}; \
@@ -3361,7 +3288,7 @@ mymain(void)
 #undef DO_TEST_QUERY_JOBS
 
     virHashFree(qapiData.schema);
-    if (!(qapiData.schema = testQEMUSchemaLoad("s390x"))) {
+    if (!(qapiData.schema = testQEMUSchemaLoadLatest("s390x"))) {
         VIR_TEST_VERBOSE("failed to load qapi schema for s390x");
         ret = -1;
         goto cleanup;
@@ -3378,4 +3305,4 @@ mymain(void)
     return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIR_TEST_MAIN_PRELOAD(mymain, VIR_TEST_MOCK("virdeterministichash"))
+VIR_TEST_MAIN(mymain)

@@ -27,7 +27,6 @@
 #include "virfile.h"
 #include "virerror.h"
 #include "virlog.h"
-#include "viralloc.h"
 #include "virstring.h"
 #include "virsystemd.h"
 #include "virutil.h"
@@ -146,31 +145,27 @@ static int virLXCCgroupGetMemStat(virCgroupPtr cgroup,
 
 int virLXCCgroupGetMeminfo(virLXCMeminfoPtr meminfo)
 {
-    int ret = -1;
-    virCgroupPtr cgroup;
+    g_autoptr(virCgroup) cgroup = NULL;
 
     if (virCgroupNewSelf(&cgroup) < 0)
         return -1;
 
     if (virLXCCgroupGetMemStat(cgroup, meminfo) < 0)
-        goto cleanup;
+        return -1;
 
     if (virLXCCgroupGetMemTotal(cgroup, meminfo) < 0)
-        goto cleanup;
+        return -1;
 
     if (virLXCCgroupGetMemUsage(cgroup, meminfo) < 0)
-        goto cleanup;
+        return -1;
 
     if (virLXCCgroupGetMemSwapTotal(cgroup, meminfo) < 0)
-        goto cleanup;
+        return -1;
 
     if (virLXCCgroupGetMemSwapUsage(cgroup, meminfo) < 0)
-        goto cleanup;
+        return -1;
 
-    ret = 0;
- cleanup:
-    virCgroupFree(&cgroup);
-    return ret;
+    return 0;
 }
 
 
@@ -375,7 +370,7 @@ static int virLXCCgroupSetupDeviceACL(virDomainDefPtr def,
             return -1;
     }
 
-    VIR_DEBUG("Device whitelist complete");
+    VIR_DEBUG("Device ACL setup complete");
 
     return 0;
 }
@@ -387,16 +382,16 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
                                 int *nicindexes)
 {
     virCgroupPtr cgroup = NULL;
-    char *machineName = virLXCDomainGetMachineName(def, 0);
+    g_autofree char *machineName = virLXCDomainGetMachineName(def, 0);
 
     if (!machineName)
-        goto cleanup;
+        return NULL;
 
     if (def->resource->partition[0] != '/') {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                        _("Resource partition '%s' must start with '/'"),
                        def->resource->partition);
-        goto cleanup;
+        return NULL;
     }
 
     if (virCgroupNewMachine(machineName,
@@ -410,7 +405,7 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
                             -1,
                             0,
                             &cgroup) < 0)
-        goto cleanup;
+        return NULL;
 
     /* setup control group permissions for user namespace */
     if (def->idmap.uidmap) {
@@ -418,14 +413,10 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
                               def->idmap.uidmap[0].target,
                               def->idmap.gidmap[0].target,
                               (1 << VIR_CGROUP_CONTROLLER_SYSTEMD)) < 0) {
-            virCgroupFree(&cgroup);
-            cgroup = NULL;
-            goto cleanup;
+            virCgroupFree(cgroup);
+            return NULL;
         }
     }
-
- cleanup:
-    VIR_FREE(machineName);
 
     return cgroup;
 }

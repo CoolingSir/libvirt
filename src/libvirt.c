@@ -146,7 +146,9 @@ virConnectAuthCallbackDefault(virConnectCredentialPtr cred,
             len = strlen(buf);
             if (len != 0 && buf[len-1] == '\n')
                 buf[len-1] = '\0';
-            bufptr = g_strdup(buf);
+
+            if (strlen(buf) > 0)
+                bufptr = g_strdup(buf);
             break;
 
         case VIR_CRED_PASSPHRASE:
@@ -242,10 +244,10 @@ virGlobalInit(void)
 
     g_networking_init();
 
-#ifdef HAVE_LIBINTL_H
+#ifdef WITH_LIBINTL_H
     if (!bindtextdomain(PACKAGE, LOCALEDIR))
         goto error;
-#endif /* HAVE_LIBINTL_H */
+#endif /* WITH_LIBINTL_H */
 
     /*
      * Note that the order is important: the first ones have a higher
@@ -667,6 +669,48 @@ virStateInitialize(bool privileged,
                 return -1;
             }
         }
+    }
+    return 0;
+}
+
+
+/**
+ * virStateShutdownPrepare:
+ *
+ * Run each virtualization driver's shutdown prepare method.
+ *
+ * Returns 0 if all succeed, -1 upon any failure.
+ */
+int
+virStateShutdownPrepare(void)
+{
+    size_t i;
+
+    for (i = 0; i < virStateDriverTabCount; i++) {
+        if (virStateDriverTab[i]->stateShutdownPrepare &&
+            virStateDriverTab[i]->stateShutdownPrepare() < 0)
+            return -1;
+    }
+    return 0;
+}
+
+
+/**
+ * virStateShutdownWait:
+ *
+ * Run each virtualization driver's shutdown wait method.
+ *
+ * Returns 0 if all succeed, -1 upon any failure.
+ */
+int
+virStateShutdownWait(void)
+{
+    size_t i;
+
+    for (i = 0; i < virStateDriverTabCount; i++) {
+        if (virStateDriverTab[i]->stateShutdownWait &&
+            virStateDriverTab[i]->stateShutdownWait() < 0)
+            return -1;
     }
     return 0;
 }
@@ -1277,7 +1321,9 @@ virConnectClose(virConnectPtr conn)
 
     virCheckConnectReturn(conn, -1);
 
-    if (!virObjectUnref(conn))
+    virConnectWatchDispose();
+    virObjectUnref(conn);
+    if (virConnectWasDisposed())
         return 0;
     return 1;
 }
@@ -1290,12 +1336,13 @@ virTypedParameterValidateSet(virConnectPtr conn,
                              virTypedParameterPtr params,
                              int nparams)
 {
-    bool string_okay;
+    int string_okay;
     size_t i;
 
-    string_okay = VIR_DRV_SUPPORTS_FEATURE(conn->driver,
-                                           conn,
+    string_okay = VIR_DRV_SUPPORTS_FEATURE(conn->driver, conn,
                                            VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (string_okay < 0)
+        return -1;
     for (i = 0; i < nparams; i++) {
         if (strnlen(params[i].field, VIR_TYPED_PARAM_FIELD_LENGTH) ==
             VIR_TYPED_PARAM_FIELD_LENGTH) {

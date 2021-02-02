@@ -38,7 +38,13 @@
 #include "libxl_capabilities.h"
 #include "libxl_logger.h"
 
-#define LIBXL_DRIVER_NAME "xenlight"
+#define LIBXL_DRIVER_EXTERNAL_NAME "Xen"
+/*
+ * We are stuck with the 'xenlight' name since it is used by the hostdev
+ * manager. Changing it would break management of any host devices previously
+ * managed under the name 'xenlight'.
+ */
+#define LIBXL_DRIVER_INTERNAL_NAME "xenlight"
 #define LIBXL_VNC_PORT_MIN  5900
 #define LIBXL_VNC_PORT_MAX  65535
 
@@ -160,6 +166,14 @@ struct _libxlSavefileHeader {
     uint32_t xmlLen;
     /* 24 bytes used, pad up to 64 bytes */
     uint32_t unused[10];
+};
+
+
+typedef struct _libxlDomainXmlNsDef libxlDomainXmlNsDef;
+typedef libxlDomainXmlNsDef *libxlDomainXmlNsDefPtr;
+struct _libxlDomainXmlNsDef {
+    size_t num_args;
+    char **args;
 };
 
 libxlDriverConfigPtr

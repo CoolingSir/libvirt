@@ -18,6 +18,7 @@
 
 #include <config.h>
 
+#include "qemu_alias.h"
 #include "qemu_block.h"
 #include "qemu_conf.h"
 #include "qemu_capabilities.h"
@@ -28,12 +29,13 @@
 #include "qemu_checkpoint.h"
 #include "qemu_command.h"
 
+#include "storage_source.h"
+#include "storage_source_conf.h"
 #include "virerror.h"
 #include "virlog.h"
 #include "virbuffer.h"
 #include "viralloc.h"
 #include "virxml.h"
-#include "virstoragefile.h"
 #include "virstring.h"
 #include "backup_conf.h"
 #include "virdomaincheckpointobjlist.h"
@@ -64,7 +66,7 @@ qemuBackupPrepare(virDomainBackupDefPtr def)
 
     if (def->type == VIR_DOMAIN_BACKUP_TYPE_PULL) {
         if (!def->server) {
-            def->server = g_new(virStorageNetHostDef, 1);
+            def->server = g_new0(virStorageNetHostDef, 1);
 
             def->server->transport = VIR_STORAGE_NET_HOST_TRANS_TCP;
             def->server->name = g_strdup("localhost");
@@ -108,6 +110,7 @@ struct qemuBackupDiskData {
     virStorageSourcePtr terminator;
     virStorageSourcePtr backingStore;
     char *incrementalBitmap;
+    const char *domdiskIncrementalBitmap; /* name of temporary bitmap installed on disk source */
     qemuBlockStorageSourceChainDataPtr crdata;
     bool labelled;
     bool initialized;
@@ -124,31 +127,31 @@ qemuBackupDiskDataCleanupOne(virDomainObjPtr vm,
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
 
-    if (dd->started)
-        return;
+    if (!dd->started) {
+        if (dd->added) {
+            qemuDomainObjEnterMonitor(priv->driver, vm);
+            qemuBlockStorageSourceAttachRollback(priv->mon, dd->crdata->srcdata[0]);
+            ignore_value(qemuDomainObjExitMonitor(priv->driver, vm));
+        }
 
-    if (dd->added) {
-        qemuDomainObjEnterMonitor(priv->driver, vm);
-        qemuBlockStorageSourceAttachRollback(priv->mon, dd->crdata->srcdata[0]);
-        ignore_value(qemuDomainObjExitMonitor(priv->driver, vm));
-    }
+        if (dd->created) {
+            if (virStorageSourceUnlink(dd->store) < 0)
+                VIR_WARN("Unable to remove just-created %s", NULLSTR(dd->store->path));
+        }
 
-    if (dd->created) {
-        if (virStorageFileUnlink(dd->store) < 0)
-            VIR_WARN("Unable to remove just-created %s", NULLSTR(dd->store->path));
+        if (dd->labelled)
+            qemuDomainStorageSourceAccessRevoke(priv->driver, vm, dd->store);
     }
 
     if (dd->initialized)
-        virStorageFileDeinit(dd->store);
-
-    if (dd->labelled)
-        qemuDomainStorageSourceAccessRevoke(priv->driver, vm, dd->store);
+        virStorageSourceDeinit(dd->store);
 
     if (dd->blockjob)
         qemuBlockJobStartupFinalize(vm, dd->blockjob);
 
     qemuBlockStorageSourceChainDataFree(dd->crdata);
     virObjectUnref(dd->terminator);
+    g_free(dd->incrementalBitmap);
 }
 
 
@@ -173,121 +176,68 @@ qemuBackupDiskDataCleanup(virDomainObjPtr vm,
 }
 
 
-virJSONValuePtr
-qemuBackupDiskPrepareOneBitmapsChain(virDomainMomentDefPtr *incremental,
-                                     virStorageSourcePtr backingChain,
-                                     virHashTablePtr blockNamedNodeData,
-                                     const char *diskdst)
+int
+qemuBackupDiskPrepareOneBitmapsChain(virStorageSourcePtr backingChain,
+                                     virStorageSourcePtr targetsrc,
+                                     const char *targetbitmap,
+                                     const char *incremental,
+                                     virJSONValuePtr actions,
+                                     GHashTable *blockNamedNodeData)
 {
-    qemuBlockNamedNodeDataBitmapPtr bitmap;
-    g_autoptr(virJSONValue) ret = NULL;
-    size_t incridx = 0;
+    g_autoptr(virJSONValue) tmpactions = NULL;
 
-    ret = virJSONValueNewArray();
+    if (qemuBlockGetBitmapMergeActions(backingChain, NULL, targetsrc,
+                                       incremental, targetbitmap, NULL,
+                                       &tmpactions,
+                                       blockNamedNodeData) < 0)
+        return -1;
 
-    if (!(bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
-                                                         backingChain,
-                                                         incremental[0]->name))) {
-        virReportError(VIR_ERR_INVALID_ARG,
-                       _("failed to find bitmap '%s' in image '%s%u'"),
-                       incremental[0]->name, diskdst, backingChain->id);
-        return NULL;
-    }
+    if (tmpactions &&
+        virJSONValueArrayConcat(actions, tmpactions) < 0)
+        return -1;
 
-    while (bitmap) {
-        if (bitmap->inconsistent) {
-            virReportError(VIR_ERR_INVALID_ARG,
-                           _("bitmap '%s' for image '%s%u' is inconsistent"),
-                           bitmap->name, diskdst, backingChain->id);
-            return NULL;
-        }
-
-        if (qemuMonitorTransactionBitmapMergeSourceAddBitmap(ret,
-                                                             backingChain->nodeformat,
-                                                             bitmap->name) < 0)
-            return NULL;
-
-        if (backingChain->backingStore &&
-            (bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
-                                                            backingChain->backingStore,
-                                                            incremental[incridx]->name))) {
-            backingChain = backingChain->backingStore;
-            continue;
-        }
-
-        if (incremental[incridx + 1]) {
-            if ((bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
-                                                                backingChain,
-                                                                incremental[incridx + 1]->name))) {
-                incridx++;
-                continue;
-            }
-
-            if (backingChain->backingStore &&
-                (bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
-                                                                backingChain->backingStore,
-                                                                incremental[incridx + 1]->name))) {
-                incridx++;
-                backingChain = backingChain->backingStore;
-                continue;
-            }
-
-            virReportError(VIR_ERR_INVALID_ARG,
-                           _("failed to find bitmap '%s' in image '%s%u'"),
-                           incremental[incridx]->name, diskdst, backingChain->id);
-            return NULL;
-        } else {
-            break;
-        }
-    }
-
-    return g_steal_pointer(&ret);
+    return 0;
 }
 
 
 static int
 qemuBackupDiskPrepareOneBitmaps(struct qemuBackupDiskData *dd,
                                 virJSONValuePtr actions,
-                                virDomainMomentDefPtr *incremental,
-                                virHashTablePtr blockNamedNodeData)
+                                bool pull,
+                                GHashTable *blockNamedNodeData)
 {
-    g_autoptr(virJSONValue) mergebitmaps = NULL;
-    g_autoptr(virJSONValue) mergebitmapsstore = NULL;
-
-    if (!(mergebitmaps = qemuBackupDiskPrepareOneBitmapsChain(incremental,
-                                                              dd->domdisk->src,
-                                                              blockNamedNodeData,
-                                                              dd->domdisk->dst)))
+    if (!qemuBlockBitmapChainIsValid(dd->domdisk->src,
+                                     dd->backupdisk->incremental,
+                                     blockNamedNodeData)) {
+        virReportError(VIR_ERR_CHECKPOINT_INCONSISTENT,
+                       _("missing or broken bitmap '%s' for disk '%s'"),
+                       dd->backupdisk->incremental, dd->domdisk->dst);
         return -1;
+    }
 
-    if (!(mergebitmapsstore = virJSONValueCopy(mergebitmaps)))
-        return -1;
+    /* For pull-mode backup, we need the bitmap to be present in the scratch
+     * file as that will be exported. For push-mode backup the bitmap is
+     * actually required on top of the image backing the disk */
 
-    if (qemuMonitorTransactionBitmapAdd(actions,
-                                        dd->domdisk->src->nodeformat,
-                                        dd->incrementalBitmap,
-                                        false,
-                                        true, 0) < 0)
-        return -1;
+    if (pull) {
+        if (qemuBackupDiskPrepareOneBitmapsChain(dd->domdisk->src,
+                                                 dd->store,
+                                                 dd->incrementalBitmap,
+                                                 dd->backupdisk->incremental,
+                                                 actions,
+                                                 blockNamedNodeData) < 0)
+            return -1;
+    } else {
+        if (qemuBackupDiskPrepareOneBitmapsChain(dd->domdisk->src,
+                                                 dd->domdisk->src,
+                                                 dd->incrementalBitmap,
+                                                 dd->backupdisk->incremental,
+                                                 actions,
+                                                 blockNamedNodeData) < 0)
+            return -1;
 
-    if (qemuMonitorTransactionBitmapMerge(actions,
-                                          dd->domdisk->src->nodeformat,
-                                          dd->incrementalBitmap,
-                                          &mergebitmaps) < 0)
-        return -1;
-
-    if (qemuMonitorTransactionBitmapAdd(actions,
-                                        dd->store->nodeformat,
-                                        dd->incrementalBitmap,
-                                        false,
-                                        true, 0) < 0)
-        return -1;
-
-    if (qemuMonitorTransactionBitmapMerge(actions,
-                                          dd->store->nodeformat,
-                                          dd->incrementalBitmap,
-                                          &mergebitmapsstore) < 0)
-        return -1;
+        dd->domdiskIncrementalBitmap = dd->incrementalBitmap;
+    }
 
     return 0;
 }
@@ -299,8 +249,7 @@ qemuBackupDiskPrepareDataOne(virDomainObjPtr vm,
                              struct qemuBackupDiskData *dd,
                              virJSONValuePtr actions,
                              bool pull,
-                             virDomainMomentDefPtr *incremental,
-                             virHashTablePtr blockNamedNodeData,
+                             GHashTable *blockNamedNodeData,
                              virQEMUDriverConfigPtr cfg)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
@@ -315,8 +264,19 @@ qemuBackupDiskPrepareDataOne(virDomainObjPtr vm,
         return -1;
     }
 
-    if (!dd->store->format)
+    if (!qemuDomainDiskBlockJobIsSupported(vm, dd->domdisk))
+        return -1;
+
+    if (dd->store->format == VIR_STORAGE_FILE_NONE) {
         dd->store->format = VIR_STORAGE_FILE_QCOW2;
+    } else if (dd->store->format != VIR_STORAGE_FILE_QCOW2) {
+        if (pull) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           _("pull mode backup for disk '%s' requires qcow2 driver"),
+                           dd->backupdisk->name);
+            return -1;
+        }
+    }
 
     /* calculate backing store to use:
      * push mode:
@@ -325,31 +285,39 @@ qemuBackupDiskPrepareDataOne(virDomainObjPtr vm,
      * pull mode:
      *   both: original disk
      */
-    if (pull || (incremental && dd->store->format >= VIR_STORAGE_FILE_BACKING)) {
+    if (pull || (dd->backupdisk->incremental &&
+                 dd->store->format >= VIR_STORAGE_FILE_BACKING)) {
         dd->backingStore = dd->domdisk->src;
     } else {
         dd->backingStore = dd->terminator = virStorageSourceNew();
     }
 
-    if (qemuDomainStorageFileInit(priv->driver, vm, dd->store, dd->domdisk->src) < 0)
-        return -1;
-
     if (qemuDomainPrepareStorageSourceBlockdev(NULL, dd->store, priv, cfg) < 0)
         return -1;
 
-    if (incremental) {
+    if (dd->backupdisk->incremental) {
+        /* We deliberately don't check the config of the disk in the checkpoint
+         * definition as it's not guaranteed that the disks still correspond.
+         * We just verify that a checkpoint exists and later on that the disk
+         * has corresponding bitmap. */
+        if (!virDomainCheckpointFindByName(vm->checkpoints, dd->backupdisk->incremental)) {
+            virReportError(VIR_ERR_NO_DOMAIN_CHECKPOINT,
+                           _("Checkpoint '%s' for incremental backup of disk '%s' not found"),
+                           dd->backupdisk->incremental, dd->backupdisk->name);
+            return -1;
+        }
+
         if (dd->backupdisk->exportbitmap)
             dd->incrementalBitmap = g_strdup(dd->backupdisk->exportbitmap);
         else
             dd->incrementalBitmap = g_strdup_printf("backup-%s", dd->domdisk->dst);
 
-        if (qemuBackupDiskPrepareOneBitmaps(dd, actions, incremental,
-                                            blockNamedNodeData) < 0)
+        if (qemuBackupDiskPrepareOneBitmaps(dd, actions, pull, blockNamedNodeData) < 0)
             return -1;
     }
 
     if (!(dd->blockjob = qemuBlockJobDiskNewBackup(vm, dd->domdisk, dd->store,
-                                                   dd->incrementalBitmap)))
+                                                   dd->domdiskIncrementalBitmap)))
         return -1;
 
     /* use original disk as backing to prevent opening the backing chain */
@@ -406,8 +374,7 @@ qemuBackupDiskPrepareDataOnePull(virJSONValuePtr actions,
 static ssize_t
 qemuBackupDiskPrepareData(virDomainObjPtr vm,
                           virDomainBackupDefPtr def,
-                          virDomainMomentDefPtr *incremental,
-                          virHashTablePtr blockNamedNodeData,
+                          GHashTable *blockNamedNodeData,
                           virJSONValuePtr actions,
                           virQEMUDriverConfigPtr cfg,
                           struct qemuBackupDiskData **rdd)
@@ -429,8 +396,7 @@ qemuBackupDiskPrepareData(virDomainObjPtr vm,
         ndisks++;
 
         if (qemuBackupDiskPrepareDataOne(vm, backupdisk, dd, actions, pull,
-                                         incremental, blockNamedNodeData,
-                                         cfg) < 0)
+                                         blockNamedNodeData, cfg) < 0)
             goto error;
 
         if (pull) {
@@ -454,7 +420,7 @@ qemuBackupDiskPrepareData(virDomainObjPtr vm,
 
 static int
 qemuBackupDiskPrepareOneStorage(virDomainObjPtr vm,
-                                virHashTablePtr blockNamedNodeData,
+                                GHashTable *blockNamedNodeData,
                                 struct qemuBackupDiskData *dd,
                                 bool reuse_external)
 {
@@ -463,7 +429,7 @@ qemuBackupDiskPrepareOneStorage(virDomainObjPtr vm,
 
     if (!reuse_external &&
         dd->store->type == VIR_STORAGE_TYPE_FILE &&
-        virStorageFileSupportsCreate(dd->store)) {
+        virStorageSourceSupportsCreate(dd->store)) {
 
         if (virFileExists(dd->store->path)) {
             virReportError(VIR_ERR_INVALID_ARG,
@@ -472,12 +438,12 @@ qemuBackupDiskPrepareOneStorage(virDomainObjPtr vm,
             return -1;
         }
 
-        if (qemuDomainStorageFileInit(priv->driver, vm, dd->store, NULL) < 0)
+        if (qemuDomainStorageFileInit(priv->driver, vm, dd->store, dd->domdisk->src) < 0)
             return -1;
 
         dd->initialized = true;
 
-        if (virStorageFileCreate(dd->store) < 0) {
+        if (virStorageSourceCreate(dd->store) < 0) {
             virReportSystemError(errno,
                                  _("failed to create image file '%s'"),
                                  NULLSTR(dd->store->path));
@@ -522,7 +488,7 @@ static int
 qemuBackupDiskPrepareStorage(virDomainObjPtr vm,
                              struct qemuBackupDiskData *disks,
                              size_t ndisks,
-                             virHashTablePtr blockNamedNodeData,
+                             GHashTable *blockNamedNodeData,
                              bool reuse_external)
 {
     size_t i;
@@ -547,7 +513,7 @@ qemuBackupDiskStarted(virDomainObjPtr vm,
     for (i = 0; i < ndd; i++) {
         dd[i].started = true;
         dd[i].backupdisk->state = VIR_DOMAIN_BACKUP_DISK_STATE_RUNNING;
-        qemuBlockJobStarted(dd->blockjob, vm);
+        qemuBlockJobStarted(dd[i].blockjob, vm);
     }
 }
 
@@ -566,7 +532,6 @@ qemuBackupBeginPullExportDisks(virDomainObjPtr vm,
                                struct qemuBackupDiskData *disks,
                                size_t ndisks)
 {
-    qemuDomainObjPrivatePtr priv = vm->privateData;
     size_t i;
 
     for (i = 0; i < ndisks; i++) {
@@ -575,59 +540,15 @@ qemuBackupBeginPullExportDisks(virDomainObjPtr vm,
         if (!dd->backupdisk->exportname)
             dd->backupdisk->exportname = g_strdup(dd->domdisk->dst);
 
-        if (qemuMonitorNBDServerAdd(priv->mon,
-                                    dd->store->nodeformat,
-                                    dd->backupdisk->exportname,
-                                    false,
-                                    dd->incrementalBitmap) < 0)
+        if (qemuBlockExportAddNBD(vm, NULL,
+                                  dd->store,
+                                  dd->backupdisk->exportname,
+                                  false,
+                                  dd->incrementalBitmap) < 0)
             return -1;
     }
 
     return 0;
-}
-
-
-/**
- * qemuBackupBeginCollectIncrementalCheckpoints:
- * @vm: domain object
- * @incrFrom: name of checkpoint representing starting point of incremental backup
- *
- * Returns a NULL terminated list of pointers to checkpoint definitions in
- * chronological order starting from the 'current' checkpoint until reaching
- * @incrFrom.
- */
-static virDomainMomentDefPtr *
-qemuBackupBeginCollectIncrementalCheckpoints(virDomainObjPtr vm,
-                                             const char *incrFrom)
-{
-    virDomainMomentObjPtr n = virDomainCheckpointGetCurrent(vm->checkpoints);
-    g_autofree virDomainMomentDefPtr *incr = NULL;
-    size_t nincr = 0;
-
-    while (n) {
-        virDomainMomentDefPtr def = n->def;
-
-        if (VIR_APPEND_ELEMENT_COPY(incr, nincr, def) < 0)
-            return NULL;
-
-        if (STREQ(def->name, incrFrom)) {
-            def = NULL;
-            if (VIR_APPEND_ELEMENT_COPY(incr, nincr, def) < 0)
-                return NULL;
-
-            return g_steal_pointer(&incr);
-        }
-
-        if (!n->def->parent_name)
-            break;
-
-        n = virDomainCheckpointFindByName(vm->checkpoints, n->def->parent_name);
-    }
-
-    virReportError(VIR_ERR_OPERATION_INVALID,
-                   _("could not locate checkpoint '%s' for incremental backup"),
-                   incrFrom);
-    return NULL;
 }
 
 
@@ -641,9 +562,8 @@ qemuBackupJobTerminate(virDomainObjPtr vm,
 
     qemuDomainJobInfoUpdateTime(priv->job.current);
 
-    g_free(priv->job.completed);
-    priv->job.completed = g_new0(qemuDomainJobInfo, 1);
-    *priv->job.completed = *priv->job.current;
+    g_clear_pointer(&priv->job.completed, qemuDomainJobInfoFree);
+    priv->job.completed = qemuDomainJobInfoCopy(priv->job.current);
 
     priv->job.completed->stats.backup.total = priv->backup->push_total;
     priv->job.completed->stats.backup.transferred = priv->backup->push_transferred;
@@ -651,6 +571,7 @@ qemuBackupJobTerminate(virDomainObjPtr vm,
     priv->job.completed->stats.backup.tmp_total = priv->backup->pull_tmp_total;
 
     priv->job.completed->status = jobstatus;
+    priv->job.completed->errmsg = g_strdup(priv->backup->errmsg);
 
     qemuDomainEventEmitJobCompleted(priv->driver, vm);
 
@@ -751,6 +672,50 @@ qemuBackupJobCancelBlockjobs(virDomainObjPtr vm,
 }
 
 
+#define QEMU_BACKUP_TLS_ALIAS_BASE "libvirt_backup"
+
+static int
+qemuBackupBeginPrepareTLS(virDomainObjPtr vm,
+                          virQEMUDriverConfigPtr cfg,
+                          virDomainBackupDefPtr def,
+                          virJSONValuePtr *tlsProps,
+                          virJSONValuePtr *tlsSecretProps)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    g_autofree char *tlsObjAlias = qemuAliasTLSObjFromSrcAlias(QEMU_BACKUP_TLS_ALIAS_BASE);
+    g_autoptr(qemuDomainSecretInfo) secinfo = NULL;
+    const char *tlsKeySecretAlias = NULL;
+
+    if (def->tls != VIR_TRISTATE_BOOL_YES)
+        return 0;
+
+    if (!cfg->backupTLSx509certdir) {
+        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                       _("backup TLS directory not configured"));
+        return -1;
+    }
+
+    if (cfg->backupTLSx509secretUUID) {
+        if (!(secinfo = qemuDomainSecretInfoTLSNew(priv, tlsObjAlias,
+                                                   cfg->backupTLSx509secretUUID)))
+            return -1;
+
+        if (qemuBuildSecretInfoProps(secinfo, tlsSecretProps) < 0)
+            return -1;
+
+        tlsKeySecretAlias = secinfo->s.aes.alias;
+    }
+
+    if (qemuBuildTLSx509BackendProps(cfg->backupTLSx509certdir, true,
+                                     cfg->backupTLSx509verify, tlsObjAlias,
+                                     tlsKeySecretAlias, priv->qemuCaps,
+                                     tlsProps) < 0)
+        return -1;
+
+    return 0;
+}
+
+
 int
 qemuBackupBegin(virDomainObjPtr vm,
                 const char *backupXML,
@@ -764,11 +729,14 @@ qemuBackupBegin(virDomainObjPtr vm,
     bool pull = false;
     virDomainMomentObjPtr chk = NULL;
     g_autoptr(virDomainCheckpointDef) chkdef = NULL;
-    g_autofree virDomainMomentDefPtr *incremental = NULL;
     g_autoptr(virJSONValue) actions = NULL;
+    g_autoptr(virJSONValue) tlsProps = NULL;
+    g_autofree char *tlsAlias = NULL;
+    g_autoptr(virJSONValue) tlsSecretProps = NULL;
+    g_autofree char *tlsSecretAlias = NULL;
     struct qemuBackupDiskData *dd = NULL;
     ssize_t ndd = 0;
-    g_autoptr(virHashTable) blockNamedNodeData = NULL;
+    g_autoptr(GHashTable) blockNamedNodeData = NULL;
     bool job_started = false;
     bool nbd_running = false;
     bool reuse = (flags & VIR_DOMAIN_BACKUP_BEGIN_REUSE_EXTERNAL);
@@ -829,11 +797,10 @@ qemuBackupBegin(virDomainObjPtr vm,
     if (qemuBackupPrepare(def) < 0)
         goto endjob;
 
-    if (virDomainBackupAlignDisks(def, vm->def, suffix) < 0)
+    if (qemuBackupBeginPrepareTLS(vm, cfg, def, &tlsProps, &tlsSecretProps) < 0)
         goto endjob;
 
-    if (def->incremental &&
-        !(incremental = qemuBackupBeginCollectIncrementalCheckpoints(vm, def->incremental)))
+    if (virDomainBackupAlignDisks(def, vm->def, suffix) < 0)
         goto endjob;
 
     actions = virJSONValueNewArray();
@@ -849,8 +816,8 @@ qemuBackupBegin(virDomainObjPtr vm,
     if (!(blockNamedNodeData = qemuBlockGetNamedNodeData(vm, QEMU_ASYNC_JOB_BACKUP)))
         goto endjob;
 
-    if ((ndd = qemuBackupDiskPrepareData(vm, def, incremental, blockNamedNodeData,
-                                         actions, cfg, &dd)) <= 0) {
+    if ((ndd = qemuBackupDiskPrepareData(vm, def, blockNamedNodeData, actions,
+                                         cfg, &dd)) <= 0) {
         if (ndd == 0) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                            _("no disks selected for backup"));
@@ -867,10 +834,17 @@ qemuBackupBegin(virDomainObjPtr vm,
     if (qemuDomainObjEnterMonitorAsync(priv->driver, vm, QEMU_ASYNC_JOB_BACKUP) < 0)
         goto endjob;
 
-    /* TODO: TLS is a must-have for the modern age */
     if (pull) {
-        if ((rc = qemuMonitorNBDServerStart(priv->mon, priv->backup->server, NULL)) == 0)
-            nbd_running = true;
+        if (tlsSecretProps)
+            rc = qemuMonitorAddObject(priv->mon, &tlsSecretProps, &tlsSecretAlias);
+
+        if (rc == 0 && tlsProps)
+            rc = qemuMonitorAddObject(priv->mon, &tlsProps, &tlsAlias);
+
+        if (rc == 0) {
+            if ((rc = qemuMonitorNBDServerStart(priv->mon, priv->backup->server, tlsAlias)) == 0)
+                nbd_running = true;
+        }
     }
 
     if (rc == 0)
@@ -880,6 +854,9 @@ qemuBackupBegin(virDomainObjPtr vm,
         goto endjob;
 
     job_started = true;
+    priv->backup->tlsAlias = g_steal_pointer(&tlsAlias);
+    priv->backup->tlsSecretAlias = g_steal_pointer(&tlsSecretAlias);
+    /* qemuBackupDiskStarted saves the status XML */
     qemuBackupDiskStarted(vm, dd, ndd);
 
     if (chk) {
@@ -911,13 +888,18 @@ qemuBackupBegin(virDomainObjPtr vm,
     /* if 'chk' is non-NULL here it's a failure and it must be rolled back */
     qemuCheckpointRollbackMetadata(vm, chk);
 
-    if (!job_started && nbd_running &&
+    if (!job_started && (nbd_running || tlsAlias || tlsSecretAlias) &&
         qemuDomainObjEnterMonitorAsync(priv->driver, vm, QEMU_ASYNC_JOB_BACKUP) == 0) {
-        ignore_value(qemuMonitorNBDServerStop(priv->mon));
+        if (nbd_running)
+            ignore_value(qemuMonitorNBDServerStop(priv->mon));
+        if (tlsAlias)
+            ignore_value(qemuMonitorDelObject(priv->mon, tlsAlias, false));
+        if (tlsSecretAlias)
+            ignore_value(qemuMonitorDelObject(priv->mon, tlsSecretAlias, false));
         ignore_value(qemuDomainObjExitMonitor(priv->driver, vm));
     }
 
-    if (ret < 0 && !job_started)
+    if (ret < 0 && !job_started && priv->backup)
         def = g_steal_pointer(&priv->backup);
 
     if (ret == 0)
@@ -952,6 +934,7 @@ void
 qemuBackupNotifyBlockjobEnd(virDomainObjPtr vm,
                             virDomainDiskDefPtr disk,
                             qemuBlockjobState state,
+                            const char *errmsg,
                             unsigned long long cur,
                             unsigned long long end,
                             int asyncJob)
@@ -965,8 +948,8 @@ qemuBackupNotifyBlockjobEnd(virDomainObjPtr vm,
     virDomainBackupDefPtr backup = priv->backup;
     size_t i;
 
-    VIR_DEBUG("vm: '%s', disk:'%s', state:'%d'",
-              vm->def->name, disk->dst, state);
+    VIR_DEBUG("vm: '%s', disk:'%s', state:'%d' errmsg:'%s'",
+              vm->def->name, disk->dst, state, NULLSTR(errmsg));
 
     if (!backup)
         return;
@@ -975,6 +958,10 @@ qemuBackupNotifyBlockjobEnd(virDomainObjPtr vm,
         if (qemuDomainObjEnterMonitorAsync(priv->driver, vm, asyncJob) < 0)
             return;
         ignore_value(qemuMonitorNBDServerStop(priv->mon));
+        if (backup->tlsAlias)
+            ignore_value(qemuMonitorDelObject(priv->mon, backup->tlsAlias, false));
+        if (backup->tlsSecretAlias)
+            ignore_value(qemuMonitorDelObject(priv->mon, backup->tlsSecretAlias, false));
         if (qemuDomainObjExitMonitor(priv->driver, vm) < 0)
             return;
 
@@ -985,6 +972,10 @@ qemuBackupNotifyBlockjobEnd(virDomainObjPtr vm,
         backup->push_transferred += cur;
         backup->push_total += end;
     }
+
+    /* record first error message */
+    if (!backup->errmsg)
+        backup->errmsg = g_strdup(errmsg);
 
     for (i = 0; i < backup->ndisks; i++) {
         virDomainBackupDiskDefPtr backupdisk = backup->disks + i;

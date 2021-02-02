@@ -39,6 +39,7 @@ _vsh_complete()
     fi
 
     INPUT=( "${COMP_WORDS[@]:$i:$COMP_CWORD}" )
+    INPUT[-1]=${INPUT[-1]//\\:/:}
 
     # Uncomment these lines for easy debug.
 #    echo;
@@ -55,7 +56,7 @@ _vsh_complete()
     # the name of the command whose arguments are being
     # completed.
     # Therefore, we might just run $1.
-    A=($($1 ${CMDLINE} complete -- "${INPUT[@]}" 2>/dev/null))
+    IFS=$'\n' A=($($1 ${CMDLINE} complete -- "${INPUT[@]}" 2>/dev/null))
 
     COMPREPLY=($(compgen -W "${A[*]%--}" -- ${cur}))
     __ltrim_colon_completions "$cur"

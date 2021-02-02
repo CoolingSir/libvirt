@@ -37,7 +37,7 @@ virshStoragePoolNameCompleter(vshControl *ctl,
     int npools = 0;
     size_t i = 0;
     char **ret = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(VIR_CONNECT_LIST_STORAGE_POOLS_INACTIVE |
                   VIR_CONNECT_LIST_STORAGE_POOLS_ACTIVE |
@@ -50,8 +50,7 @@ virshStoragePoolNameCompleter(vshControl *ctl,
     if ((npools = virConnectListAllStoragePools(priv->conn, &pools, flags)) < 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, npools + 1) < 0)
-        goto cleanup;
+    tmp = g_new0(char *, npools + 1);
 
     for (i = 0; i < npools; i++) {
         const char *name = virStoragePoolGetName(pools[i]);
@@ -61,10 +60,9 @@ virshStoragePoolNameCompleter(vshControl *ctl,
 
     ret = g_steal_pointer(&tmp);
 
- cleanup:
     for (i = 0; i < npools; i++)
         virStoragePoolFree(pools[i]);
-    VIR_FREE(pools);
+    g_free(pools);
     return ret;
 }
 
@@ -75,12 +73,11 @@ virshPoolEventNameCompleter(vshControl *ctl G_GNUC_UNUSED,
                             unsigned int flags)
 {
     size_t i = 0;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
-    if (VIR_ALLOC_N(tmp, VIR_STORAGE_POOL_EVENT_ID_LAST + 1) < 0)
-        return NULL;
+    tmp = g_new0(char *, VIR_STORAGE_POOL_EVENT_ID_LAST + 1);
 
     for (i = 0; i < VIR_STORAGE_POOL_EVENT_ID_LAST; i++)
         tmp[i] = g_strdup(virshPoolEventCallbacks[i].name);
@@ -94,7 +91,7 @@ virshPoolTypeCompleter(vshControl *ctl,
                        const vshCmd *cmd,
                        unsigned int flags)
 {
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
     const char *type_str = NULL;
     size_t i = 0;
 
@@ -103,8 +100,7 @@ virshPoolTypeCompleter(vshControl *ctl,
     if (vshCommandOptStringQuiet(ctl, cmd, "type", &type_str) < 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, VIR_STORAGE_POOL_LAST + 1) < 0)
-        return NULL;
+    tmp = g_new0(char *, VIR_STORAGE_POOL_LAST + 1);
 
     for (i = 0; i < VIR_STORAGE_POOL_LAST; i++)
         tmp[i] = g_strdup(virStoragePoolTypeToString(i));

@@ -31,7 +31,8 @@ static const char *qemu_emulators[VIR_ARCH_LAST] = {
     [VIR_ARCH_PPC] = "/usr/bin/qemu-system-ppc",
     [VIR_ARCH_RISCV32] = "/usr/bin/qemu-system-riscv32",
     [VIR_ARCH_RISCV64] = "/usr/bin/qemu-system-riscv64",
-    [VIR_ARCH_S390X] = "/usr/bin/qemu-system-s390x"
+    [VIR_ARCH_S390X] = "/usr/bin/qemu-system-s390x",
+    [VIR_ARCH_SPARC] = "/usr/bin/qemu-system-sparc",
 };
 
 static const virArch arch_alias[VIR_ARCH_LAST] = {
@@ -74,6 +75,11 @@ static const char *const riscv64_machines[] = {
 static const char *const s390x_machines[] = {
     "s390-virtio", "s390-ccw-virtio", "s390-ccw", NULL
 };
+static const char *const sparc_machines[] = {
+    "SS-5", "LX", "SPARCClassic", "SPARCbook",
+    "SS-10", "SS-20", "SS-4", "SS-600MP",
+    "Voyager", "leon3_generic", NULL
+};
 
 static const char *const *qemu_machines[VIR_ARCH_LAST] = {
     [VIR_ARCH_I686] = i386_machines,
@@ -85,6 +91,7 @@ static const char *const *qemu_machines[VIR_ARCH_LAST] = {
     [VIR_ARCH_RISCV32] = riscv32_machines,
     [VIR_ARCH_RISCV64] = riscv64_machines,
     [VIR_ARCH_S390X] = s390x_machines,
+    [VIR_ARCH_SPARC] = sparc_machines,
 };
 
 static const char *const *kvm_machines[VIR_ARCH_LAST] = {
@@ -99,6 +106,16 @@ static const char *const *kvm_machines[VIR_ARCH_LAST] = {
     [VIR_ARCH_S390X] = s390x_machines,
 };
 
+static const char *qemu_default_ram_id[VIR_ARCH_LAST] = {
+    [VIR_ARCH_I686] = "pc.ram",
+    [VIR_ARCH_X86_64] = "pc.ram",
+    [VIR_ARCH_AARCH64] = "mach-virt.ram",
+    [VIR_ARCH_ARMV7L] = "vexpress.highmem",
+    [VIR_ARCH_PPC64] = "ppc_spapr.ram",
+    [VIR_ARCH_PPC] = "ppc_spapr.ram",
+    [VIR_ARCH_S390X] = "s390.ram",
+    [VIR_ARCH_SPARC] = "sun4m.ram",
+};
 
 char *
 virFindFileInPath(const char *file)
@@ -172,19 +189,21 @@ testQemuAddGuest(virCapsPtr caps,
                                        NULL))
         goto error;
 
-    nmachines = g_strv_length((char **)kvm_machines[emu_arch]);
-    machines = virCapabilitiesAllocMachines(kvm_machines[emu_arch],
-                                            nmachines);
-    if (machines == NULL)
-        goto error;
+    if (kvm_machines[emu_arch] != NULL) {
+        nmachines = g_strv_length((char **)kvm_machines[emu_arch]);
+        machines = virCapabilitiesAllocMachines(kvm_machines[emu_arch],
+                                                nmachines);
+        if (machines == NULL)
+            goto error;
 
-    if (!virCapabilitiesAddGuestDomain(guest,
-                                       VIR_DOMAIN_VIRT_KVM,
-                                       qemu_emulators[emu_arch],
-                                       NULL,
-                                       nmachines,
-                                       machines))
-        goto error;
+        if (!virCapabilitiesAddGuestDomain(guest,
+                                           VIR_DOMAIN_VIRT_KVM,
+                                           qemu_emulators[emu_arch],
+                                           NULL,
+                                           nmachines,
+                                           machines))
+            goto error;
+    }
 
     return 0;
 
@@ -204,8 +223,7 @@ virCapsPtr testQemuCapsInit(void)
 
     /* Add dummy 'none' security_driver. This is equal to setting
      * security_driver = "none" in qemu.conf. */
-    if (VIR_ALLOC_N(caps->host.secModels, 1) < 0)
-        goto cleanup;
+    caps->host.secModels = g_new0(virCapsHostSecModel, 1);
     caps->host.nsecModels = 1;
 
     caps->host.secModels[0].model = g_strdup("none");
@@ -220,15 +238,13 @@ virCapsPtr testQemuCapsInit(void)
     }
 
     if (virTestGetDebug()) {
-        char *caps_str;
+        g_autofree char *caps_str = NULL;
 
         caps_str = virCapabilitiesFormatXML(caps);
         if (!caps_str)
             goto cleanup;
 
         VIR_TEST_DEBUG("QEMU driver capabilities:\n%s", caps_str);
-
-        VIR_FREE(caps_str);
     }
 
     return caps;
@@ -293,10 +309,9 @@ qemuTestParseCapabilitiesArch(virArch arch,
                                               virArchToString(arch));
 
     if (!(qemuCaps = virQEMUCapsNewBinary(binary)) ||
-        virQEMUCapsLoadCache(arch, qemuCaps, capsFile) < 0)
+        virQEMUCapsLoadCache(arch, qemuCaps, capsFile, true) < 0)
         goto error;
 
-    virQEMUCapsSetInvalidation(qemuCaps, false);
     return qemuCaps;
 
  error:
@@ -334,8 +349,20 @@ int qemuTestCapsCacheInsert(virFileCachePtr cache,
             tmpCaps = virQEMUCapsNew();
         }
 
+        if (!tmpCaps)
+            return -1;
+
         if (!virQEMUCapsHasMachines(tmpCaps)) {
+            const char *defaultRAMid = NULL;
+
+            /* default-ram-id appeared in QEMU 5.2.0. Reflect
+             * this in our capabilities, i.e. set it for new
+             * enough versions only. */
+            if (virQEMUCapsGetVersion(tmpCaps) >= 5002000)
+                defaultRAMid = qemu_default_ram_id[i];
+
             virQEMUCapsSetArch(tmpCaps, i);
+
             for (j = 0; qemu_machines[i][j] != NULL; j++) {
                 virQEMUCapsAddMachine(tmpCaps,
                                       VIR_DOMAIN_VIRT_QEMU,
@@ -344,18 +371,25 @@ int qemuTestCapsCacheInsert(virFileCachePtr cache,
                                       NULL,
                                       0,
                                       false,
-                                      false);
-            }
-            for (j = 0; kvm_machines[i][j] != NULL; j++) {
-                virQEMUCapsAddMachine(tmpCaps,
-                                      VIR_DOMAIN_VIRT_KVM,
-                                      kvm_machines[i][j],
-                                      NULL,
-                                      NULL,
-                                      0,
                                       false,
-                                      false);
-                virQEMUCapsSet(tmpCaps, QEMU_CAPS_KVM);
+                                      true,
+                                      defaultRAMid);
+                virQEMUCapsSet(tmpCaps, QEMU_CAPS_TCG);
+            }
+            if (kvm_machines[i] != NULL) {
+                for (j = 0; kvm_machines[i][j] != NULL; j++) {
+                    virQEMUCapsAddMachine(tmpCaps,
+                                          VIR_DOMAIN_VIRT_KVM,
+                                          kvm_machines[i][j],
+                                          NULL,
+                                          NULL,
+                                          0,
+                                          false,
+                                      false,
+                                          true,
+                                          defaultRAMid);
+                    virQEMUCapsSet(tmpCaps, QEMU_CAPS_KVM);
+                }
             }
         }
 
@@ -459,8 +493,7 @@ testQemuCapsSetGIC(virQEMUCapsPtr qemuCaps,
     virGICCapability *gicCapabilities = NULL;
     size_t ngicCapabilities = 0;
 
-    if (VIR_ALLOC_N(gicCapabilities, 2) < 0)
-        return -1;
+    gicCapabilities = g_new0(virGICCapability, 2);
 
 # define IMPL_BOTH \
          VIR_GIC_IMPLEMENTATION_KERNEL|VIR_GIC_IMPLEMENTATION_EMULATED
@@ -492,22 +525,20 @@ testQemuGetLatestCapsForArch(const char *arch,
                              const char *suffix)
 {
     struct dirent *ent;
-    DIR *dir = NULL;
+    g_autoptr(DIR) dir = NULL;
     int rc;
-    char *fullsuffix = NULL;
-    char *tmp = NULL;
+    g_autofree char *fullsuffix = NULL;
     unsigned long maxver = 0;
     unsigned long ver;
     g_autofree char *maxname = NULL;
-    char *ret = NULL;
 
     fullsuffix = g_strdup_printf("%s.%s", arch, suffix);
 
     if (virDirOpen(&dir, TEST_QEMU_CAPS_PATH) < 0)
-        goto cleanup;
+        return NULL;
 
     while ((rc = virDirRead(dir, &ent, TEST_QEMU_CAPS_PATH)) > 0) {
-        VIR_FREE(tmp);
+        g_autofree char *tmp = NULL;
 
         tmp = g_strdup(STRSKIP(ent->d_name, "caps_"));
 
@@ -530,25 +561,19 @@ testQemuGetLatestCapsForArch(const char *arch,
     }
 
     if (rc < 0)
-        goto cleanup;
+        return NULL;
 
     if (!maxname) {
         VIR_TEST_VERBOSE("failed to find capabilities for '%s' in '%s'",
                          arch, TEST_QEMU_CAPS_PATH);
-        goto cleanup;
+        return NULL;
     }
 
-    ret = g_strdup_printf("%s/%s", TEST_QEMU_CAPS_PATH, maxname);
-
- cleanup:
-    VIR_FREE(tmp);
-    VIR_FREE(fullsuffix);
-    virDirClose(&dir);
-    return ret;
+    return g_strdup_printf("%s/%s", TEST_QEMU_CAPS_PATH, maxname);
 }
 
 
-virHashTablePtr
+GHashTable *
 testQemuGetLatestCaps(void)
 {
     const char *archs[] = {
@@ -558,10 +583,10 @@ testQemuGetLatestCaps(void)
         "s390x",
         "x86_64",
     };
-    virHashTablePtr capslatest;
+    GHashTable *capslatest;
     size_t i;
 
-    if (!(capslatest = virHashCreate(4, virHashValueFree)))
+    if (!(capslatest = virHashNew(g_free)))
         goto error;
 
     VIR_TEST_VERBOSE("");
@@ -591,9 +616,8 @@ testQemuCapsIterate(const char *suffix,
                     void *opaque)
 {
     struct dirent *ent;
-    DIR *dir = NULL;
+    g_autoptr(DIR) dir = NULL;
     int rc;
-    int ret = -1;
     bool fail = false;
 
     if (!callback)
@@ -602,11 +626,11 @@ testQemuCapsIterate(const char *suffix,
     /* Validate suffix */
     if (!STRPREFIX(suffix, ".")) {
         VIR_TEST_VERBOSE("malformed suffix '%s'", suffix);
-        goto cleanup;
+        return -1;
     }
 
     if (virDirOpen(&dir, TEST_QEMU_CAPS_PATH) < 0)
-        goto cleanup;
+        return -1;
 
     while ((rc = virDirRead(dir, &ent, TEST_QEMU_CAPS_PATH)) > 0) {
         g_autofree char *tmp = g_strdup(ent->d_name);
@@ -620,13 +644,13 @@ testQemuCapsIterate(const char *suffix,
         /* Strip the leading prefix */
         if (!(version = STRSKIP(tmp, "caps_"))) {
             VIR_TEST_VERBOSE("malformed file name '%s'", ent->d_name);
-            goto cleanup;
+            return -1;
         }
 
         /* Find the last dot */
         if (!(archName = strrchr(tmp, '.'))) {
             VIR_TEST_VERBOSE("malformed file name '%s'", ent->d_name);
-            goto cleanup;
+            return -1;
         }
 
         /* The version number and the architecture name are separated by
@@ -647,20 +671,15 @@ testQemuCapsIterate(const char *suffix,
     }
 
     if (rc < 0 || fail)
-        goto cleanup;
+        return -1;
 
-    ret = 0;
-
- cleanup:
-    virDirClose(&dir);
-
-    return ret;
+    return 0;
 }
 
 
 int
 testQemuInfoSetArgs(struct testQemuInfo *info,
-                    virHashTablePtr capslatest, ...)
+                    GHashTable *capslatest, ...)
 {
     va_list argptr;
     testQemuInfoArgName argname;
@@ -767,6 +786,10 @@ testQemuInfoSetArgs(struct testQemuInfo *info,
         if (stripmachinealiases)
             virQEMUCapsStripMachineAliases(qemuCaps);
         info->flags |= FLAG_REAL_CAPS;
+
+        /* provide path to the replies file for schema testing */
+        capsfile[strlen(capsfile) - 3] = '\0';
+        info->schemafile = g_strdup_printf("%sreplies", capsfile);
     }
 
     if (!qemuCaps) {
@@ -793,5 +816,7 @@ testQemuInfoClear(struct testQemuInfo *info)
 {
     VIR_FREE(info->infile);
     VIR_FREE(info->outfile);
+    VIR_FREE(info->schemafile);
+    VIR_FREE(info->errfile);
     virObjectUnref(info->qemuCaps);
 }

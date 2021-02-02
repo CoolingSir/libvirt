@@ -30,11 +30,6 @@
 #include <sys/stat.h>
 #include <inttypes.h>
 
-#if WITH_READLINE
-# include <readline/readline.h>
-# include <readline/history.h>
-#endif
-
 #include "internal.h"
 #include "virerror.h"
 #include "virbuffer.h"
@@ -181,6 +176,7 @@ virshConnect(vshControl *ctl, const char *uri, bool readonly)
         }
         vshDebug(ctl, VSH_ERR_INFO, "%s",
                  _("Failed to setup keepalive on connection\n"));
+        vshResetLibvirtError();
     }
 
  cleanup:
@@ -554,9 +550,6 @@ virshShowVersion(vshControl *ctl G_GNUC_UNUSED)
 #ifdef WITH_NWFILTER
     vshPrint(ctl, " Nwfilter");
 #endif
-#ifdef WITH_VIRTUALPORT
-    vshPrint(ctl, " VirtualPort");
-#endif
     vshPrint(ctl, "\n");
 
     vshPrint(ctl, "%s", _(" Storage:"));
@@ -614,9 +607,7 @@ virshShowVersion(vshControl *ctl G_GNUC_UNUSED)
 #ifdef WITH_SECRETS
     vshPrint(ctl, " Secrets");
 #endif
-#ifdef ENABLE_DEBUG
     vshPrint(ctl, " Debug");
-#endif
 #ifdef WITH_DTRACE_PROBES
     vshPrint(ctl, " DTrace");
 #endif
@@ -786,7 +777,7 @@ virshParseArgv(vshControl *ctl, int argc, char **argv)
         ctl->imode = false;
         if (argc - optind == 1) {
             vshDebug(ctl, VSH_ERR_INFO, "commands: \"%s\"\n", argv[optind]);
-            return vshCommandStringParse(ctl, argv[optind], NULL);
+            return vshCommandStringParse(ctl, argv[optind], NULL, 0);
         } else {
             return vshCommandArgvParse(ctl, argc - optind, argv + optind);
         }
@@ -922,10 +913,9 @@ main(int argc, char **argv)
             if (ctl->cmdstr == NULL)
                 break;          /* EOF */
             if (*ctl->cmdstr) {
-#if WITH_READLINE
-                add_history(ctl->cmdstr);
-#endif
-                if (vshCommandStringParse(ctl, ctl->cmdstr, NULL))
+                vshReadlineHistoryAdd(ctl->cmdstr);
+
+                if (vshCommandStringParse(ctl, ctl->cmdstr, NULL, 0))
                     vshCommandRun(ctl, ctl->cmd);
             }
             VIR_FREE(ctl->cmdstr);

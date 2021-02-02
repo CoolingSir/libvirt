@@ -85,9 +85,9 @@ virSEVCapabilitiesFree(virSEVCapability *cap)
     if (!cap)
         return;
 
-    VIR_FREE(cap->pdh);
-    VIR_FREE(cap->cert_chain);
-    VIR_FREE(cap);
+    g_free(cap->pdh);
+    g_free(cap->cert_chain);
+    g_free(cap);
 }
 
 
@@ -114,7 +114,7 @@ virDomainCapsCPUModelsDispose(void *obj)
 
     for (i = 0; i < cpuModels->nmodels; i++) {
         VIR_FREE(cpuModels->models[i].name);
-        virStringListFree(cpuModels->models[i].blockers);
+        g_strfreev(cpuModels->models[i].blockers);
     }
 
     VIR_FREE(cpuModels->models);
@@ -155,15 +155,10 @@ virDomainCapsCPUModelsNew(size_t nmodels)
     if (!(cpuModels = virObjectNew(virDomainCapsCPUModelsClass)))
         return NULL;
 
-    if (VIR_ALLOC_N(cpuModels->models, nmodels) < 0)
-        goto error;
+    cpuModels->models = g_new0(virDomainCapsCPUModel, nmodels);
     cpuModels->nmodels_max = nmodels;
 
     return cpuModels;
-
- error:
-    virObjectUnref(cpuModels);
-    return NULL;
 }
 
 
@@ -199,13 +194,9 @@ virDomainCapsCPUModelsAdd(virDomainCapsCPUModelsPtr cpuModels,
                           char **blockers)
 {
     g_autofree char * nameCopy = NULL;
-    VIR_AUTOSTRINGLIST blockersCopy = NULL;
     virDomainCapsCPUModelPtr cpu;
 
     nameCopy = g_strdup(name);
-
-    if (virStringListCopy(&blockersCopy, (const char **)blockers) < 0)
-        return -1;
 
     if (VIR_RESIZE_N(cpuModels->models, cpuModels->nmodels_max,
                      cpuModels->nmodels, 1) < 0)
@@ -216,7 +207,7 @@ virDomainCapsCPUModelsAdd(virDomainCapsCPUModelsPtr cpuModels,
 
     cpu->usable = usable;
     cpu->name = g_steal_pointer(&nameCopy);
-    cpu->blockers = g_steal_pointer(&blockersCopy);
+    cpu->blockers = g_strdupv(blockers);
 
     return 0;
 }
@@ -296,7 +287,7 @@ virDomainCapsEnumFormat(virBufferPtr buf,
     for (i = 0; i < sizeof(capsEnum->values) * CHAR_BIT; i++) {
         const char *val;
 
-        if (!(capsEnum->values & (1 << i)))
+        if (!VIR_DOMAIN_CAPS_ENUM_IS_SET(*capsEnum, i))
             continue;
 
         if ((val = (valToStr)(i)))
@@ -412,9 +403,20 @@ virDomainCapsCPUFormat(virBufferPtr buf,
     virBufferAddLit(buf, "<cpu>\n");
     virBufferAdjustIndent(buf, 2);
 
-    virBufferAsprintf(buf, "<mode name='%s' supported='%s'/>\n",
+    virBufferAsprintf(buf, "<mode name='%s' supported='%s'",
                       virCPUModeTypeToString(VIR_CPU_MODE_HOST_PASSTHROUGH),
                       cpu->hostPassthrough ? "yes" : "no");
+
+    if (cpu->hostPassthrough && cpu->hostPassthroughMigratable.report) {
+        virBufferAddLit(buf, ">\n");
+        virBufferAdjustIndent(buf, 2);
+        ENUM_PROCESS(cpu, hostPassthroughMigratable,
+                     virTristateSwitchTypeToString);
+        virBufferAdjustIndent(buf, -2);
+        virBufferAddLit(buf, "</mode>\n");
+    } else {
+        virBufferAddLit(buf, "/>\n");
+    }
 
     virBufferAsprintf(buf, "<mode name='%s' ",
                       virCPUModeTypeToString(VIR_CPU_MODE_HOST_MODEL));
@@ -585,7 +587,7 @@ virDomainCapsFormatFeatures(const virDomainCaps *caps,
 char *
 virDomainCapsFormat(const virDomainCaps *caps)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     const char *virttype_str = virDomainVirtTypeToString(caps->virttype);
     const char *arch_str = virArchToString(caps->arch);
 
@@ -625,88 +627,4 @@ virDomainCapsFormat(const virDomainCaps *caps)
     virBufferAddLit(&buf, "</domainCapabilities>\n");
 
     return virBufferContentAndReset(&buf);
-}
-
-
-#define ENUM_VALUE_MISSING(capsEnum, value) !(capsEnum.values & (1 << value))
-
-#define ENUM_VALUE_ERROR(valueLabel, valueString) \
-    do { \
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, \
-                       _("domain configuration does not support '%s' value '%s'"), \
-                       valueLabel, valueString); \
-    } while (0)
-
-
-static int
-virDomainCapsDeviceRNGDefValidate(const virDomainCaps *caps,
-                                  const virDomainRNGDef *dev)
-{
-    if (ENUM_VALUE_MISSING(caps->rng.model, dev->model)) {
-        ENUM_VALUE_ERROR("rng model",
-                         virDomainRNGModelTypeToString(dev->model));
-        return -1;
-    }
-
-    return 0;
-}
-
-
-static int
-virDomainCapsDeviceVideoDefValidate(const virDomainCaps *caps,
-                                    const virDomainVideoDef *dev)
-{
-    if (ENUM_VALUE_MISSING(caps->video.modelType, dev->type)) {
-        ENUM_VALUE_ERROR("video model",
-                         virDomainVideoTypeToString(dev->type));
-        return -1;
-    }
-
-    return 0;
-}
-
-
-int
-virDomainCapsDeviceDefValidate(const virDomainCaps *caps,
-                               const virDomainDeviceDef *dev,
-                               const virDomainDef *def G_GNUC_UNUSED)
-{
-    int ret = 0;
-
-    switch ((virDomainDeviceType) dev->type) {
-    case VIR_DOMAIN_DEVICE_RNG:
-        ret = virDomainCapsDeviceRNGDefValidate(caps, dev->data.rng);
-        break;
-    case VIR_DOMAIN_DEVICE_VIDEO:
-        ret = virDomainCapsDeviceVideoDefValidate(caps, dev->data.video);
-        break;
-
-    case VIR_DOMAIN_DEVICE_DISK:
-    case VIR_DOMAIN_DEVICE_REDIRDEV:
-    case VIR_DOMAIN_DEVICE_NET:
-    case VIR_DOMAIN_DEVICE_CONTROLLER:
-    case VIR_DOMAIN_DEVICE_CHR:
-    case VIR_DOMAIN_DEVICE_SMARTCARD:
-    case VIR_DOMAIN_DEVICE_HOSTDEV:
-    case VIR_DOMAIN_DEVICE_MEMORY:
-    case VIR_DOMAIN_DEVICE_VSOCK:
-    case VIR_DOMAIN_DEVICE_INPUT:
-    case VIR_DOMAIN_DEVICE_SHMEM:
-    case VIR_DOMAIN_DEVICE_LEASE:
-    case VIR_DOMAIN_DEVICE_FS:
-    case VIR_DOMAIN_DEVICE_SOUND:
-    case VIR_DOMAIN_DEVICE_WATCHDOG:
-    case VIR_DOMAIN_DEVICE_GRAPHICS:
-    case VIR_DOMAIN_DEVICE_HUB:
-    case VIR_DOMAIN_DEVICE_MEMBALLOON:
-    case VIR_DOMAIN_DEVICE_NVRAM:
-    case VIR_DOMAIN_DEVICE_TPM:
-    case VIR_DOMAIN_DEVICE_PANIC:
-    case VIR_DOMAIN_DEVICE_IOMMU:
-    case VIR_DOMAIN_DEVICE_NONE:
-    case VIR_DOMAIN_DEVICE_LAST:
-        break;
-    }
-
-    return ret;
 }

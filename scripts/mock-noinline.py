@@ -23,7 +23,6 @@ noninlined = {}
 mocked = {}
 
 # Functions in public header don't get the noinline annotation
-# so whitelist them here
 noninlined["virEventAddTimeout"] = True
 # This one confuses the script as its defined in the mock file
 # but is actually just a local helper
@@ -60,7 +59,7 @@ def scan_overrides(filename):
                 m = re.search(r'''^\w+\s*(?:\*\s*)?(\w+)\(''', line)
             if m is not None:
                 name = m.group(1)
-                if name.startswith("vir"):
+                if name.startswith("vir") or name.startswith("qemu") or name.startswith("libxl"):
                     mocked[name] = "%s:%d" % (filename, lineno)
 
 

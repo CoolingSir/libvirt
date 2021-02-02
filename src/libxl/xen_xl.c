@@ -29,9 +29,10 @@
 #include "domain_conf.h"
 #include "viralloc.h"
 #include "virstring.h"
-#include "virstoragefile.h"
+#include "storage_source.h"
 #include "xen_xl.h"
 #include "libxl_capabilities.h"
+#include "libxl_conf.h"
 #include "cpu/cpu.h"
 
 #define VIR_FROM_THIS VIR_FROM_XENXL
@@ -45,7 +46,7 @@ VIR_LOG_INIT("xen.xen_xl");
  * corresponding header file wasn't.  Use the header file if detected during
  * configure, otherwise provide extern declarations for any functions used.
  */
-#ifdef HAVE_LIBXLUTIL_H
+#ifdef WITH_LIBXLUTIL_H
 # include <libxlutil.h>
 #else
 typedef struct XLU_Config XLU_Config;
@@ -109,9 +110,7 @@ xenParseXLOS(virConfPtr conf, virDomainDefPtr def, virCapsPtr caps)
             return -1;
 
         if (bios && STREQ(bios, "ovmf")) {
-            if (VIR_ALLOC(def->os.loader) < 0)
-                return -1;
-
+            def->os.loader = g_new0(virDomainLoaderDef, 1);
             def->os.loader->type = VIR_DOMAIN_LOADER_TYPE_PFLASH;
             def->os.loader->readonly = VIR_TRISTATE_BOOL_YES;
 
@@ -120,8 +119,7 @@ xenParseXLOS(virConfPtr conf, virDomainDefPtr def, virCapsPtr caps)
             for (i = 0; i < caps->nguests; i++) {
                 if (caps->guests[i]->ostype == VIR_DOMAIN_OSTYPE_HVM &&
                     caps->guests[i]->arch.id == def->os.arch) {
-                    if (VIR_ALLOC(def->os.loader) < 0)
-                        return -1;
+                    def->os.loader = g_new0(virDomainLoaderDef, 1);
                     def->os.loader->path = g_strdup(caps->guests[i]->arch.defaultInfo.loader);
                 }
             }
@@ -318,15 +316,15 @@ xenParseXLCPUID(virConfPtr conf, virDomainDefPtr def)
                                 policy) < 0)
             goto cleanup;
 
-        virStringListFree(name_and_value);
+        g_strfreev(name_and_value);
         name_and_value = NULL;
     }
 
     ret = 0;
 
  cleanup:
-    virStringListFree(name_and_value);
-    virStringListFree(cpuid_pairs);
+    g_strfreev(name_and_value);
+    g_strfreev(cpuid_pairs);
     return ret;
 }
 
@@ -344,9 +342,7 @@ xenParseXLSpice(virConfPtr conf, virDomainDefPtr def)
             return -1;
 
         if (val) {
-            if (VIR_ALLOC(graphics) < 0)
-                return -1;
-
+            graphics = g_new0(virDomainGraphicsDef, 1);
             graphics->type = VIR_DOMAIN_GRAPHICS_TYPE_SPICE;
             if (xenConfigCopyStringOpt(conf, "spicehost", &listenAddr) < 0)
                 goto cleanup;
@@ -393,8 +389,7 @@ xenParseXLSpice(virConfPtr conf, virDomainDefPtr def)
             else
                 graphics->data.spice.copypaste = VIR_TRISTATE_BOOL_NO;
 
-            if (VIR_ALLOC_N(def->graphics, 1) < 0)
-                goto cleanup;
+            def->graphics = g_new0(virDomainGraphicsDefPtr, 1);
             def->graphics[0] = graphics;
             def->ngraphics = 1;
         }
@@ -450,7 +445,7 @@ xenParseXLVnuma(virConfPtr conf,
         unsigned long long kbsize = 0;
 
         /* Is there a sublist (vnode)? */
-        if (list && list->type == VIR_CONF_LIST) {
+        if (list->type == VIR_CONF_LIST) {
             vnode = list->list;
 
             while (vnode && vnode->type == VIR_CONF_STRING) {
@@ -508,10 +503,10 @@ xenParseXLVnuma(virConfPtr conf,
                             goto cleanup;
                         }
 
-                        if ((virBitmapParse(vtoken, &cpumask, VIR_DOMAIN_CPUMASK_LEN) < 0) ||
-                            (virDomainNumaSetNodeCpumask(numa, vnodeCnt, cpumask) == NULL))
+                        if (virBitmapParse(vtoken, &cpumask, VIR_DOMAIN_CPUMASK_LEN) < 0)
                             goto cleanup;
 
+                        virDomainNumaSetNodeCpumask(numa, vnodeCnt, cpumask);
                         vcpus += virBitmapCountBits(cpumask);
 
                     } else if (STRPREFIX(str, "vdistances")) {
@@ -528,7 +523,7 @@ xenParseXLVnuma(virConfPtr conf,
                         VIR_FREE(tmp);
                         tmp = g_strdup(vtoken);
 
-                        virStringListFree(token);
+                        g_strfreev(token);
                         if (!(token = virStringSplitCount(tmp, ",", 0, &ndistances)))
                             goto cleanup;
 
@@ -590,7 +585,7 @@ xenParseXLVnuma(virConfPtr conf,
  cleanup:
     if (ret)
         VIR_FREE(cpu);
-    virStringListFree(token);
+    g_strfreev(token);
     VIR_FREE(tmp);
 
     return ret;
@@ -646,8 +641,7 @@ xenParseXLDiskSrc(virDomainDiskDefPtr disk, char *srcstr)
         disk->src->protocol = VIR_STORAGE_NET_PROTOCOL_RBD;
         ret = virStorageSourceParseRBDColonString(tmpstr, disk->src);
     } else {
-        if (virDomainDiskSetSource(disk, srcstr) < 0)
-            goto cleanup;
+        virDomainDiskSetSource(disk, srcstr);
 
         ret = 0;
     }
@@ -701,8 +695,7 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
     libxl_device_disk *libxldisk;
     virDomainDiskDefPtr disk = NULL;
 
-    if (VIR_ALLOC(libxldisk) < 0)
-        return -1;
+    libxldisk = g_new0(libxl_device_disk, 1);
 
     if (!(xluconf = xlu_cfg_init(stderr, "command line")))
         goto cleanup;
@@ -732,8 +725,7 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
             disk->removable = libxldisk->removable;
 
             if (libxldisk->is_cdrom) {
-                if (virDomainDiskSetDriver(disk, "qemu") < 0)
-                    goto fail;
+                virDomainDiskSetDriver(disk, "qemu");
 
                 virDomainDiskSetType(disk, VIR_STORAGE_TYPE_FILE);
                 disk->device = VIR_DOMAIN_DISK_DEVICE_CDROM;
@@ -779,21 +771,18 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
                 switch (libxldisk->backend) {
                 case LIBXL_DISK_BACKEND_QDISK:
                 case LIBXL_DISK_BACKEND_UNKNOWN:
-                    if (virDomainDiskSetDriver(disk, "qemu") < 0)
-                        goto fail;
+                    virDomainDiskSetDriver(disk, "qemu");
                     if (virDomainDiskGetType(disk) == VIR_STORAGE_TYPE_NONE)
                         virDomainDiskSetType(disk, VIR_STORAGE_TYPE_FILE);
                     break;
 
                 case LIBXL_DISK_BACKEND_TAP:
-                    if (virDomainDiskSetDriver(disk, "tap") < 0)
-                        goto fail;
+                    virDomainDiskSetDriver(disk, "tap");
                     virDomainDiskSetType(disk, VIR_STORAGE_TYPE_FILE);
                     break;
 
                 case LIBXL_DISK_BACKEND_PHY:
-                    if (virDomainDiskSetDriver(disk, "phy") < 0)
-                        goto fail;
+                    virDomainDiskSetDriver(disk, "phy");
                     virDomainDiskSetType(disk, VIR_STORAGE_TYPE_BLOCK);
                     break;
                 default:
@@ -867,8 +856,8 @@ xenParseXLInputDevs(virConfPtr conf, virDomainDefPtr def)
                      STREQ(str, "mouse") ||
                      STREQ(str, "keyboard"))) {
                 virDomainInputDefPtr input;
-                if (VIR_ALLOC(input) < 0)
-                    return -1;
+                input = g_new0(virDomainInputDef,
+                               1);
 
                 input->bus = VIR_DOMAIN_INPUT_BUS_USB;
                 if (STREQ(str, "mouse"))
@@ -1158,6 +1147,42 @@ xenParseXLChannel(virConfPtr conf, virDomainDefPtr def)
     return -1;
 }
 
+static int
+xenParseXLNamespaceData(virConfPtr conf, virDomainDefPtr def)
+{
+    virConfValuePtr list = virConfGetValue(conf, "device_model_args");
+    g_auto(GStrv) args = NULL;
+    size_t nargs;
+    libxlDomainXmlNsDefPtr nsdata = NULL;
+
+    if (list && list->type == VIR_CONF_LIST) {
+        list = list->list;
+        while (list) {
+            if ((list->type != VIR_CONF_STRING) || (list->str == NULL)) {
+                list = list->next;
+                continue;
+            }
+
+            virStringListAdd(&args, list->str);
+            list = list->next;
+        }
+    }
+
+    if (!args)
+        return 0;
+
+    nargs = g_strv_length(args);
+    if (nargs > 0) {
+        nsdata = g_new0(libxlDomainXmlNsDef, 1);
+
+        nsdata->args = g_steal_pointer(&args);
+        nsdata->num_args = nargs;
+        def->namespaceData = nsdata;
+    }
+
+    return 0;
+}
+
 virDomainDefPtr
 xenParseXL(virConfPtr conf,
            virCapsPtr caps,
@@ -1170,6 +1195,7 @@ xenParseXL(virConfPtr conf,
 
     def->virtType = VIR_DOMAIN_VIRT_XEN;
     def->id = -1;
+    def->ns = *(virDomainXMLOptionGetNamespace(xmlopt));
 
     if (xenParseConfigCommon(conf, def, caps, XEN_CONFIG_FORMAT_XL,
                              xmlopt) < 0)
@@ -1205,6 +1231,9 @@ xenParseXL(virConfPtr conf,
         goto cleanup;
 
     if (xenParseXLChannel(conf, def) < 0)
+        goto cleanup;
+
+    if (xenParseXLNamespaceData(conf, def) < 0)
         goto cleanup;
 
     if (virDomainDefPostParse(def, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
@@ -1356,8 +1385,7 @@ xenFormatXLCPUID(virConfPtr conf, virDomainDefPtr def)
     }
 
     /* "host" + all features + NULL */
-    if (VIR_ALLOC_N(cpuid_pairs, def->cpu->nfeatures + 2) < 0)
-        return -1;
+    cpuid_pairs = g_new0(char *, def->cpu->nfeatures + 2);
 
     cpuid_pairs[0] = g_strdup("host");
 
@@ -1402,7 +1430,7 @@ xenFormatXLCPUID(virConfPtr conf, virDomainDefPtr def)
     ret = 0;
 
  cleanup:
-    virStringListFree(cpuid_pairs);
+    g_strfreev(cpuid_pairs);
     VIR_FREE(cpuid_string);
     return ret;
 }
@@ -1412,11 +1440,9 @@ static int
 xenFormatXLVnode(virConfValuePtr list,
                  virBufferPtr buf)
 {
-    int ret = -1;
     virConfValuePtr numaPnode, tmp;
 
-    if (VIR_ALLOC(numaPnode) < 0)
-        goto cleanup;
+    numaPnode = g_new0(virConfValue, 1);
 
     /* Place VNODE directive */
     numaPnode->type = VIR_CONF_STRING;
@@ -1429,11 +1455,8 @@ xenFormatXLVnode(virConfValuePtr list,
         tmp->next = numaPnode;
     else
         list->list = numaPnode;
-    ret = 0;
 
- cleanup:
-    virBufferFreeAndReset(buf);
-    return ret;
+    return 0;
 }
 
 static int
@@ -1444,18 +1467,20 @@ xenFormatXLVnuma(virConfValuePtr list,
 {
     int ret = -1;
     size_t i;
-
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virConfValuePtr numaVnode, tmp;
-
+    virBitmapPtr cpumask = virDomainNumaGetNodeCpumask(numa, node);
     size_t nodeSize = virDomainNumaGetNodeMemorySize(numa, node) / 1024;
-    char *nodeVcpus = virBitmapFormat(virDomainNumaGetNodeCpumask(numa, node));
+    g_autofree char *nodeVcpus = NULL;
 
-    if (VIR_ALLOC(numaVnode) < 0)
-        goto cleanup;
+    if (!cpumask)
+        return -1;
 
+    numaVnode = g_new0(virConfValue, 1);
     numaVnode->type = VIR_CONF_LIST;
     numaVnode->list = NULL;
+
+    nodeVcpus = virBitmapFormat(cpumask);
 
     /* pnode */
     virBufferAsprintf(&buf, "pnode=%zu", node);
@@ -1488,7 +1513,6 @@ xenFormatXLVnuma(virConfValuePtr list,
         list->list = numaVnode;
     ret = 0;
 
- cleanup:
     VIR_FREE(nodeVcpus);
     return ret;
 }
@@ -1505,8 +1529,7 @@ xenFormatXLDomainVnuma(virConfPtr conf,
     if (numa == NULL)
         return -1;
 
-    if (VIR_ALLOC(vnumaVal) < 0)
-        return -1;
+    vnumaVal = g_new0(virConfValue, 1);
 
     vnumaVal->type = VIR_CONF_LIST;
     vnumaVal->list = NULL;
@@ -1562,8 +1585,7 @@ xenFormatXLXenbusLimits(virConfPtr conf, virDomainDefPtr def)
 static char *
 xenFormatXLDiskSrcNet(virStorageSourcePtr src)
 {
-    char *ret = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
 
     switch ((virStorageNetProtocol) src->protocol) {
@@ -1578,19 +1600,20 @@ xenFormatXLDiskSrcNet(virStorageSourcePtr src)
     case VIR_STORAGE_NET_PROTOCOL_SHEEPDOG:
     case VIR_STORAGE_NET_PROTOCOL_SSH:
     case VIR_STORAGE_NET_PROTOCOL_VXHS:
+    case VIR_STORAGE_NET_PROTOCOL_NFS:
     case VIR_STORAGE_NET_PROTOCOL_LAST:
     case VIR_STORAGE_NET_PROTOCOL_NONE:
         virReportError(VIR_ERR_NO_SUPPORT,
                        _("Unsupported network block protocol '%s'"),
                        virStorageNetProtocolTypeToString(src->protocol));
-        goto cleanup;
+        return NULL;
 
     case VIR_STORAGE_NET_PROTOCOL_RBD:
         if (strchr(src->path, ':')) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("':' not allowed in RBD source volume name '%s'"),
                            src->path);
-            goto cleanup;
+            return NULL;
         }
 
         virBufferStrcat(&buf, "rbd:", src->volume, "/", src->path, NULL);
@@ -1615,14 +1638,10 @@ xenFormatXLDiskSrcNet(virStorageSourcePtr src)
             }
         }
 
-        ret = virBufferContentAndReset(&buf);
-        break;
+        return virBufferContentAndReset(&buf);
     }
 
- cleanup:
-    virBufferFreeAndReset(&buf);
-
-    return ret;
+    return NULL;
 }
 
 
@@ -1662,7 +1681,7 @@ xenFormatXLDiskSrc(virStorageSourcePtr src, char **srcstr)
 static int
 xenFormatXLDisk(virConfValuePtr list, virDomainDiskDefPtr disk)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virConfValuePtr val, tmp;
     int format = virDomainDiskGetFormat(disk);
     const char *driver = virDomainDiskGetDriver(disk);
@@ -1738,8 +1757,7 @@ xenFormatXLDisk(virConfValuePtr list, virDomainDiskDefPtr disk)
     if (target)
         virBufferAsprintf(&buf, ",target=%s", target);
 
-    if (VIR_ALLOC(val) < 0)
-        goto cleanup;
+    val = g_new0(virConfValue, 1);
 
     val->type = VIR_CONF_STRING;
     val->str = virBufferContentAndReset(&buf);
@@ -1754,7 +1772,6 @@ xenFormatXLDisk(virConfValuePtr list, virDomainDiskDefPtr disk)
 
  cleanup:
     VIR_FREE(target);
-    virBufferFreeAndReset(&buf);
     return ret;
 }
 
@@ -1765,8 +1782,7 @@ xenFormatXLDomainDisks(virConfPtr conf, virDomainDefPtr def)
     virConfValuePtr diskVal;
     size_t i;
 
-    if (VIR_ALLOC(diskVal) < 0)
-        return -1;
+    diskVal = g_new0(virConfValue, 1);
 
     diskVal->type = VIR_CONF_LIST;
     diskVal->list = NULL;
@@ -1890,9 +1906,7 @@ xenFormatXLInputDevs(virConfPtr conf, virDomainDefPtr def)
     virConfValuePtr usbdevices = NULL, lastdev;
 
     if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
-        if (VIR_ALLOC(usbdevices) < 0)
-            goto error;
-
+        usbdevices = g_new0(virConfValue, 1);
         usbdevices->type = VIR_CONF_LIST;
         usbdevices->list = NULL;
         lastdev = NULL;
@@ -1916,12 +1930,10 @@ xenFormatXLInputDevs(virConfPtr conf, virDomainDefPtr def)
                 }
 
                 if (lastdev == NULL) {
-                    if (VIR_ALLOC(lastdev) < 0)
-                        goto error;
+                    lastdev = g_new0(virConfValue, 1);
                     usbdevices->list = lastdev;
                 } else {
-                    if (VIR_ALLOC(lastdev->next) < 0)
-                        goto error;
+                    lastdev->next = g_new0(virConfValue, 1);
                     lastdev = lastdev->next;
                 }
                 lastdev->type = VIR_CONF_STRING;
@@ -1967,8 +1979,7 @@ xenFormatXLUSBController(virConfPtr conf,
     if (!hasUSBCtrl)
         return 0;
 
-    if (VIR_ALLOC(usbctrlVal) < 0)
-        return -1;
+    usbctrlVal = g_new0(virConfValue, 1);
 
     usbctrlVal->type = VIR_CONF_LIST;
     usbctrlVal->list = NULL;
@@ -1976,7 +1987,7 @@ xenFormatXLUSBController(virConfPtr conf,
     for (i = 0; i < def->ncontrollers; i++) {
         if (def->controllers[i]->type == VIR_DOMAIN_CONTROLLER_TYPE_USB) {
             virConfValuePtr val, tmp;
-            virBuffer buf = VIR_BUFFER_INITIALIZER;
+            g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
             if (def->controllers[i]->model != -1) {
                 switch (def->controllers[i]->model) {
@@ -1997,10 +2008,7 @@ xenFormatXLUSBController(virConfPtr conf,
                 virBufferAsprintf(&buf, "ports=%x",
                                   def->controllers[i]->opts.usbopts.ports);
 
-            if (VIR_ALLOC(val) < 0) {
-                virBufferFreeAndReset(&buf);
-                goto error;
-            }
+            val = g_new0(virConfValue, 1);
             val->type = VIR_CONF_STRING;
             val->str = virBufferContentAndReset(&buf);
             tmp = usbctrlVal->list;
@@ -2048,8 +2056,7 @@ xenFormatXLUSB(virConfPtr conf,
     if (!hasUSB)
         return 0;
 
-    if (VIR_ALLOC(usbVal) < 0)
-        return -1;
+    usbVal = g_new0(virConfValue, 1);
 
     usbVal->type = VIR_CONF_LIST;
     usbVal->list = NULL;
@@ -2064,10 +2071,7 @@ xenFormatXLUSB(virConfPtr conf,
                                   def->hostdevs[i]->source.subsys.u.usb.bus,
                                   def->hostdevs[i]->source.subsys.u.usb.device);
 
-            if (VIR_ALLOC(val) < 0) {
-                VIR_FREE(buf);
-                goto error;
-            }
+            val = g_new0(virConfValue, 1);
             val->type = VIR_CONF_STRING;
             val->str = buf;
             tmp = usbVal->list;
@@ -2089,16 +2093,12 @@ xenFormatXLUSB(virConfPtr conf,
     VIR_FREE(usbVal);
 
     return 0;
-
- error:
-    virConfFreeValue(usbVal);
-    return -1;
 }
 
 static int
 xenFormatXLChannel(virConfValuePtr list, virDomainChrDefPtr channel)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     int sourceType = channel->source->type;
     virConfValuePtr val, tmp;
 
@@ -2116,15 +2116,13 @@ xenFormatXLChannel(virConfValuePtr list, virDomainChrDefPtr channel)
                                   channel->source->data.nix.path);
             break;
         default:
-            goto cleanup;
+            return -1;
     }
 
     /* name */
     virBufferAsprintf(&buf, "name=%s", channel->target.name);
 
-    if (VIR_ALLOC(val) < 0)
-        goto cleanup;
-
+    val = g_new0(virConfValue, 1);
     val->type = VIR_CONF_STRING;
     val->str = virBufferContentAndReset(&buf);
     tmp = list->list;
@@ -2135,10 +2133,6 @@ xenFormatXLChannel(virConfValuePtr list, virDomainChrDefPtr channel)
     else
         list->list = val;
     return 0;
-
- cleanup:
-    virBufferFreeAndReset(&buf);
-    return -1;
 }
 
 static int
@@ -2147,8 +2141,7 @@ xenFormatXLDomainChannels(virConfPtr conf, virDomainDefPtr def)
     virConfValuePtr channelVal = NULL;
     size_t i;
 
-    if (VIR_ALLOC(channelVal) < 0)
-        goto cleanup;
+    channelVal = g_new0(virConfValue, 1);
 
     channelVal->type = VIR_CONF_LIST;
     channelVal->list = NULL;
@@ -2175,6 +2168,51 @@ xenFormatXLDomainChannels(virConfPtr conf, virDomainDefPtr def)
 
  cleanup:
     virConfFreeValue(channelVal);
+    return -1;
+}
+
+static int
+xenFormatXLDomainNamespaceData(virConfPtr conf, virDomainDefPtr def)
+{
+    libxlDomainXmlNsDefPtr nsdata = def->namespaceData;
+    virConfValuePtr args = NULL;
+    size_t i;
+
+    if (!nsdata)
+        return 0;
+
+    if (nsdata->num_args == 0)
+        return 0;
+
+    args = g_new0(virConfValue, 1);
+
+    args->type = VIR_CONF_LIST;
+    args->list = NULL;
+
+    for (i = 0; i < nsdata->num_args; i++) {
+        virConfValuePtr val, tmp;
+
+        val = g_new0(virConfValue, 1);
+
+        val->type = VIR_CONF_STRING;
+        val->str = g_strdup(nsdata->args[i]);
+        tmp = args->list;
+        while (tmp && tmp->next)
+            tmp = tmp->next;
+        if (tmp)
+            tmp->next = val;
+        else
+            args->list = val;
+    }
+
+    if (args->list != NULL)
+        if (virConfSetValue(conf, "device_model_args", args) < 0)
+            goto error;
+
+    return 0;
+
+ error:
+    virConfFreeValue(args);
     return -1;
 }
 
@@ -2219,6 +2257,9 @@ xenFormatXL(virDomainDefPtr def, virConnectPtr conn)
         return NULL;
 
     if (xenFormatXLDomainChannels(conf, def) < 0)
+        return NULL;
+
+    if (xenFormatXLDomainNamespaceData(conf, def) < 0)
         return NULL;
 
     return g_steal_pointer(&conf);

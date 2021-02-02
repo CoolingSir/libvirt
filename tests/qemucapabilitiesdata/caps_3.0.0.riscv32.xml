@@ -21,6 +21,7 @@
   <flag name='drive-discard'/>
   <flag name='virtio-mmio'/>
   <flag name='boot-strict'/>
+  <flag name='enable-fips'/>
   <flag name='msg-timestamp'/>
   <flag name='active-commit'/>
   <flag name='change-backing-file'/>
@@ -96,14 +97,20 @@
   <flag name='ramfb'/>
   <flag name='drive-nvme'/>
   <flag name='storage.werror'/>
+  <flag name='tcg'/>
+  <flag name='fw_cfg'/>
+  <flag name='migration-param.bandwidth'/>
+  <flag name='migration-param.downtime'/>
+  <flag name='migration-param.xbzrle-cache-size'/>
+  <flag name='fsdev.createmode'/>
   <version>3000000</version>
   <kvmVersion>0</kvmVersion>
   <microcodeVersion>0</microcodeVersion>
   <package></package>
   <arch>riscv32</arch>
-  <machine type='tcg' name='spike_v1.10' maxCpus='1' default='yes'/>
-  <machine type='tcg' name='spike_v1.9.1' maxCpus='1'/>
-  <machine type='tcg' name='sifive_e' maxCpus='1'/>
-  <machine type='tcg' name='virt' maxCpus='8'/>
-  <machine type='tcg' name='sifive_u' maxCpus='1'/>
+  <machine type='tcg' name='spike_v1.10' maxCpus='1' default='yes' numaMemSupported='yes'/>
+  <machine type='tcg' name='spike_v1.9.1' maxCpus='1' numaMemSupported='yes'/>
+  <machine type='tcg' name='sifive_e' maxCpus='1' numaMemSupported='yes'/>
+  <machine type='tcg' name='virt' maxCpus='8' numaMemSupported='yes'/>
+  <machine type='tcg' name='sifive_u' maxCpus='1' numaMemSupported='yes'/>
 </qemuCaps>

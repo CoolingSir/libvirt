@@ -280,6 +280,9 @@ const REMOTE_DOMAIN_GUEST_INFO_PARAMS_MAX = 2048;
  */
 const REMOTE_NETWORK_PORT_PARAMETERS_MAX = 16;
 
+/* Upper limit on number of SSH keys */
+const REMOTE_DOMAIN_AUTHORIZED_SSH_KEYS_MAX = 2048;
+
 
 /* UUID.  VIR_UUID_BUFLEN definition comes from libvirt.h */
 typedef opaque remote_uuid[VIR_UUID_BUFLEN];
@@ -3469,6 +3472,14 @@ struct remote_domain_event_callback_metadata_change_msg {
     remote_string nsuri;
 };
 
+struct remote_domain_event_memory_failure_msg {
+    int callbackID;
+    remote_nonnull_domain dom;
+    int recipient;
+    int action;
+    unsigned int flags;
+};
+
 struct remote_connect_secret_event_register_any_args {
     int eventID;
     remote_secret secret;
@@ -3771,6 +3782,23 @@ struct remote_domain_backup_get_xml_desc_ret {
     remote_nonnull_string xml;
 };
 
+struct remote_domain_authorized_ssh_keys_get_args {
+    remote_nonnull_domain dom;
+    remote_nonnull_string user;
+    unsigned int flags;
+};
+
+struct remote_domain_authorized_ssh_keys_get_ret {
+    remote_nonnull_string keys<REMOTE_DOMAIN_AUTHORIZED_SSH_KEYS_MAX>;
+};
+
+struct remote_domain_authorized_ssh_keys_set_args {
+    remote_nonnull_domain dom;
+    remote_nonnull_string user;
+    remote_nonnull_string keys<REMOTE_DOMAIN_AUTHORIZED_SSH_KEYS_MAX>;
+    unsigned int flags;
+};
+
 /*----- Protocol. -----*/
 
 /* Define the program number, protocol version and procedure numbers here. */
@@ -3805,6 +3833,7 @@ enum remote_procedure {
      *
      * - @acl: <object>:<permission>
      * - @acl: <object>:<permission>:<flagname>
+     * - @acl: <object>:<permission>::<param>:<value>
      *
      *   Declare the access control requirements for the API. May be repeated
      *   multiple times, if multiple rules are required.
@@ -3814,6 +3843,8 @@ enum remote_procedure {
      *     <permission> is one of the permissions in access/viraccessperm.h
      *     <flagname> indicates the rule only applies if the named flag
      *     is set in the API call
+     *     <param> and <value> can be used to check an unsigned int parameter
+     *     against value
      *
      * - @aclfilter: <object>:<permission>
      *
@@ -6208,6 +6239,7 @@ enum remote_procedure {
     /**
      * @generate: none
      * @acl: domain:read
+     * @acl: domain:write::source:VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT
      */
     REMOTE_PROC_DOMAIN_INTERFACE_ADDRESSES = 353,
 
@@ -6664,5 +6696,23 @@ enum remote_procedure {
      * @priority: high
      * @acl: domain:read
      */
-    REMOTE_PROC_DOMAIN_BACKUP_GET_XML_DESC = 422
+    REMOTE_PROC_DOMAIN_BACKUP_GET_XML_DESC = 422,
+
+    /**
+     * @generate: both
+     * @acl: none
+     */
+    REMOTE_PROC_DOMAIN_EVENT_MEMORY_FAILURE = 423,
+
+    /**
+     * @generate: none
+     * @acl: domain:write
+     */
+    REMOTE_PROC_DOMAIN_AUTHORIZED_SSH_KEYS_GET = 424,
+
+    /**
+     * @generate: none
+     * @acl: domain:write
+     */
+    REMOTE_PROC_DOMAIN_AUTHORIZED_SSH_KEYS_SET = 425
 };

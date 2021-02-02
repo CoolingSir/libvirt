@@ -21,8 +21,6 @@
 #include "qemu_conf.h"
 #include "qemu_domain.h"
 
-int qemuDBusPrepareHost(virQEMUDriverPtr driver);
-
 char *qemuDBusGetAddress(virQEMUDriverPtr driver,
                          virDomainObjPtr vm);
 
@@ -35,3 +33,7 @@ void qemuDBusStop(virQEMUDriverPtr driver,
 int qemuDBusVMStateAdd(virDomainObjPtr vm, const char *id);
 
 void qemuDBusVMStateRemove(virDomainObjPtr vm, const char *id);
+
+int qemuDBusSetupCgroup(virQEMUDriverPtr driver,
+                        virDomainObjPtr vm,
+                        virCgroupPtr cgroup);

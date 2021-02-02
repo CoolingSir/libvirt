@@ -173,8 +173,7 @@ virNetSSHSessionAuthMethodNew(virNetSSHSessionPtr sess)
 {
     virNetSSHAuthMethodPtr auth;
 
-    if (VIR_ALLOC(auth) < 0)
-        goto error;
+    auth = g_new0(virNetSSHAuthMethod, 1);
 
     if (VIR_EXPAND_N(sess->auths, sess->nauths, 1) < 0)
         goto error;
@@ -223,10 +222,7 @@ virNetSSHKbIntCb(const char *name G_GNUC_UNUSED,
         return;
     }
 
-    if (VIR_ALLOC_N(askcred, num_prompts) < 0) {
-        priv->authCbErr = VIR_NET_SSH_AUTHCB_OOM;
-        return;
-    }
+    askcred = g_new0(virConnectCredential, num_prompts);
 
     /* fill data structures for auth callback */
     for (i = 0; i < num_prompts; i++) {
@@ -287,7 +283,7 @@ virNetSSHCheckHostKey(virNetSSHSessionPtr sess)
     int keyType;
     size_t keyLength;
     char *errmsg;
-    virBuffer buff = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buff = VIR_BUFFER_INITIALIZER;
     virConnectCredential askKey;
     struct libssh2_knownhost *knownHostEntry = NULL;
     size_t i;
@@ -681,7 +677,7 @@ virNetSSHAuthenticatePassword(virNetSSHSessionPtr sess,
     VIR_DEBUG("sess=%p", sess);
 
     if (priv->password) {
-        /* tunelled password authentication */
+        /* tunnelled password authentication */
         if ((rc = libssh2_userauth_password(sess->session,
                                             priv->username,
                                             priv->password)) == 0) {
@@ -705,7 +701,7 @@ virNetSSHAuthenticatePassword(virNetSSHSessionPtr sess,
                                                     sess->hostname)))
                 goto cleanup;
 
-            /* tunelled password authentication */
+            /* tunnelled password authentication */
             if ((rc = libssh2_userauth_password(sess->session,
                                                 priv->username,
                                                 password)) == 0) {
@@ -1132,11 +1128,10 @@ virNetSSHSessionAuthAddKeyboardAuth(virNetSSHSessionPtr sess,
 
 }
 
-int
+void
 virNetSSHSessionSetChannelCommand(virNetSSHSessionPtr sess,
                                   const char *command)
 {
-    int ret = 0;
     virObjectLock(sess);
 
     VIR_FREE(sess->channelCommand);
@@ -1144,7 +1139,6 @@ virNetSSHSessionSetChannelCommand(virNetSSHSessionPtr sess,
     sess->channelCommand = g_strdup(command);
 
     virObjectUnlock(sess);
-    return ret;
 }
 
 int

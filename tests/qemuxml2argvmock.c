@@ -23,6 +23,7 @@
 #include "vircommand.h"
 #include "vircrypto.h"
 #include "virmock.h"
+#include "virlog.h"
 #include "virnetdev.h"
 #include "virnetdevip.h"
 #include "virnetdevtap.h"
@@ -91,6 +92,8 @@ virNumaNodesetIsAvailable(virBitmapPtr nodeset)
         if (virNumaNodeIsAvailable(bit))
             continue;
 
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "Mock: no numa node set is available at bit %zd", bit);
         return false;
     }
 
@@ -116,19 +119,6 @@ unsigned long long
 virMemoryMaxValue(bool capped G_GNUC_UNUSED)
 {
     return LLONG_MAX;
-}
-
-char *
-virSCSIDeviceGetSgName(const char *sysfs_prefix G_GNUC_UNUSED,
-                       const char *adapter G_GNUC_UNUSED,
-                       unsigned int bus G_GNUC_UNUSED,
-                       unsigned int target G_GNUC_UNUSED,
-                       unsigned long long unit G_GNUC_UNUSED)
-{
-    char *ret;
-
-    ret = g_strdup("sg0");
-    return ret;
 }
 
 int
@@ -205,7 +195,7 @@ virHostGetDRMRenderNode(void)
 
 static void (*real_virCommandPassFD)(virCommandPtr cmd, int fd, unsigned int flags);
 
-static const int testCommandPassSafeFDs[] = { 1730, 1731 };
+static const int testCommandPassSafeFDs[] = { 1730, 1731, 1732 };
 
 void
 virCommandPassFD(virCommandPtr cmd,
@@ -227,6 +217,7 @@ virCommandPassFD(virCommandPtr cmd,
 
 int
 virNetDevOpenvswitchGetVhostuserIfname(const char *path G_GNUC_UNUSED,
+                                       bool server G_GNUC_UNUSED,
                                        char **ifname)
 {
     *ifname = g_strdup("vhost-user0");
@@ -282,4 +273,21 @@ qemuBuildTPMOpenBackendFDs(const char *tpmdev G_GNUC_UNUSED,
     *tpmfd = 1730;
     *cancelfd = 1731;
     return 0;
+}
+
+
+int
+virNetDevSetRootQDisc(const char *ifname G_GNUC_UNUSED,
+                      const char *qdisc G_GNUC_UNUSED)
+{
+    return 0;
+}
+
+
+int
+qemuInterfaceVDPAConnect(virDomainNetDefPtr net G_GNUC_UNUSED)
+{
+    if (fcntl(1732, F_GETFD) != -1)
+        abort();
+    return 1732;
 }

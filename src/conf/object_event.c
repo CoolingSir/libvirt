@@ -140,8 +140,8 @@ virObjectEventCallbackFree(virObjectEventCallbackPtr cb)
         return;
 
     virObjectUnref(cb->conn);
-    VIR_FREE(cb->key);
-    VIR_FREE(cb);
+    g_free(cb->key);
+    g_free(cb);
 }
 
 /**
@@ -161,10 +161,10 @@ virObjectEventCallbackListFree(virObjectEventCallbackListPtr list)
         virFreeCallback freecb = list->callbacks[i]->freecb;
         if (freecb)
             (*freecb)(list->callbacks[i]->opaque);
-        VIR_FREE(list->callbacks[i]);
+        g_free(list->callbacks[i]);
     }
-    VIR_FREE(list->callbacks);
-    VIR_FREE(list);
+    g_free(list->callbacks);
+    g_free(list);
 }
 
 
@@ -424,8 +424,7 @@ virObjectEventCallbackListAddID(virConnectPtr conn,
         return -1;
     }
     /* Allocate new cb */
-    if (VIR_ALLOC(cb) < 0)
-        goto cleanup;
+    cb = g_new0(virObjectEventCallback, 1);
     cb->conn = virObjectRef(conn);
     *callbackID = cb->callbackID = cbList->nextID++;
     cb->cb = callback;
@@ -495,16 +494,13 @@ virObjectEventQueueFree(virObjectEventQueuePtr queue)
         return;
 
     virObjectEventQueueClear(queue);
-    VIR_FREE(queue);
+    g_free(queue);
 }
 
 static virObjectEventQueuePtr
 virObjectEventQueueNew(void)
 {
-    virObjectEventQueuePtr ret;
-
-    ignore_value(VIR_ALLOC(ret));
-    return ret;
+    return g_new0(virObjectEventQueue, 1);
 }
 
 
@@ -566,8 +562,7 @@ virObjectEventStateNew(void)
     if (!(state = virObjectLockableNew(virObjectEventStateClass)))
         return NULL;
 
-    if (VIR_ALLOC(state->callbacks) < 0)
-        goto error;
+    state->callbacks = g_new0(virObjectEventCallbackList, 1);
 
     if (!(state->queue = virObjectEventQueueNew()))
         goto error;

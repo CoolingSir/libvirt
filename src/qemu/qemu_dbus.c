@@ -33,16 +33,6 @@
 VIR_LOG_INIT("qemu.dbus");
 
 
-int
-qemuDBusPrepareHost(virQEMUDriverPtr driver)
-{
-    g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
-
-    return virDirCreate(cfg->dbusStateDir, 0770, cfg->user, cfg->group,
-                        VIR_DIR_CREATE_ALLOW_EXIST);
-}
-
-
 static char *
 qemuDBusCreatePidFilename(virQEMUDriverConfigPtr cfg,
                           const char *shortName)
@@ -100,7 +90,7 @@ qemuDBusGetAddress(virQEMUDriverPtr driver,
 static int
 qemuDBusWriteConfig(const char *filename, const char *path)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     g_autofree char *config = NULL;
 
     virBufferAddLit(&buf, "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n");
@@ -142,13 +132,11 @@ qemuDBusStop(virQEMUDriverPtr driver,
     qemuDomainObjPrivatePtr priv = vm->privateData;
     g_autofree char *shortName = NULL;
     g_autofree char *pidfile = NULL;
-    g_autofree char *configfile = NULL;
 
     if (!(shortName = virDomainDefGetShortName(vm->def)))
         return;
 
     pidfile = qemuDBusCreatePidFilename(cfg, shortName);
-    configfile = qemuDBusCreateConfPath(cfg, shortName);
 
     if (virPidFileForceCleanupPath(pidfile) < 0) {
         VIR_WARN("Unable to kill dbus-daemon process");
@@ -157,6 +145,31 @@ qemuDBusStop(virQEMUDriverPtr driver,
     }
 }
 
+
+int
+qemuDBusSetupCgroup(virQEMUDriverPtr driver,
+                    virDomainObjPtr vm,
+                    virCgroupPtr cgroup)
+{
+    g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    g_autofree char *shortName = NULL;
+    g_autofree char *pidfile = NULL;
+    pid_t cpid = -1;
+
+    if (!priv->dbusDaemonRunning)
+        return 0;
+
+    if (!(shortName = virDomainDefGetShortName(vm->def)))
+        return -1;
+    pidfile = qemuDBusCreatePidFilename(cfg, shortName);
+    if (virPidFileReadPath(pidfile, &cpid) < 0) {
+        VIR_WARN("Unable to get DBus PID");
+        return -1;
+    }
+
+    return virCgroupAddProcess(cgroup, cpid);
+}
 
 int
 qemuDBusStart(virQEMUDriverPtr driver,
@@ -176,6 +189,9 @@ qemuDBusStart(virQEMUDriverPtr driver,
     int exitstatus = 0;
     pid_t cpid = -1;
     int ret = -1;
+
+    if (priv->dbusDaemonRunning)
+        return 0;
 
     if (!virFileIsExecutable(cfg->dbusDaemonName)) {
         virReportSystemError(errno,
@@ -252,10 +268,6 @@ qemuDBusStart(virQEMUDriverPtr driver,
                        cfg->dbusDaemonName);
         goto cleanup;
     }
-
-    if (priv->cgroup &&
-        virCgroupAddProcess(priv->cgroup, cpid) < 0)
-        goto cleanup;
 
     if (qemuSecurityDomainSetPathLabel(driver, vm, sockpath, false) < 0)
         goto cleanup;

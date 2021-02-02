@@ -28,18 +28,20 @@
 
 #include "virerror.h"
 #include "datatypes.h"
+#include "domain_addr.h"
 #include "viralloc.h"
 #include "virfile.h"
+#include "virjson.h"
 #include "virstring.h"
 #include "node_device_conf.h"
 #include "node_device_event.h"
 #include "node_device_driver.h"
-#include "node_device_hal.h"
 #include "node_device_util.h"
 #include "virvhba.h"
 #include "viraccessapicheck.h"
 #include "virnetdev.h"
 #include "virutil.h"
+#include "vircommand.h"
 
 #define VIR_FROM_THIS VIR_FROM_NODEDEV
 
@@ -95,14 +97,13 @@ int nodeConnectIsAlive(virConnectPtr conn G_GNUC_UNUSED)
     return 1;
 }
 
-#if defined (__linux__) && ( defined (WITH_HAL) || defined(WITH_UDEV))
+#if defined (__linux__) && defined(WITH_UDEV)
 /* NB: It was previously believed that changes in driver name were
  * relayed to libvirt as "change" events by udev, and the udev event
  * notification is setup to recognize such events and effectively
  * recreate the device entry in the cache. However, neither the kernel
  * nor udev sends such an event, so it is necessary to manually update
- * the driver name for a device each time its entry is used, both for
- * udev *and* HAL backends.
+ * the driver name for a device each time its entry is used.
  */
 static int
 nodeDeviceUpdateDriverName(virNodeDeviceDefPtr def)
@@ -304,6 +305,30 @@ nodeDeviceLookupSCSIHostByWWN(virConnectPtr conn,
     return device;
 }
 
+static virNodeDevicePtr
+nodeDeviceLookupMediatedDeviceByUUID(virConnectPtr conn,
+                                     const char *uuid,
+                                     unsigned int flags)
+{
+    virNodeDeviceObjPtr obj = NULL;
+    virNodeDeviceDefPtr def;
+    virNodeDevicePtr device = NULL;
+
+    virCheckFlags(0, NULL);
+
+    if (!(obj = virNodeDeviceObjListFindMediatedDeviceByUUID(driver->devs,
+                                                             uuid)))
+        return NULL;
+
+    def = virNodeDeviceObjGetDef(obj);
+
+    if ((device = virGetNodeDevice(conn, def->name)))
+        device->parentName = g_strdup(def->parent);
+
+    virNodeDeviceObjEndAPI(&obj);
+    return device;
+}
+
 
 char *
 nodeDeviceGetXMLDesc(virNodeDevicePtr device,
@@ -447,6 +472,10 @@ nodeDeviceGetTime(time_t *t)
 }
 
 
+typedef virNodeDevicePtr (*nodeDeviceFindNewDeviceFunc)(virConnectPtr conn,
+                                                        const void* opaque);
+
+
 /* When large numbers of devices are present on the host, it's
  * possible for udev not to realize that it has work to do before we
  * get here.  We thus keep trying to find the new device we just
@@ -462,8 +491,8 @@ nodeDeviceGetTime(time_t *t)
  */
 static virNodeDevicePtr
 nodeDeviceFindNewDevice(virConnectPtr conn,
-                        const char *wwnn,
-                        const char *wwpn)
+                        nodeDeviceFindNewDeviceFunc func,
+                        const void *opaque)
 {
     virNodeDevicePtr device = NULL;
     time_t start = 0, now = 0;
@@ -474,7 +503,7 @@ nodeDeviceFindNewDevice(virConnectPtr conn,
 
         virWaitForDevices();
 
-        device = nodeDeviceLookupSCSIHostByWWN(conn, wwnn, wwpn, 0);
+        device = func(conn, opaque);
 
         if (device != NULL)
             break;
@@ -488,6 +517,260 @@ nodeDeviceFindNewDevice(virConnectPtr conn,
 }
 
 
+static virNodeDevicePtr
+nodeDeviceFindNewMediatedDeviceFunc(virConnectPtr conn,
+                                    const void *opaque)
+{
+    const char *uuid = opaque;
+
+    return nodeDeviceLookupMediatedDeviceByUUID(conn, uuid, 0);
+}
+
+
+static virNodeDevicePtr
+nodeDeviceFindNewMediatedDevice(virConnectPtr conn,
+                                const char *mdev_uuid)
+{
+    return nodeDeviceFindNewDevice(conn,
+                                   nodeDeviceFindNewMediatedDeviceFunc,
+                                   mdev_uuid);
+}
+
+
+typedef struct _NewSCSIHostFuncData NewSCSIHostFuncData;
+struct _NewSCSIHostFuncData
+{
+    const char *wwnn;
+    const char *wwpn;
+};
+
+
+static virNodeDevicePtr
+nodeDeviceFindNewSCSIHostFunc(virConnectPtr conn,
+                              const void *opaque)
+{
+    const NewSCSIHostFuncData *data = opaque;
+
+    return nodeDeviceLookupSCSIHostByWWN(conn, data->wwnn, data->wwpn, 0);
+}
+
+
+static virNodeDevicePtr
+nodeDeviceFindNewSCSIHost(virConnectPtr conn,
+                          const char *wwnn,
+                          const char *wwpn)
+{
+    NewSCSIHostFuncData data = { .wwnn = wwnn, .wwpn = wwpn};
+
+    return nodeDeviceFindNewDevice(conn, nodeDeviceFindNewSCSIHostFunc, &data);
+}
+
+
+static bool
+nodeDeviceHasCapability(virNodeDeviceDefPtr def, virNodeDevCapType type)
+{
+    virNodeDevCapsDefPtr cap = def->caps;
+
+    while (cap != NULL) {
+        if (cap->data.type == type)
+            return true;
+        cap = cap->next;
+    }
+
+    return false;
+}
+
+
+/* format a json string that provides configuration information about this mdev
+ * to the mdevctl utility */
+static int
+nodeDeviceDefToMdevctlConfig(virNodeDeviceDefPtr def, char **buf)
+{
+    size_t i;
+    virNodeDevCapMdevPtr mdev = &def->caps->data.mdev;
+    g_autoptr(virJSONValue) json = virJSONValueNewObject();
+
+    if (virJSONValueObjectAppendString(json, "mdev_type", mdev->type) < 0)
+        return -1;
+
+    if (virJSONValueObjectAppendString(json, "start", "manual") < 0)
+        return -1;
+
+    if (mdev->attributes) {
+        g_autoptr(virJSONValue) attributes = virJSONValueNewArray();
+
+        for (i = 0; i < mdev->nattributes; i++) {
+            virMediatedDeviceAttrPtr attr = mdev->attributes[i];
+            g_autoptr(virJSONValue) jsonattr = virJSONValueNewObject();
+
+            if (virJSONValueObjectAppendString(jsonattr, attr->name, attr->value) < 0)
+                return -1;
+
+            if (virJSONValueArrayAppend(attributes, g_steal_pointer(&jsonattr)) < 0)
+                return -1;
+        }
+
+        if (virJSONValueObjectAppend(json, "attrs", g_steal_pointer(&attributes)) < 0)
+            return -1;
+    }
+
+    *buf = virJSONValueToString(json, false);
+    if (!*buf)
+        return -1;
+
+    return 0;
+}
+
+
+static char *
+nodeDeviceFindAddressByName(const char *name)
+{
+    virNodeDeviceDefPtr def = NULL;
+    virNodeDevCapsDefPtr caps = NULL;
+    char *addr = NULL;
+    virNodeDeviceObjPtr dev = virNodeDeviceObjListFindByName(driver->devs, name);
+
+    if (!dev) {
+        virReportError(VIR_ERR_NO_NODE_DEVICE,
+                       _("could not find device '%s'"), name);
+        return NULL;
+    }
+
+    def = virNodeDeviceObjGetDef(dev);
+    for (caps = def->caps; caps != NULL; caps = caps->next) {
+        switch (caps->data.type) {
+        case VIR_NODE_DEV_CAP_PCI_DEV: {
+            virPCIDeviceAddress pci_addr = {
+                .domain = caps->data.pci_dev.domain,
+                .bus = caps->data.pci_dev.bus,
+                .slot = caps->data.pci_dev.slot,
+                .function = caps->data.pci_dev.function
+            };
+
+            addr = virPCIDeviceAddressAsString(&pci_addr);
+            break;
+            }
+
+        case VIR_NODE_DEV_CAP_CSS_DEV: {
+            virDomainDeviceCCWAddress ccw_addr = {
+                .cssid = caps->data.ccw_dev.cssid,
+                .ssid = caps->data.ccw_dev.ssid,
+                .devno = caps->data.ccw_dev.devno
+            };
+
+            addr = virDomainCCWAddressAsString(&ccw_addr);
+            break;
+            }
+
+        case VIR_NODE_DEV_CAP_AP_MATRIX:
+            addr = g_strdup(caps->data.ap_matrix.addr);
+            break;
+
+        case VIR_NODE_DEV_CAP_SYSTEM:
+        case VIR_NODE_DEV_CAP_USB_DEV:
+        case VIR_NODE_DEV_CAP_USB_INTERFACE:
+        case VIR_NODE_DEV_CAP_NET:
+        case VIR_NODE_DEV_CAP_SCSI_HOST:
+        case VIR_NODE_DEV_CAP_SCSI_TARGET:
+        case VIR_NODE_DEV_CAP_SCSI:
+        case VIR_NODE_DEV_CAP_STORAGE:
+        case VIR_NODE_DEV_CAP_FC_HOST:
+        case VIR_NODE_DEV_CAP_VPORTS:
+        case VIR_NODE_DEV_CAP_SCSI_GENERIC:
+        case VIR_NODE_DEV_CAP_DRM:
+        case VIR_NODE_DEV_CAP_MDEV_TYPES:
+        case VIR_NODE_DEV_CAP_MDEV:
+        case VIR_NODE_DEV_CAP_CCW_DEV:
+        case VIR_NODE_DEV_CAP_VDPA:
+        case VIR_NODE_DEV_CAP_AP_CARD:
+        case VIR_NODE_DEV_CAP_AP_QUEUE:
+        case VIR_NODE_DEV_CAP_LAST:
+            break;
+        }
+
+        if (addr)
+            break;
+    }
+
+    virNodeDeviceObjEndAPI(&dev);
+
+    return addr;
+}
+
+
+virCommandPtr
+nodeDeviceGetMdevctlStartCommand(virNodeDeviceDefPtr def,
+                                 char **uuid_out)
+{
+    virCommandPtr cmd;
+    g_autofree char *json = NULL;
+    g_autofree char *parent_addr = nodeDeviceFindAddressByName(def->parent);
+
+    if (!parent_addr) {
+        virReportError(VIR_ERR_NO_NODE_DEVICE,
+                       _("unable to find parent device '%s'"), def->parent);
+        return NULL;
+    }
+
+    if (nodeDeviceDefToMdevctlConfig(def, &json) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("couldn't convert node device def to mdevctl JSON"));
+        return NULL;
+    }
+
+    cmd = virCommandNewArgList(MDEVCTL, "start",
+                               "-p", parent_addr,
+                               "--jsonfile", "/dev/stdin",
+                               NULL);
+
+    virCommandSetInputBuffer(cmd, json);
+    virCommandSetOutputBuffer(cmd, uuid_out);
+
+    return cmd;
+}
+
+static int
+virMdevctlStart(virNodeDeviceDefPtr def, char **uuid)
+{
+    int status;
+    g_autoptr(virCommand) cmd = nodeDeviceGetMdevctlStartCommand(def, uuid);
+    if (!cmd)
+        return -1;
+
+    /* an auto-generated uuid is returned via stdout if no uuid is specified in
+     * the mdevctl args */
+    if (virCommandRun(cmd, &status) < 0 || status != 0)
+        return -1;
+
+    /* remove newline */
+    *uuid = g_strstrip(*uuid);
+
+    return 0;
+}
+
+
+static virNodeDevicePtr
+nodeDeviceCreateXMLMdev(virConnectPtr conn,
+                        virNodeDeviceDefPtr def)
+{
+    g_autofree char *uuid = NULL;
+
+    if (!def->parent) {
+        virReportError(VIR_ERR_XML_ERROR, "%s",
+                       _("cannot create a mediated device without a parent"));
+        return NULL;
+    }
+
+    if (virMdevctlStart(def, &uuid) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to start mediated device"));
+        return NULL;
+    }
+
+    return nodeDeviceFindNewMediatedDevice(conn, uuid);
+}
+
+
 virNodeDevicePtr
 nodeDeviceCreateXML(virConnectPtr conn,
                     const char *xmlDesc,
@@ -496,7 +779,6 @@ nodeDeviceCreateXML(virConnectPtr conn,
     g_autoptr(virNodeDeviceDef) def = NULL;
     g_autofree char *wwnn = NULL;
     g_autofree char *wwpn = NULL;
-    int parent_host = -1;
     virNodeDevicePtr device = NULL;
     const char *virt_type = NULL;
 
@@ -513,26 +795,61 @@ nodeDeviceCreateXML(virConnectPtr conn,
     if (virNodeDeviceCreateXMLEnsureACL(conn, def) < 0)
         return NULL;
 
-    if (virNodeDeviceGetWWNs(def, &wwnn, &wwpn) == -1)
-        return NULL;
+    if (nodeDeviceHasCapability(def, VIR_NODE_DEV_CAP_SCSI_HOST)) {
+        int parent_host;
 
-    if ((parent_host = virNodeDeviceObjListGetParentHost(driver->devs, def)) < 0)
-        return NULL;
+        if (virNodeDeviceGetWWNs(def, &wwnn, &wwpn) == -1)
+            return NULL;
 
-    if (virVHBAManageVport(parent_host, wwpn, wwnn, VPORT_CREATE) < 0)
-        return NULL;
+        if ((parent_host = virNodeDeviceObjListGetParentHost(driver->devs, def)) < 0)
+            return NULL;
 
-    device = nodeDeviceFindNewDevice(conn, wwnn, wwpn);
-    /* We don't check the return value, because one way or another,
-     * we're returning what we get... */
+        if (virVHBAManageVport(parent_host, wwpn, wwnn, VPORT_CREATE) < 0)
+            return NULL;
 
-    if (device == NULL)
-        virReportError(VIR_ERR_NO_NODE_DEVICE,
-                       _("no node device for '%s' with matching "
-                         "wwnn '%s' and wwpn '%s'"),
-                       def->name, wwnn, wwpn);
+        device = nodeDeviceFindNewSCSIHost(conn, wwnn, wwpn);
+        /* We don't check the return value, because one way or another,
+         * we're returning what we get... */
+
+        if (device == NULL)
+            virReportError(VIR_ERR_NO_NODE_DEVICE,
+                           _("no node device for '%s' with matching "
+                             "wwnn '%s' and wwpn '%s'"),
+                           def->name, wwnn, wwpn);
+    } else if (nodeDeviceHasCapability(def, VIR_NODE_DEV_CAP_MDEV)) {
+        device = nodeDeviceCreateXMLMdev(conn, def);
+    } else {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("Unsupported device type"));
+    }
 
     return device;
+}
+
+
+virCommandPtr
+nodeDeviceGetMdevctlStopCommand(const char *uuid)
+{
+    return virCommandNewArgList(MDEVCTL,
+                                "stop",
+                                "-u",
+                                uuid,
+                                NULL);
+
+}
+
+static int
+virMdevctlStop(virNodeDeviceDefPtr def)
+{
+    int status;
+    g_autoptr(virCommand) cmd = NULL;
+
+    cmd = nodeDeviceGetMdevctlStopCommand(def->caps->data.mdev.uuid);
+
+    if (virCommandRun(cmd, &status) < 0 || status != 0)
+        return -1;
+
+    return 0;
 }
 
 
@@ -557,31 +874,43 @@ nodeDeviceDestroy(virNodeDevicePtr device)
     if (virNodeDeviceDestroyEnsureACL(device->conn, def) < 0)
         goto cleanup;
 
-    if (virNodeDeviceGetWWNs(def, &wwnn, &wwpn) < 0)
-        goto cleanup;
+    if (nodeDeviceHasCapability(def, VIR_NODE_DEV_CAP_SCSI_HOST)) {
+        if (virNodeDeviceGetWWNs(def, &wwnn, &wwpn) < 0)
+            goto cleanup;
 
-    /* Because we're about to release the lock and thus run into a race
-     * possibility (however improbable) with a udevAddOneDevice change
-     * event which would essentially free the existing @def (obj->def) and
-     * replace it with something new, we need to grab the parent field
-     * and then find the parent obj in order to manage the vport */
-    parent = g_strdup(def->parent);
+        /* Because we're about to release the lock and thus run into a race
+         * possibility (however improbable) with a udevAddOneDevice change
+         * event which would essentially free the existing @def (obj->def) and
+         * replace it with something new, we need to grab the parent field
+         * and then find the parent obj in order to manage the vport */
+        parent = g_strdup(def->parent);
 
-    virNodeDeviceObjEndAPI(&obj);
+        virNodeDeviceObjEndAPI(&obj);
 
-    if (!(obj = virNodeDeviceObjListFindByName(driver->devs, parent))) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("cannot find parent '%s' definition"), parent);
-        goto cleanup;
+        if (!(obj = virNodeDeviceObjListFindByName(driver->devs, parent))) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("cannot find parent '%s' definition"), parent);
+            goto cleanup;
+        }
+
+        if (virSCSIHostGetNumber(parent, &parent_host) < 0)
+            goto cleanup;
+
+        if (virVHBAManageVport(parent_host, wwpn, wwnn, VPORT_DELETE) < 0)
+            goto cleanup;
+
+        ret = 0;
+    } else if (nodeDeviceHasCapability(def, VIR_NODE_DEV_CAP_MDEV)) {
+        if (virMdevctlStop(def) < 0) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Unable to stop mediated device"));
+            goto cleanup;
+        }
+        ret = 0;
+    } else {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("Unsupported device type"));
     }
-
-    if (virSCSIHostGetNumber(parent, &parent_host) < 0)
-        goto cleanup;
-
-    if (virVHBAManageVport(parent_host, wwpn, wwnn, VPORT_DELETE) < 0)
-        goto cleanup;
-
-    ret = 0;
 
  cleanup:
     virNodeDeviceObjEndAPI(&obj);
@@ -637,9 +966,5 @@ nodedevRegister(void)
 {
 #ifdef WITH_UDEV
     return udevNodeRegister();
-#else
-# ifdef WITH_HAL
-    return halNodeRegister();
-# endif
 #endif
 }

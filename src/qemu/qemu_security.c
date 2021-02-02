@@ -21,18 +21,19 @@
 #include <config.h>
 
 #include "qemu_domain.h"
+#include "qemu_namespace.h"
 #include "qemu_security.h"
 #include "virlog.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
-VIR_LOG_INIT("qemu.qemu_process");
+VIR_LOG_INIT("qemu.qemu_security");
 
 
 int
 qemuSecuritySetAllLabel(virQEMUDriverPtr driver,
                         virDomainObjPtr vm,
-                        const char *stdin_path,
+                        const char *incomingPath,
                         bool migrated)
 {
     int ret = -1;
@@ -47,7 +48,7 @@ qemuSecuritySetAllLabel(virQEMUDriverPtr driver,
 
     if (virSecurityManagerSetAllLabel(driver->securityManager,
                                       vm->def,
-                                      stdin_path,
+                                      incomingPath,
                                       priv->chardevStdioLogd,
                                       migrated) < 0)
         goto cleanup;
@@ -448,7 +449,7 @@ qemuSecurityRestoreChardevLabel(virQEMUDriverPtr driver,
  * @existstatus: pointer to int returning exit status of process
  * @cmdret: pointer to int returning result of virCommandRun
  *
- * Start the vhost-user-gpu process with approriate labels.
+ * Start the vhost-user-gpu process with appropriate labels.
  * This function returns -1 on security setup error, 0 if all the
  * setup was done properly. In case the virCommand failed to run
  * 0 is returned but cmdret is set appropriately with the process
@@ -608,9 +609,9 @@ qemuSecurityDomainSetPathLabel(virQEMUDriverPtr driver,
 
 
 int
-qemuSecuritySetSavedStateLabel(virQEMUDriverPtr driver,
+qemuSecurityDomainRestorePathLabel(virQEMUDriverPtr driver,
                                    virDomainObjPtr vm,
-                                   const char *savefile)
+                                   const char *path)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
     pid_t pid = -1;
@@ -622,40 +623,9 @@ qemuSecuritySetSavedStateLabel(virQEMUDriverPtr driver,
     if (virSecurityManagerTransactionStart(driver->securityManager) < 0)
         goto cleanup;
 
-    if (virSecurityManagerSetSavedStateLabel(driver->securityManager,
-                                             vm->def,
-                                             savefile) < 0)
-        goto cleanup;
-
-    if (virSecurityManagerTransactionCommit(driver->securityManager,
-                                            pid, priv->rememberOwner) < 0)
-        goto cleanup;
-
-    ret = 0;
- cleanup:
-    virSecurityManagerTransactionAbort(driver->securityManager);
-    return ret;
-}
-
-
-int
-qemuSecurityRestoreSavedStateLabel(virQEMUDriverPtr driver,
-                                       virDomainObjPtr vm,
-                                       const char *savefile)
-{
-    qemuDomainObjPrivatePtr priv = vm->privateData;
-    pid_t pid = -1;
-    int ret = -1;
-
-    if (qemuDomainNamespaceEnabled(vm, QEMU_DOMAIN_NS_MOUNT))
-        pid = vm->pid;
-
-    if (virSecurityManagerTransactionStart(driver->securityManager) < 0)
-        goto cleanup;
-
-    if (virSecurityManagerRestoreSavedStateLabel(driver->securityManager,
+    if (virSecurityManagerDomainRestorePathLabel(driver->securityManager,
                                                  vm->def,
-                                                 savefile) < 0)
+                                                 path) < 0)
         goto cleanup;
 
     if (virSecurityManagerTransactionCommit(driver->securityManager,

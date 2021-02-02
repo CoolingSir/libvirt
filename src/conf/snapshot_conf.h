@@ -63,13 +63,17 @@ typedef struct _virDomainSnapshotDiskDef virDomainSnapshotDiskDef;
 typedef virDomainSnapshotDiskDef *virDomainSnapshotDiskDefPtr;
 struct _virDomainSnapshotDiskDef {
     char *name;     /* name matching the <target dev='...' of the domain */
-    int idx;        /* index within snapshot->dom->disks that matches name */
     int snapshot;   /* virDomainSnapshotLocation */
 
     /* details of wrapper external file. src is always non-NULL.
      * XXX optimize this to allow NULL for internal snapshots? */
     virStorageSourcePtr src;
 };
+
+void
+virDomainSnapshotDiskDefFree(virDomainSnapshotDiskDefPtr disk);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virDomainSnapshotDiskDef, virDomainSnapshotDiskDefFree);
 
 /* Stores the complete snapshot metadata */
 struct _virDomainSnapshotDef {

@@ -20,7 +20,7 @@
 
 #include <glib/gprintf.h>
 #include <locale.h>
-#ifdef HAVE_XLOCALE_H
+#ifdef WITH_XLOCALE_H
 # include <xlocale.h>
 #endif
 
@@ -64,7 +64,7 @@ VIR_LOG_INIT("util.string");
  * before calling virStringSplit().
  *
  * Return value: a newly-allocated NULL-terminated array of strings. Use
- *    virStringListFree() to free it.
+ *    g_strfreev() to free it.
  */
 char **
 virStringSplitCount(const char *string,
@@ -148,7 +148,7 @@ char *virStringListJoin(const char **strings,
                         const char *delim)
 {
     char *ret;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     while (*strings) {
         virBufferAdd(&buf, *strings, -1);
         if (*(strings+1))
@@ -252,75 +252,10 @@ virStringListMerge(char ***dst,
     for (i = 0; i <= src_len; i++)
         (*dst)[i + dst_len] = (*src)[i];
 
-    /* Don't call virStringListFree() as it would free strings in
+    /* Don't call g_strfreev() as it would free strings in
      * @src. */
     VIR_FREE(*src);
     return 0;
-}
-
-
-/**
- * virStringListCopy:
- * @dst: where to store the copy of @strings
- * @src: a NULL-terminated array of strings
- *
- * Makes a deep copy of the @src string list and stores it in @dst. Callers
- * are responsible for freeing @dst.
- *
- * Returns 0 on success, -1 on error.
- */
-int
-virStringListCopy(char ***dst,
-                  const char **src)
-{
-    char **copy = NULL;
-    size_t i;
-
-    *dst = NULL;
-
-    if (!src)
-        return 0;
-
-    if (VIR_ALLOC_N(copy, virStringListLength(src) + 1) < 0)
-        goto error;
-
-    for (i = 0; src[i]; i++)
-        copy[i] = g_strdup(src[i]);
-
-    *dst = copy;
-    return 0;
-
- error:
-    virStringListFree(copy);
-    return -1;
-}
-
-
-/**
- * virStringListFree:
- * @strings: a NULL-terminated array of strings to free
- *
- * Frees a NULL-terminated array of strings, and the array itself.
- * If called on a NULL value, virStringListFree() simply returns.
- */
-void virStringListFree(char **strings)
-{
-    char **tmp = strings;
-    while (tmp && *tmp) {
-        VIR_FREE(*tmp);
-        tmp++;
-    }
-    VIR_FREE(strings);
-}
-
-
-void virStringListAutoFree(char ***strings)
-{
-    if (!*strings)
-        return;
-
-    virStringListFree(*strings);
-    *strings = NULL;
 }
 
 
@@ -586,7 +521,7 @@ virStrToLong_ullp(char const *s, char **end_ptr, int base,
 }
 
 /* In case thread-safe locales are available */
-#if HAVE_NEWLOCALE
+#if WITH_NEWLOCALE
 
 typedef locale_t virLocale;
 static virLocale virLocaleRaw;
@@ -630,7 +565,7 @@ virLocaleFixupRadix(char **strp G_GNUC_UNUSED)
 {
 }
 
-#else /* !HAVE_NEWLOCALE */
+#else /* !WITH_NEWLOCALE */
 
 typedef int virLocale;
 
@@ -661,7 +596,7 @@ virLocaleFixupRadix(char **strp)
     }
 }
 
-#endif /* !HAVE_NEWLOCALE */
+#endif /* !WITH_NEWLOCALE */
 
 
 /**
@@ -817,6 +752,24 @@ virSkipSpacesAndBackslash(const char **str)
     *str = cur;
 }
 
+
+/**
+ * virSkipToDigit:
+ * @str: pointer to the char pointer used
+ *
+ * Skip over any character that is not 0-9
+ */
+void
+virSkipToDigit(const char **str)
+{
+    const char *cur = *str;
+
+    while (*cur && !g_ascii_isdigit(*cur))
+        cur++;
+    *str = cur;
+}
+
+
 /**
  * virTrimSpaces:
  * @str: string to modify to remove all trailing spaces
@@ -937,7 +890,7 @@ int virStringSortRevCompare(const void *a, const void *b)
  * @matches: pointer to an array to be filled with NULL terminated list of matches
  *
  * Performs a POSIX extended regex search against a string and return all matching substrings.
- * The @matches value should be freed with virStringListFree() when no longer
+ * The @matches value should be freed with g_strfreev() when no longer
  * required.
  *
  * @code
@@ -957,7 +910,7 @@ int virStringSortRevCompare(const void *a, const void *b)
  *  // matches[2] == "bbb3c75c-d60f-43b0-b802-fd56b84a4222"
  *  // matches[3] == NULL;
  *
- *  virStringListFree(matches);
+ *  g_strfreev(matches);
  * @endcode
  *
  * Returns: -1 on error, or number of matches
@@ -1022,7 +975,7 @@ virStringSearch(const char *str,
 
  cleanup:
     if (ret < 0) {
-        virStringListFree(*matches);
+        g_strfreev(*matches);
         *matches = NULL;
     }
     return ret;
@@ -1069,7 +1022,7 @@ virStringReplace(const char *haystack,
                  const char *oldneedle,
                  const char *newneedle)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     const char *tmp1, *tmp2;
     size_t oldneedlelen = strlen(oldneedle);
     size_t newneedlelen = strlen(newneedle);
@@ -1277,8 +1230,7 @@ virStringToUpper(char **dst, const char *src)
     if (!src)
         return 0;
 
-    if (VIR_ALLOC_N(cap, strlen(src) + 1) < 0)
-        return -1;
+    cap = g_new0(char, strlen(src) + 1);
 
     for (i = 0; src[i]; i++) {
         cap[i] = g_ascii_toupper(src[i]);

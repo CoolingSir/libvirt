@@ -31,6 +31,7 @@
 #include "qemu_capabilities.h"
 #include "qemu_domain.h"
 #include "qemu_firmware.h"
+#include "qemu_namespace.h"
 #include "qemu_security.h"
 #include "viruuid.h"
 #include "virbuffer.h"
@@ -48,6 +49,7 @@
 #include "storage_conf.h"
 #include "virutil.h"
 #include "configmake.h"
+#include "security/security_util.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
@@ -130,7 +132,11 @@ virQEMUDriverConfigPtr virQEMUDriverConfigNew(bool privileged,
         cfg->group = (gid_t)-1;
     }
     cfg->dynamicOwnership = privileged;
-    cfg->rememberOwner = privileged;
+
+    if (privileged)
+        cfg->rememberOwner = virSecurityXATTRNamespaceDefined();
+    else
+        cfg->rememberOwner = false;
 
     cfg->cgroupControllers = -1; /* -1 == auto-detect */
 
@@ -234,7 +240,7 @@ virQEMUDriverConfigPtr virQEMUDriverConfigNew(bool privileged,
      * directory doesn't exist (although we don't check if this exists).
      */
     if (root == NULL) {
-        cfg->defaultTLSx509certdir = g_strdup(SYSCONFDIR "pki/qemu");
+        cfg->defaultTLSx509certdir = g_strdup(SYSCONFDIR "/pki/qemu");
     } else {
         cfg->defaultTLSx509certdir = g_strdup_printf("%s/etc/pki/qemu", root);
     }
@@ -277,8 +283,7 @@ virQEMUDriverConfigPtr virQEMUDriverConfigNew(bool privileged,
     cfg->glusterDebugLevel = 4;
     cfg->stdioLogD = true;
 
-    if (!(cfg->namespaces = virBitmapNew(QEMU_DOMAIN_NS_LAST)))
-        return NULL;
+    cfg->namespaces = virBitmapNew(QEMU_DOMAIN_NS_LAST);
 
     if (privileged &&
         qemuDomainNamespaceAvailable(QEMU_DOMAIN_NS_MOUNT) &&
@@ -300,7 +305,7 @@ static void virQEMUDriverConfigDispose(void *obj)
 
     virBitmapFree(cfg->namespaces);
 
-    virStringListFree(cfg->cgroupDeviceACL);
+    g_strfreev(cfg->cgroupDeviceACL);
     VIR_FREE(cfg->uri);
 
     VIR_FREE(cfg->configBaseDir);
@@ -339,10 +344,16 @@ static void virQEMUDriverConfigDispose(void *obj)
     VIR_FREE(cfg->chardevTLSx509secretUUID);
 
     VIR_FREE(cfg->vxhsTLSx509certdir);
+    VIR_FREE(cfg->vxhsTLSx509secretUUID);
+
     VIR_FREE(cfg->nbdTLSx509certdir);
+    VIR_FREE(cfg->nbdTLSx509secretUUID);
 
     VIR_FREE(cfg->migrateTLSx509certdir);
     VIR_FREE(cfg->migrateTLSx509secretUUID);
+
+    VIR_FREE(cfg->backupTLSx509certdir);
+    VIR_FREE(cfg->backupTLSx509secretUUID);
 
     while (cfg->nhugetlbfs) {
         cfg->nhugetlbfs--;
@@ -359,7 +370,7 @@ static void virQEMUDriverConfigDispose(void *obj)
     VIR_FREE(cfg->snapshotImageFormat);
     VIR_FREE(cfg->autoDumpPath);
 
-    virStringListFree(cfg->securityDriverNames);
+    g_strfreev(cfg->securityDriverNames);
 
     VIR_FREE(cfg->lockManagerName);
 
@@ -368,7 +379,7 @@ static void virQEMUDriverConfigDispose(void *obj)
     VIR_FREE(cfg->memoryBackingDir);
     VIR_FREE(cfg->swtpmStorageDir);
 
-    virStringListFree(cfg->capabilityfilters);
+    g_strfreev(cfg->capabilityfilters);
 }
 
 
@@ -395,8 +406,10 @@ virQEMUDriverConfigLoadDefaultTLSEntry(virQEMUDriverConfigPtr cfg,
     if ((rv = virConfGetValueString(conf, "default_tls_x509_cert_dir", &cfg->defaultTLSx509certdir)) < 0)
         return -1;
     cfg->defaultTLSx509certdirPresent = (rv == 1);
-    if (virConfGetValueBool(conf, "default_tls_x509_verify", &cfg->defaultTLSx509verify) < 0)
+    if ((rv = virConfGetValueBool(conf, "default_tls_x509_verify", &cfg->defaultTLSx509verify)) < 0)
         return -1;
+    if (rv == 1)
+        cfg->defaultTLSx509verifyPresent = true;
     if (virConfGetValueString(conf, "default_tls_x509_secret_uuid",
                               &cfg->defaultTLSx509secretUUID) < 0)
         return -1;
@@ -477,20 +490,15 @@ virQEMUDriverConfigLoadSpecificTLSEntry(virQEMUDriverConfigPtr cfg,
 
     if (virConfGetValueBool(conf, "vxhs_tls", &cfg->vxhsTLS) < 0)
         return -1;
-    if (virConfGetValueString(conf, "vxhs_tls_x509_cert_dir", &cfg->vxhsTLSx509certdir) < 0)
-        return -1;
     if (virConfGetValueBool(conf, "nbd_tls", &cfg->nbdTLS) < 0)
         return -1;
-    if (virConfGetValueString(conf, "nbd_tls_x509_cert_dir", &cfg->nbdTLSx509certdir) < 0)
+    if (virConfGetValueBool(conf, "chardev_tls", &cfg->chardevTLS) < 0)
+        return -1;
+    if (virConfGetValueBool(conf, "migrate_tls_force", &cfg->migrateTLSForce) < 0)
         return -1;
 
-#define GET_CONFIG_TLS_CERTINFO(val) \
+#define GET_CONFIG_TLS_CERTINFO_COMMON(val) \
     do { \
-        if ((rv = virConfGetValueBool(conf, #val "_tls_x509_verify", \
-                                      &cfg->val## TLSx509verify)) < 0) \
-            return -1; \
-        if (rv == 1) \
-            cfg->val## TLSx509verifyPresent = true; \
         if (virConfGetValueString(conf, #val "_tls_x509_cert_dir", \
                                   &cfg->val## TLSx509certdir) < 0) \
             return -1; \
@@ -500,13 +508,30 @@ virQEMUDriverConfigLoadSpecificTLSEntry(virQEMUDriverConfigPtr cfg,
             return -1; \
     } while (0)
 
-    if (virConfGetValueBool(conf, "chardev_tls", &cfg->chardevTLS) < 0)
-        return -1;
-    GET_CONFIG_TLS_CERTINFO(chardev);
+#define GET_CONFIG_TLS_CERTINFO_SERVER(val) \
+    do { \
+        if ((rv = virConfGetValueBool(conf, #val "_tls_x509_verify", \
+                                      &cfg->val## TLSx509verify)) < 0) \
+            return -1; \
+        if (rv == 1) \
+            cfg->val## TLSx509verifyPresent = true; \
+    } while (0)
 
-    GET_CONFIG_TLS_CERTINFO(migrate);
+    GET_CONFIG_TLS_CERTINFO_COMMON(chardev);
+    GET_CONFIG_TLS_CERTINFO_SERVER(chardev);
 
-#undef GET_CONFIG_TLS_CERTINFO
+    GET_CONFIG_TLS_CERTINFO_COMMON(migrate);
+    GET_CONFIG_TLS_CERTINFO_SERVER(migrate);
+
+    GET_CONFIG_TLS_CERTINFO_COMMON(backup);
+    GET_CONFIG_TLS_CERTINFO_SERVER(backup);
+
+    GET_CONFIG_TLS_CERTINFO_COMMON(vxhs);
+
+    GET_CONFIG_TLS_CERTINFO_COMMON(nbd);
+
+#undef GET_CONFIG_TLS_CERTINFO_COMMON
+#undef GET_CONFIG_TLS_CERTINFO_SERVER
     return 0;
 }
 
@@ -607,7 +632,7 @@ static int
 virQEMUDriverConfigLoadProcessEntry(virQEMUDriverConfigPtr cfg,
                                     virConfPtr conf)
 {
-    VIR_AUTOSTRINGLIST hugetlbfs = NULL;
+    g_auto(GStrv) hugetlbfs = NULL;
     g_autofree char *stdioHandler = NULL;
     g_autofree char *corestr = NULL;
     size_t i;
@@ -624,9 +649,8 @@ virQEMUDriverConfigLoadProcessEntry(virQEMUDriverConfigPtr cfg,
         VIR_FREE(cfg->hugetlbfs);
 
         cfg->nhugetlbfs = virStringListLength((const char *const *)hugetlbfs);
-        if (hugetlbfs[0] &&
-            VIR_ALLOC_N(cfg->hugetlbfs, cfg->nhugetlbfs) < 0)
-            return -1;
+        if (hugetlbfs[0])
+            cfg->hugetlbfs = g_new0(virHugeTLBFS, cfg->nhugetlbfs);
 
         for (i = 0; hugetlbfs[i] != NULL; i++) {
             if (virQEMUDriverConfigHugeTLBFSInit(&cfg->hugetlbfs[i],
@@ -801,15 +825,17 @@ virQEMUDriverConfigLoadNVRAMEntry(virQEMUDriverConfigPtr cfg,
                                   virConfPtr conf,
                                   bool privileged)
 {
-    VIR_AUTOSTRINGLIST nvram = NULL;
+    g_auto(GStrv) nvram = NULL;
     size_t i;
 
     if (virConfGetValueStringList(conf, "nvram", false, &nvram) < 0)
         return -1;
     if (nvram) {
-        VIR_AUTOSTRINGLIST fwList = NULL;
+        g_auto(GStrv) fwList = NULL;
 
         virFirmwareFreeList(cfg->firmwares, cfg->nfirmwares);
+        cfg->firmwares = NULL;
+        cfg->nfirmwares = 0;
 
         if (qemuFirmwareFetchConfigs(&fwList, privileged) < 0)
             return -1;
@@ -818,17 +844,14 @@ virQEMUDriverConfigLoadNVRAMEntry(virQEMUDriverConfigPtr cfg,
             VIR_WARN("Obsolete nvram variable is set while firmware metadata "
                      "files found. Note that the nvram config file variable is "
                      "going to be ignored.");
-            cfg->nfirmwares = 0;
             return 0;
         }
 
         cfg->nfirmwares = virStringListLength((const char *const *)nvram);
-        if (nvram[0] && VIR_ALLOC_N(cfg->firmwares, cfg->nfirmwares) < 0)
-            return -1;
+        cfg->firmwares = g_new0(virFirmwarePtr, cfg->nfirmwares);
 
         for (i = 0; nvram[i] != NULL; i++) {
-            if (VIR_ALLOC(cfg->firmwares[i]) < 0)
-                return -1;
+            cfg->firmwares[i] = g_new0(virFirmware, 1);
             if (virFirmwareParse(nvram[i], cfg->firmwares[i]) < 0)
                 return -1;
         }
@@ -856,8 +879,8 @@ virQEMUDriverConfigLoadSecurityEntry(virQEMUDriverConfigPtr cfg,
                                      virConfPtr conf,
                                      bool privileged)
 {
-    VIR_AUTOSTRINGLIST controllers = NULL;
-    VIR_AUTOSTRINGLIST namespaces = NULL;
+    g_auto(GStrv) controllers = NULL;
+    g_auto(GStrv) namespaces = NULL;
     g_autofree char *user = NULL;
     g_autofree char *group = NULL;
     size_t i, j;
@@ -969,7 +992,7 @@ static int
 virQEMUDriverConfigLoadMemoryEntry(virQEMUDriverConfigPtr cfg,
                                    virConfPtr conf)
 {
-    char *dir = NULL;
+    g_autofree char *dir = NULL;
     int rc;
 
     if ((rc = virConfGetValueString(conf, "memory_backing_dir", &dir)) < 0) {
@@ -977,7 +1000,7 @@ virQEMUDriverConfigLoadMemoryEntry(virQEMUDriverConfigPtr cfg,
     } else if (rc > 0) {
         VIR_FREE(cfg->memoryBackingDir);
         cfg->memoryBackingDir = g_strdup_printf("%s/libvirt/qemu", dir);
-        return 1;
+        return 0;
     }
 
     return 0;
@@ -1144,6 +1167,14 @@ virQEMUDriverConfigValidate(virQEMUDriverConfigPtr cfg)
         return -1;
     }
 
+    if (cfg->backupTLSx509certdir &&
+        !virFileExists(cfg->backupTLSx509certdir)) {
+        virReportError(VIR_ERR_CONF_SYNTAX,
+                       _("backup_tls_x509_cert_dir directory '%s' does not exist"),
+                       cfg->backupTLSx509certdir);
+        return -1;
+    }
+
     if (cfg->vxhsTLSx509certdir &&
         !virFileExists(cfg->vxhsTLSx509certdir)) {
         virReportError(VIR_ERR_CONF_SYNTAX,
@@ -1179,6 +1210,9 @@ virQEMUDriverConfigSetDefaults(virQEMUDriverConfigPtr cfg)
     SET_TLS_SECRET_UUID_DEFAULT(vnc);
     SET_TLS_SECRET_UUID_DEFAULT(chardev);
     SET_TLS_SECRET_UUID_DEFAULT(migrate);
+    SET_TLS_SECRET_UUID_DEFAULT(backup);
+    SET_TLS_SECRET_UUID_DEFAULT(vxhs);
+    SET_TLS_SECRET_UUID_DEFAULT(nbd);
 
 #undef SET_TLS_SECRET_UUID_DEFAULT
 
@@ -1204,20 +1238,26 @@ virQEMUDriverConfigSetDefaults(virQEMUDriverConfigPtr cfg)
     SET_TLS_X509_CERT_DEFAULT(spice);
     SET_TLS_X509_CERT_DEFAULT(chardev);
     SET_TLS_X509_CERT_DEFAULT(migrate);
+    SET_TLS_X509_CERT_DEFAULT(backup);
     SET_TLS_X509_CERT_DEFAULT(vxhs);
     SET_TLS_X509_CERT_DEFAULT(nbd);
 
 #undef SET_TLS_X509_CERT_DEFAULT
 
-#define SET_TLS_VERIFY_DEFAULT(val) \
+#define SET_TLS_VERIFY_DEFAULT(val, defaultverify) \
     do { \
-        if (!cfg->val## TLSx509verifyPresent) \
-            cfg->val## TLSx509verify = cfg->defaultTLSx509verify; \
+        if (!cfg->val## TLSx509verifyPresent) {\
+            if (cfg->defaultTLSx509verifyPresent) \
+                cfg->val## TLSx509verify = cfg->defaultTLSx509verify; \
+            else \
+                cfg->val## TLSx509verify = defaultverify;\
+        }\
     } while (0)
 
-    SET_TLS_VERIFY_DEFAULT(vnc);
-    SET_TLS_VERIFY_DEFAULT(chardev);
-    SET_TLS_VERIFY_DEFAULT(migrate);
+    SET_TLS_VERIFY_DEFAULT(vnc, false);
+    SET_TLS_VERIFY_DEFAULT(chardev, true);
+    SET_TLS_VERIFY_DEFAULT(migrate, true);
+    SET_TLS_VERIFY_DEFAULT(backup, true);
 
 #undef SET_TLS_VERIFY_DEFAULT
 
@@ -1245,27 +1285,6 @@ virQEMUDriverCreateXMLConf(virQEMUDriverPtr driver,
                                  &virQEMUDriverDomainXMLNamespace,
                                  &virQEMUDriverDomainABIStability,
                                  &virQEMUDriverDomainSaveCookie);
-}
-
-
-virCapsHostNUMAPtr
-virQEMUDriverGetHostNUMACaps(virQEMUDriverPtr driver)
-{
-    virCapsHostNUMAPtr hostnuma;
-
-    qemuDriverLock(driver);
-
-    if (!driver->hostnuma)
-        driver->hostnuma = virCapabilitiesHostNUMANewHost();
-
-    hostnuma = driver->hostnuma;
-
-    qemuDriverUnlock(driver);
-
-    if (hostnuma)
-        virCapabilitiesHostNUMARef(hostnuma);
-
-    return hostnuma;
 }
 
 
@@ -1319,8 +1338,7 @@ virCapsPtr virQEMUDriverCreateCapabilities(virQEMUDriverPtr driver)
         ;
     caps->host.nsecModels = i;
 
-    if (VIR_ALLOC_N(caps->host.secModels, caps->host.nsecModels) < 0)
-        return NULL;
+    caps->host.secModels = g_new0(virCapsHostSecModel, caps->host.nsecModels);
 
     for (i = 0; sec_managers[i]; i++) {
         virCapsHostSecModelPtr sm = &caps->host.secModels[i];
@@ -1341,7 +1359,7 @@ virCapsPtr virQEMUDriverCreateCapabilities(virQEMUDriverPtr driver)
                   "DOI \"%s\"", model, doi);
     }
 
-    caps->host.numa = virQEMUDriverGetHostNUMACaps(driver);
+    caps->host.numa = virCapabilitiesHostNUMANewHost();
     caps->host.cpu = virQEMUDriverGetHostCPU(driver);
     return g_steal_pointer(&caps);
 }
@@ -1354,7 +1372,7 @@ virCapsPtr virQEMUDriverCreateCapabilities(virQEMUDriverPtr driver)
  * driver. If @refresh is true, the capabilities will be
  * rebuilt first
  *
- * The caller must release the reference with virObjetUnref
+ * The caller must release the reference with virObjectUnref
  *
  * Returns: a reference to a virCapsPtr instance or NULL
  */
@@ -1391,11 +1409,8 @@ virCapsPtr virQEMUDriverGetCapabilities(virQEMUDriverPtr driver,
 /**
  * virQEMUDriverGetDomainCapabilities:
  *
- * Get a reference to the virDomainCapsPtr instance from the virQEMUCapsPtr
- * domCapsCache. If there's no domcaps in the cache, create a new instance,
- * add it to the cache, and return a reference.
- *
- * The caller must release the reference with virObjetUnref
+ * Get a reference to the virDomainCapsPtr instance. The caller
+ * must release the reference with virObjetUnref().
  *
  * Returns: a reference to a virDomainCapsPtr instance or NULL
  */
@@ -1407,15 +1422,19 @@ virQEMUDriverGetDomainCapabilities(virQEMUDriverPtr driver,
                                    virDomainVirtType virttype)
 {
     g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
+    g_autoptr(virDomainCaps) domCaps = NULL;
+    const char *path = virQEMUCapsGetBinary(qemuCaps);
 
-    return virQEMUCapsGetDomainCapsCache(qemuCaps,
-                                         machine,
-                                         arch,
-                                         virttype,
-                                         driver->hostarch,
-                                         driver->privileged,
-                                         cfg->firmwares,
-                                         cfg->nfirmwares);
+    if (!(domCaps = virDomainCapsNew(path, machine, arch, virttype)))
+        return NULL;
+
+    if (virQEMUCapsFillDomainCaps(qemuCaps, driver->hostarch,
+                                  domCaps, driver->privileged,
+                                  cfg->firmwares,
+                                  cfg->nfirmwares) < 0)
+        return NULL;
+
+    return g_steal_pointer(&domCaps);
 }
 
 
@@ -1429,7 +1448,6 @@ char *
 qemuGetSharedDeviceKey(const char *device_path)
 {
     int maj, min;
-    char *key = NULL;
     int rc;
 
     if ((rc = virGetDeviceID(device_path, &maj, &min)) < 0) {
@@ -1439,9 +1457,7 @@ qemuGetSharedDeviceKey(const char *device_path)
         return NULL;
     }
 
-    key = g_strdup_printf("%d:%d", maj, min);
-
-    return key;
+    return g_strdup_printf("%d:%d", maj, min);
 }
 
 /*
@@ -1456,7 +1472,7 @@ qemuGetSharedDeviceKey(const char *device_path)
  *      being used and in the future the hostdev information.
  */
 static int
-qemuCheckUnprivSGIO(virHashTablePtr sharedDevices,
+qemuCheckUnprivSGIO(GHashTable *sharedDevices,
                     const char *device_path,
                     int sgio)
 {
@@ -1504,7 +1520,7 @@ qemuCheckUnprivSGIO(virHashTablePtr sharedDevices,
  * Returns 0 if no conflicts, otherwise returns -1.
  */
 static int
-qemuCheckSharedDisk(virHashTablePtr sharedDevices,
+qemuCheckSharedDisk(GHashTable *sharedDevices,
                     virDomainDiskDefPtr disk)
 {
     int ret;
@@ -1589,9 +1605,8 @@ qemuSharedDeviceEntryInsert(virQEMUDriverPtr driver,
             entry->domains[entry->ref - 1] = g_strdup(name);
         }
     } else {
-        if (VIR_ALLOC(entry) < 0 ||
-            VIR_ALLOC_N(entry->domains, 1) < 0)
-            goto error;
+        entry = g_new0(qemuSharedDeviceEntry, 1);
+        entry->domains = g_new0(char *, 1);
 
         entry->domains[0] = g_strdup(name);
 
@@ -1620,7 +1635,7 @@ qemuSharedDeviceEntryRemove(virQEMUDriverPtr driver,
     if (!(entry = virHashLookup(driver->sharedDevices, key)))
         return -1;
 
-    /* Nothing to do if the shared disk is not recored in the table. */
+    /* Nothing to do if the shared disk is not recorded in the table. */
     if (!qemuSharedDeviceEntryDomainExists(entry, name, &idx))
         return 0;
 
@@ -1706,7 +1721,6 @@ qemuGetHostdevPath(virDomainHostdevDefPtr hostdev)
     virDomainHostdevSubsysSCSIPtr scsisrc = &hostdev->source.subsys.u.scsi;
     virDomainHostdevSubsysSCSIHostPtr scsihostsrc = &scsisrc->u.host;
     g_autofree char *dev_name = NULL;
-    char *dev_path = NULL;
 
     if (!(dev_name = virSCSIDeviceGetDevName(NULL,
                                              scsihostsrc->adapter,
@@ -1715,8 +1729,7 @@ qemuGetHostdevPath(virDomainHostdevDefPtr hostdev)
                                              scsihostsrc->unit)))
         return NULL;
 
-    dev_path = g_strdup_printf("/dev/%s", dev_name);
-    return dev_path;
+    return g_strdup_printf("/dev/%s", dev_name);
 }
 
 

@@ -28,7 +28,7 @@
 #include "viralloc.h"
 #include "viruuid.h"
 #include "storage_conf.h"
-#include "virstoragefile.h"
+#include "storage_source_conf.h"
 #include "esx_storage_backend_iscsi.h"
 #include "esx_private.h"
 #include "esx_vi.h"
@@ -321,7 +321,7 @@ esxStoragePoolGetXMLDesc(virStoragePoolPtr pool, unsigned int flags)
 
     if (!target) {
         /* pool not found */
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_STORAGE_POOL,
                        _("Could not find storage pool with name '%s'"),
                        pool->name);
         goto cleanup;
@@ -337,8 +337,7 @@ esxStoragePoolGetXMLDesc(virStoragePoolPtr pool, unsigned int flags)
 
     def.source.nhost = 1;
 
-    if (VIR_ALLOC_N(def.source.hosts, def.source.nhost) < 0)
-        goto cleanup;
+    def.source.hosts = g_new0(virStoragePoolSourceHost, def.source.nhost);
 
     def.source.hosts[0].name = target->address;
 
@@ -699,7 +698,7 @@ esxStorageVolGetXMLDesc(virStorageVolPtr volume,
     }
 
     if (!scsiLun) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_STORAGE_VOL,
                        _("Could find volume with name: %s"), volume->name);
         goto cleanup;
     }

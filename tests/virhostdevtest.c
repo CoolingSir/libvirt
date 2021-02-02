@@ -138,7 +138,8 @@ myInit(void)
     }
 
     for (i = 0; i < nhostdevs; i++) {
-        if (!(dev[i] = virPCIDeviceNew(0, 0, i + 1, 0)))
+        virDomainHostdevSubsys subsys = hostdevs[i]->source.subsys;
+        if (!(dev[i] = virPCIDeviceNew(&subsys.u.pci.addr)))
             goto cleanup;
 
         virPCIDeviceSetStubDriver(dev[i], VIR_PCI_STUB_DRIVER_VFIO);
@@ -149,8 +150,7 @@ myInit(void)
             goto cleanup;
     }
 
-    if (VIR_ALLOC(mgr) < 0)
-        goto cleanup;
+    mgr = g_new0(virHostdevManager, 1);
     if ((mgr->activePCIHostdevs = virPCIDeviceListNew()) == NULL)
         goto cleanup;
     if ((mgr->activeUSBHostdevs = virUSBDeviceListNew()) == NULL)
@@ -245,13 +245,13 @@ testVirHostdevReAttachPCIHostdevs_unmanaged(void)
     inactive_count = virPCIDeviceListCount(mgr->inactivePCIHostdevs);
 
     VIR_TEST_DEBUG("Test 0 hostdevs");
-    virHostdevReAttachPCIDevices(mgr, drv_name, dom_name, NULL, 0, NULL);
+    virHostdevReAttachPCIDevices(mgr, drv_name, dom_name, NULL, 0);
     CHECK_PCI_LIST_COUNT(mgr->activePCIHostdevs, active_count);
     CHECK_PCI_LIST_COUNT(mgr->inactivePCIHostdevs, inactive_count);
 
     VIR_TEST_DEBUG("Test >=1 unmanaged hostdevs");
     virHostdevReAttachPCIDevices(mgr, drv_name, dom_name,
-                                  hostdevs, nhostdevs, NULL);
+                                  hostdevs, nhostdevs);
     CHECK_PCI_LIST_COUNT(mgr->activePCIHostdevs, active_count - nhostdevs);
     CHECK_PCI_LIST_COUNT(mgr->inactivePCIHostdevs, inactive_count + nhostdevs);
 
@@ -329,13 +329,13 @@ testVirHostdevReAttachPCIHostdevs_managed(bool mixed)
     inactive_count = virPCIDeviceListCount(mgr->inactivePCIHostdevs);
 
     VIR_TEST_DEBUG("Test 0 hostdevs");
-    virHostdevReAttachPCIDevices(mgr, drv_name, dom_name, NULL, 0, NULL);
+    virHostdevReAttachPCIDevices(mgr, drv_name, dom_name, NULL, 0);
     CHECK_PCI_LIST_COUNT(mgr->activePCIHostdevs, active_count);
     CHECK_PCI_LIST_COUNT(mgr->inactivePCIHostdevs, inactive_count);
 
     VIR_TEST_DEBUG("Test >=1 hostdevs");
     virHostdevReAttachPCIDevices(mgr, drv_name, dom_name,
-                                  hostdevs, nhostdevs, NULL);
+                                  hostdevs, nhostdevs);
     CHECK_PCI_LIST_COUNT(mgr->activePCIHostdevs, active_count - nhostdevs);
     /* If testing a mixed roundtrip, devices are added back to the inactive
      * list as soon as we detach from the guest */
@@ -542,7 +542,7 @@ testNVMeDiskRoundtrip(const void *opaque G_GNUC_UNUSED)
     /* Don't rely on a state that previous test cases might have
      * left the manager in. Start with a clean slate. */
     virHostdevReAttachPCIDevices(mgr, drv_name, dom_name,
-                                 hostdevs, nhostdevs, NULL);
+                                 hostdevs, nhostdevs);
 
     CHECK_NVME_LIST_COUNT(mgr->activeNVMeHostdevs, 0);
     CHECK_PCI_LIST_COUNT(mgr->activePCIHostdevs, 0);
@@ -628,7 +628,9 @@ mymain(void)
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIR_TEST_MAIN_PRELOAD(mymain, VIR_TEST_MOCK("virpci"))
+VIR_TEST_MAIN_PRELOAD(mymain,
+                      VIR_TEST_MOCK("virhostdev"),
+                      VIR_TEST_MOCK("virpci"))
 #else
 int
 main(void)

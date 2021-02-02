@@ -21,7 +21,7 @@
 #ifndef WIN32
 # include <sys/ioctl.h>
 #endif
-#if defined HAVE_SYS_SYSCALL_H
+#if defined WITH_SYS_SYSCALL_H
 # include <sys/syscall.h>
 #endif
 
@@ -67,7 +67,7 @@ struct _virPerf {
     struct virPerfEvent events[VIR_PERF_EVENT_LAST];
 };
 
-#if defined(__linux__) && defined(HAVE_SYS_SYSCALL_H)
+#if defined(__linux__) && defined(WITH_SYS_SYSCALL_H)
 
 # include <linux/perf_event.h>
 
@@ -368,8 +368,7 @@ virPerfNew(void)
     size_t i;
     virPerfPtr perf;
 
-    if (VIR_ALLOC(perf) < 0)
-        return NULL;
+    perf = g_new0(virPerf, 1);
 
     for (i = 0; i < VIR_PERF_EVENT_LAST; i++) {
         perf->events[i].fd = -1;

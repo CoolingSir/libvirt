@@ -38,7 +38,7 @@ testQemuCommandBuildFromJSON(const void *opaque)
 {
     const testQemuCommandBuildObjectFromJSONData *data = opaque;
     virJSONValuePtr val = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char *result = NULL;
     int ret = -1;
 
@@ -47,7 +47,7 @@ testQemuCommandBuildFromJSON(const void *opaque)
         return -1;
     }
 
-    if (virQEMUBuildCommandLineJSON(val, &buf, data->arrayfunc) < 0) {
+    if (virQEMUBuildCommandLineJSON(val, &buf, NULL, false, data->arrayfunc) < 0) {
         fprintf(stderr,
                 "\nvirQEMUBuildCommandlineJSON failed process JSON:\n%s\n",
                 data->props);

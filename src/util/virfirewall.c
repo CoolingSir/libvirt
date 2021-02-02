@@ -96,74 +96,41 @@ virFirewallOnceInit(void)
 
 VIR_ONCE_GLOBAL_INIT(virFirewall);
 
-static bool iptablesUseLock;
-static bool ip6tablesUseLock;
-static bool ebtablesUseLock;
-static bool lockOverride; /* true to avoid lock probes */
-
-void
-virFirewallSetLockOverride(bool avoid)
-{
-    lockOverride = avoid;
-}
-
-static void
-virFirewallCheckUpdateLock(bool *lockflag,
-                           const char *const*args)
-{
-    int status; /* Ignore failed commands without logging them */
-    g_autoptr(virCommand) cmd = virCommandNewArgs(args);
-    if (virCommandRun(cmd, &status) < 0 || status) {
-        VIR_INFO("locking not supported by %s", args[0]);
-    } else {
-        VIR_INFO("using locking for %s", args[0]);
-        *lockflag = true;
-    }
-}
-
-static void
-virFirewallCheckUpdateLocking(void)
-{
-    const char *iptablesArgs[] = {
-        IPTABLES_PATH, "-w", "-L", "-n", NULL,
-    };
-    const char *ip6tablesArgs[] = {
-        IP6TABLES_PATH, "-w", "-L", "-n", NULL,
-    };
-    const char *ebtablesArgs[] = {
-        EBTABLES_PATH, "--concurrent", "-L", NULL,
-    };
-    if (lockOverride)
-        return;
-    virFirewallCheckUpdateLock(&iptablesUseLock,
-                               iptablesArgs);
-    virFirewallCheckUpdateLock(&ip6tablesUseLock,
-                               ip6tablesArgs);
-    virFirewallCheckUpdateLock(&ebtablesUseLock,
-                               ebtablesArgs);
-}
-
 static int
 virFirewallValidateBackend(virFirewallBackend backend)
 {
-    VIR_DEBUG("Validating backend %d", backend);
+    const char *commands[] = {
+        IPTABLES_PATH, IP6TABLES_PATH, EBTABLES_PATH
+    };
+    size_t i;
+
+    for (i = 0; i < G_N_ELEMENTS(commands); i++) {
+        if (!virFileIsExecutable(commands[i])) {
+            virReportSystemError(errno,
+                                 _("%s not available, firewall backend will not function"),
+                                 commands[i]);
+            return -1;
+        }
+    }
+    VIR_DEBUG("found iptables/ip6tables/ebtables");
+
     if (backend == VIR_FIREWALL_BACKEND_AUTOMATIC ||
         backend == VIR_FIREWALL_BACKEND_FIREWALLD) {
         int rv = virFirewallDIsRegistered();
 
         VIR_DEBUG("Firewalld is registered ? %d", rv);
-        if (rv < 0) {
-            if (rv == -2) {
-                if (backend == VIR_FIREWALL_BACKEND_FIREWALLD) {
-                    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                                   _("firewalld firewall backend requested, but service is not running"));
-                    return -1;
-                } else {
-                    VIR_DEBUG("firewalld service not running, trying direct backend");
-                    backend = VIR_FIREWALL_BACKEND_DIRECT;
-                }
-            } else {
+
+        if (rv == -1)
+            return -1;
+
+        if (rv == -2) {
+            if (backend == VIR_FIREWALL_BACKEND_FIREWALLD) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("firewalld backend requested, but service is not running"));
                 return -1;
+            } else {
+                VIR_DEBUG("firewalld service not running, using direct backend");
+                backend = VIR_FIREWALL_BACKEND_DIRECT;
             }
         } else {
             VIR_DEBUG("firewalld service running, using firewalld backend");
@@ -171,27 +138,7 @@ virFirewallValidateBackend(virFirewallBackend backend)
         }
     }
 
-    if (backend == VIR_FIREWALL_BACKEND_DIRECT) {
-        const char *commands[] = {
-            IPTABLES_PATH, IP6TABLES_PATH, EBTABLES_PATH
-        };
-        size_t i;
-
-        for (i = 0; i < G_N_ELEMENTS(commands); i++) {
-            if (!virFileIsExecutable(commands[i])) {
-                virReportSystemError(errno,
-                                     _("direct firewall backend requested, but %s is not available"),
-                                     commands[i]);
-                return -1;
-            }
-        }
-        VIR_DEBUG("found iptables/ip6tables/ebtables, using direct backend");
-    }
-
     currentBackend = backend;
-
-    virFirewallCheckUpdateLocking();
-
     return 0;
 }
 
@@ -211,8 +158,7 @@ virFirewallGroupNew(void)
 {
     virFirewallGroupPtr group;
 
-    if (VIR_ALLOC(group) < 0)
-        return NULL;
+    group = g_new0(virFirewallGroup, 1);
 
     return group;
 }
@@ -235,8 +181,7 @@ virFirewallPtr virFirewallNew(void)
     if (virFirewallInitialize() < 0)
         return NULL;
 
-    if (VIR_ALLOC(firewall) < 0)
-        return NULL;
+    firewall = g_new0(virFirewall, 1);
 
     return firewall;
 }
@@ -346,8 +291,7 @@ virFirewallAddRuleFullV(virFirewallPtr firewall,
     group = firewall->groups[firewall->currentGroup];
 
 
-    if (VIR_ALLOC(rule) < 0)
-        goto no_memory;
+    rule = g_new0(virFirewallRule, 1);
 
     rule->layer = layer;
     rule->queryCB = cb;
@@ -356,16 +300,13 @@ virFirewallAddRuleFullV(virFirewallPtr firewall,
 
     switch (rule->layer) {
     case VIR_FIREWALL_LAYER_ETHERNET:
-        if (ebtablesUseLock)
-            ADD_ARG(rule, "--concurrent");
+        ADD_ARG(rule, "--concurrent");
         break;
     case VIR_FIREWALL_LAYER_IPV4:
-        if (iptablesUseLock)
-            ADD_ARG(rule, "-w");
+        ADD_ARG(rule, "-w");
         break;
     case VIR_FIREWALL_LAYER_IPV6:
-        if (ip6tablesUseLock)
-            ADD_ARG(rule, "-w");
+        ADD_ARG(rule, "-w");
         break;
     case VIR_FIREWALL_LAYER_LAST:
         break;
@@ -641,7 +582,7 @@ static char *
 virFirewallRuleToString(virFirewallRulePtr rule)
 {
     const char *bin = virFirewallLayerCommandTypeToString(rule->layer);
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
 
     virBufferAdd(&buf, bin, -1);
@@ -699,7 +640,7 @@ virFirewallApplyRuleDirect(virFirewallRulePtr rule,
 }
 
 
-static int
+static int G_GNUC_UNUSED
 virFirewallApplyRuleFirewallD(virFirewallRulePtr rule,
                               bool ignoreErrors,
                               char **output)
@@ -708,6 +649,36 @@ virFirewallApplyRuleFirewallD(virFirewallRulePtr rule,
     return virFirewallDApplyRule(rule->layer, rule->args, rule->argsLen, ignoreErrors, output);
 }
 
+
+void
+virFirewallBackendSynchronize(void)
+{
+    const char *arg = "-V";
+    g_autofree char *output = NULL;
+
+    switch (currentBackend) {
+    case VIR_FIREWALL_BACKEND_DIRECT:
+        /* nobody to synchronize with */
+        break;
+    case VIR_FIREWALL_BACKEND_FIREWALLD:
+        /* Send a simple rule via firewalld's passthrough iptables
+         * command so that we'll be sure firewalld has fully
+         * initialized and caught up with its internal queue of
+         * iptables commands. Waiting for this will prevent our own
+         * directly-executed iptables commands from being run while
+         * firewalld is still initializing.
+         */
+        ignore_value(virFirewallDApplyRule(VIR_FIREWALL_LAYER_IPV4,
+                                           (char **)&arg, 1, true, &output));
+        VIR_DEBUG("Result of 'iptables -V' via firewalld: %s", NULLSTR(output));
+        break;
+    case VIR_FIREWALL_BACKEND_AUTOMATIC:
+    case VIR_FIREWALL_BACKEND_LAST:
+        break;
+    }
+}
+
+
 static int
 virFirewallApplyRule(virFirewallPtr firewall,
                      virFirewallRulePtr rule,
@@ -715,7 +686,7 @@ virFirewallApplyRule(virFirewallPtr firewall,
 {
     g_autofree char *output = NULL;
     g_autofree char *str = virFirewallRuleToString(rule);
-    VIR_AUTOSTRINGLIST lines = NULL;
+    g_auto(GStrv) lines = NULL;
     VIR_INFO("Applying rule '%s'", NULLSTR(str));
 
     if (rule->ignoreErrors)
@@ -727,7 +698,16 @@ virFirewallApplyRule(virFirewallPtr firewall,
             return -1;
         break;
     case VIR_FIREWALL_BACKEND_FIREWALLD:
-        if (virFirewallApplyRuleFirewallD(rule, ignoreErrors, &output) < 0)
+        /* Since we are using raw iptables rules, there is no
+         * advantage to going through firewalld, so instead just add
+         * them directly rather that via dbus calls to firewalld. This
+         * has the useful side effect of eliminating extra unwanted
+         * warning messages in the system logs when trying to delete
+         * rules that don't exist (which is something that happens
+         * often when libvirtd is started, and *always* when firewalld
+         * is restarted)
+         */
+        if (virFirewallApplyRuleDirect(rule, ignoreErrors, &output) < 0)
             return -1;
         break;
 
@@ -830,9 +810,10 @@ virFirewallApply(virFirewallPtr firewall)
     VIR_DEBUG("Applying groups for %p", firewall);
     for (i = 0; i < firewall->ngroups; i++) {
         if (virFirewallApplyGroup(firewall, i) < 0) {
-            VIR_DEBUG("Rolling back groups up to %zu for %p", i, firewall);
             size_t first = i;
             virErrorPtr saved_error;
+
+            VIR_DEBUG("Rolling back groups up to %zu for %p", i, firewall);
 
             virErrorPreserveLast(&saved_error);
 

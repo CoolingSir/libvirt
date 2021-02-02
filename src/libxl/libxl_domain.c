@@ -25,6 +25,7 @@
 #include "libxl_domain.h"
 #include "libxl_capabilities.h"
 
+#include "datatypes.h"
 #include "viralloc.h"
 #include "virfile.h"
 #include "virerror.h"
@@ -35,6 +36,7 @@
 #include "locking/domain_lock.h"
 #include "xen_common.h"
 #include "driver.h"
+#include "domain_validate.h"
 
 #define VIR_FROM_THIS VIR_FROM_LIBXL
 
@@ -72,8 +74,7 @@ libxlDomainObjInitJob(libxlDomainObjPrivatePtr priv)
     if (virCondInit(&priv->job.cond) < 0)
         return -1;
 
-    if (VIR_ALLOC(priv->job.current) < 0)
-        return -1;
+    priv->job.current = g_new0(virDomainJobInfo, 1);
 
     return 0;
 }
@@ -362,9 +363,8 @@ libxlDomainDeviceDefPostParse(virDomainDeviceDefPtr dev,
 
         /* for network-based disks, set 'qemu' as the default driver */
         if (actual_type == VIR_STORAGE_TYPE_NETWORK) {
-            if (!virDomainDiskGetDriver(disk) &&
-                virDomainDiskSetDriver(disk, "qemu") < 0)
-                return -1;
+            if (!virDomainDiskGetDriver(disk))
+                virDomainDiskSetDriver(disk, "qemu");
         }
 
         /* xl.cfg default format is raw. See xl-disk-configuration(5) */
@@ -402,11 +402,7 @@ libxlDomainDefPostParse(virDomainDefPtr def,
         chrdef->target.port = 0;
         chrdef->targetType = VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_XEN;
 
-        if (VIR_ALLOC_N(def->consoles, 1) < 0) {
-            virDomainChrDefFree(chrdef);
-            return -1;
-        }
-
+        def->consoles = g_new0(virDomainChrDefPtr, 1);
         def->nconsoles = 1;
         def->consoles[0] = chrdef;
     }
@@ -429,8 +425,8 @@ libxlDomainDefPostParse(virDomainDefPtr def,
     /* add implicit balloon device */
     if (def->memballoon == NULL) {
         virDomainMemballoonDefPtr memballoon;
-        if (VIR_ALLOC(memballoon) < 0)
-            return -1;
+        memballoon = g_new0(virDomainMemballoonDef,
+                            1);
 
         memballoon->model = VIR_DOMAIN_MEMBALLOON_MODEL_XEN;
         def->memballoon = memballoon;
@@ -695,8 +691,7 @@ libxlDomainEventHandler(void *data, VIR_LIBXL_EVENT_CONST libxl_event *event)
      * Start a thread to handle shutdown.  We don't want to be tying up
      * libxl's event machinery by doing a potentially lengthy shutdown.
      */
-    if (VIR_ALLOC(shutdown_info) < 0)
-        goto error;
+    shutdown_info = g_new0(struct libxlShutdownThreadInfo, 1);
 
     shutdown_info->driver = driver;
     shutdown_info->event = (libxl_event *)event;
@@ -785,8 +780,7 @@ libxlDomainSaveImageOpen(libxlDriverPrivatePtr driver,
         goto error;
     }
 
-    if (VIR_ALLOC_N(xml, hdr.xmlLen) < 0)
-        goto error;
+    xml = g_new0(char, hdr.xmlLen);
 
     if (saferead(fd, xml, hdr.xmlLen) != hdr.xmlLen) {
         virReportError(VIR_ERR_OPERATION_FAILED, "%s", _("failed to read XML"));
@@ -856,7 +850,7 @@ libxlDomainCleanup(libxlDriverPrivatePtr driver,
     char *file;
     virHostdevManagerPtr hostdev_mgr = driver->hostdevMgr;
     unsigned int hostdev_flags = VIR_HOSTDEV_SP_PCI;
-    virConnectPtr conn = NULL;
+    g_autoptr(virConnect) conn = NULL;
 
 #ifdef LIBXL_HAVE_PVUSB
     hostdev_flags |= VIR_HOSTDEV_SP_USB;
@@ -873,8 +867,8 @@ libxlDomainCleanup(libxlDriverPrivatePtr driver,
         VIR_FREE(xml);
     }
 
-    virHostdevReAttachDomainDevices(hostdev_mgr, LIBXL_DRIVER_NAME,
-                                    vm->def, hostdev_flags, NULL);
+    virHostdevReAttachDomainDevices(hostdev_mgr, LIBXL_DRIVER_INTERNAL_NAME,
+                                    vm->def, hostdev_flags);
 
     VIR_FREE(priv->lockState);
     if (virDomainLockProcessPause(driver->lockManager, vm, &priv->lockState) < 0)
@@ -943,7 +937,6 @@ libxlDomainCleanup(libxlDriverPrivatePtr driver,
     }
 
     virDomainObjRemoveTransientDef(vm);
-    virObjectUnref(conn);
 }
 
 /*
@@ -1057,8 +1050,7 @@ static int
 libxlNetworkPrepareDevices(virDomainDefPtr def)
 {
     size_t i;
-    virConnectPtr conn = NULL;
-    int ret = -1;
+    g_autoptr(virConnect) conn = NULL;
 
     for (i = 0; i < def->nnets; i++) {
         virDomainNetDefPtr net = def->nets[i];
@@ -1070,9 +1062,9 @@ libxlNetworkPrepareDevices(virDomainDefPtr def)
          */
         if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
             if (!conn && !(conn = virGetConnectNetwork()))
-                goto cleanup;
+                return -1;
             if (virDomainNetAllocateActualDevice(conn, def, net) < 0)
-                goto cleanup;
+                return -1;
         }
 
         /* final validation now that actual type is known */
@@ -1097,14 +1089,11 @@ libxlNetworkPrepareDevices(virDomainDefPtr def)
                 pcisrc->backend = VIR_DOMAIN_HOSTDEV_PCI_BACKEND_XEN;
 
             if (virDomainHostdevInsert(def, hostdev) < 0)
-                goto cleanup;
+                return -1;
         }
     }
 
-    ret = 0;
- cleanup:
-    virObjectUnref(conn);
-    return ret;
+    return 0;
 }
 
 static void
@@ -1370,7 +1359,7 @@ libxlDomainStart(libxlDriverPrivatePtr driver,
     if (cfg->autoballoon && libxlDomainFreeMem(cfg->ctx, &d_config) < 0)
         goto cleanup_dom;
 
-    if (virHostdevPrepareDomainDevices(hostdev_mgr, LIBXL_DRIVER_NAME,
+    if (virHostdevPrepareDomainDevices(hostdev_mgr, LIBXL_DRIVER_INTERNAL_NAME,
                                        vm->def, hostdev_flags) < 0)
         goto cleanup_dom;
 
@@ -1573,3 +1562,85 @@ libxlDomainDefCheckABIStability(libxlDriverPrivatePtr driver,
     virDomainDefFree(migratableDefDst);
     return ret;
 }
+
+
+static void
+libxlDomainDefNamespaceFree(void *nsdata)
+{
+    libxlDomainXmlNsDefPtr def = nsdata;
+
+    if (!def)
+        return;
+
+    g_strfreev(def->args);
+    g_free(def);
+}
+
+
+static int
+libxlDomainDefNamespaceParse(xmlXPathContextPtr ctxt,
+                             void **data)
+{
+    libxlDomainXmlNsDefPtr nsdata = NULL;
+    g_autofree xmlNodePtr *nodes = NULL;
+    ssize_t nnodes;
+    size_t i;
+    int ret = -1;
+
+    if ((nnodes = virXPathNodeSet("./xen:commandline/xen:arg", ctxt, &nodes)) < 0)
+        return -1;
+
+    if (nnodes == 0)
+        return 0;
+
+    nsdata = g_new0(libxlDomainXmlNsDef, 1);
+    nsdata->args = g_new0(char *, nnodes + 1);
+
+    for (i = 0; i < nnodes; i++) {
+        if (!(nsdata->args[nsdata->num_args++] = virXMLPropString(nodes[i], "value"))) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("No device model command-line argument specified"));
+            goto cleanup;
+        }
+    }
+
+    *data = g_steal_pointer(&nsdata);
+    ret = 0;
+
+ cleanup:
+    libxlDomainDefNamespaceFree(nsdata);
+    return ret;
+}
+
+
+static int
+libxlDomainDefNamespaceFormatXML(virBufferPtr buf,
+                                 void *nsdata)
+{
+    libxlDomainXmlNsDefPtr cmd = nsdata;
+    size_t i;
+
+    if (!cmd->num_args)
+        return 0;
+
+    virBufferAddLit(buf, "<xen:commandline>\n");
+    virBufferAdjustIndent(buf, 2);
+
+    for (i = 0; i < cmd->num_args; i++)
+        virBufferEscapeString(buf, "<xen:arg value='%s'/>\n",
+                              cmd->args[i]);
+
+    virBufferAdjustIndent(buf, -2);
+    virBufferAddLit(buf, "</xen:commandline>\n");
+
+    return 0;
+}
+
+
+virXMLNamespace libxlDriverDomainXMLNamespace = {
+    .parse = libxlDomainDefNamespaceParse,
+    .free = libxlDomainDefNamespaceFree,
+    .format = libxlDomainDefNamespaceFormatXML,
+    .prefix = "xen",
+    .uri = "http://libvirt.org/schemas/domain/xen/1.0",
+};

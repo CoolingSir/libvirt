@@ -38,15 +38,27 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(virPCIDeviceList, virObjectUnref);
 #define VIR_DOMAIN_DEVICE_ZPCI_MAX_UID UINT16_MAX
 #define VIR_DOMAIN_DEVICE_ZPCI_MAX_FID UINT32_MAX
 
+typedef struct _virZPCIDeviceAddressID virZPCIDeviceAddressID;
 typedef struct _virZPCIDeviceAddress virZPCIDeviceAddress;
 typedef virZPCIDeviceAddress *virZPCIDeviceAddressPtr;
+
+struct _virZPCIDeviceAddressID {
+    unsigned int value;
+    bool isSet;
+};
+
 struct _virZPCIDeviceAddress {
-    unsigned int uid; /* exempt from syntax-check */
-    unsigned int fid;
+    virZPCIDeviceAddressID uid; /* exempt from syntax-check */
+    virZPCIDeviceAddressID fid;
     /* Don't forget to update virPCIDeviceAddressCopy if needed. */
 };
 
 #define VIR_PCI_DEVICE_ADDRESS_FMT "%04x:%02x:%02x.%d"
+
+/* Represents format of PF's phys_port_name in switchdev mode:
+ * 'p%u' or 'p%us%u'. New line checked since value is readed from sysfs file.
+ */
+#define VIR_PF_PHYS_PORT_NAME_REGEX  "(p[0-9]+$)|(p[0-9]+s[0-9]+$)"
 
 struct _virPCIDeviceAddress {
     unsigned int domain;
@@ -106,10 +118,7 @@ struct _virPCIEDeviceInfo {
     virPCIELink *link_sta;   /* Actually negotiated capabilities */
 };
 
-virPCIDevicePtr virPCIDeviceNew(unsigned int domain,
-                                unsigned int bus,
-                                unsigned int slot,
-                                unsigned int function);
+virPCIDevicePtr virPCIDeviceNew(const virPCIDeviceAddress *address);
 virPCIDevicePtr virPCIDeviceCopy(virPCIDevicePtr dev);
 void virPCIDeviceFree(virPCIDevicePtr dev);
 const char *virPCIDeviceGetName(virPCIDevicePtr dev);
@@ -227,10 +236,6 @@ int virPCIGetNetName(const char *device_link_sysfs_path,
                      char *physPortID,
                      char **netname);
 
-int virPCIGetSysfsFile(char *virPCIDeviceName,
-                             char **pci_sysfs_device_link)
-    G_GNUC_WARN_UNUSED_RESULT;
-
 bool virPCIDeviceAddressIsValid(virPCIDeviceAddressPtr addr,
                                 bool report);
 bool virPCIDeviceAddressIsEmpty(const virPCIDeviceAddress *addr);
@@ -245,8 +250,8 @@ char *virPCIDeviceAddressAsString(const virPCIDeviceAddress *addr)
 
 int virPCIDeviceAddressParse(char *address, virPCIDeviceAddressPtr bdf);
 
-bool virZPCIDeviceAddressIsValid(virZPCIDeviceAddressPtr zpci);
-bool virZPCIDeviceAddressIsEmpty(const virZPCIDeviceAddress *addr);
+bool virZPCIDeviceAddressIsIncomplete(const virZPCIDeviceAddress *addr);
+bool virZPCIDeviceAddressIsPresent(const virZPCIDeviceAddress *addr);
 
 int virPCIGetVirtualFunctionInfo(const char *vf_sysfs_device_path,
                                  int pfNetDevIdx,
@@ -271,9 +276,6 @@ int virPCIDeviceGetLinkCapSta(virPCIDevicePtr dev,
 int virPCIGetHeaderType(virPCIDevicePtr dev, int *hdrType);
 
 void virPCIEDeviceInfoFree(virPCIEDeviceInfoPtr dev);
-
-ssize_t virPCIGetMdevTypes(const char *sysfspath,
-                           virMediatedDeviceType ***types);
 
 void virPCIDeviceAddressFree(virPCIDeviceAddressPtr address);
 

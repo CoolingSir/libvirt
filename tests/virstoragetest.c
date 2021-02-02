@@ -20,6 +20,7 @@
 
 #include <unistd.h>
 
+#include "storage_source.h"
 #include "testutils.h"
 #include "vircommand.h"
 #include "virerror.h"
@@ -85,10 +86,7 @@ testStorageFileGetMetadata(const char *path,
                            uid_t uid, gid_t gid)
 {
     struct stat st;
-    g_autoptr(virStorageSource) def = NULL;
-
-    if (!(def = virStorageSourceNew()))
-        return NULL;
+    g_autoptr(virStorageSource) def = virStorageSourceNew();
 
     def->type = VIR_STORAGE_TYPE_FILE;
     def->format = format;
@@ -103,7 +101,7 @@ testStorageFileGetMetadata(const char *path,
 
     def->path = g_strdup(path);
 
-    if (virStorageFileGetMetadata(def, uid, gid, true) < 0)
+    if (virStorageSourceGetMetadata(def, uid, gid, true) < 0)
         return NULL;
 
     return g_steal_pointer(&def);
@@ -198,7 +196,7 @@ testPrepImages(void)
     if (virCommandRun(cmd, NULL) < 0)
         goto skip;
 
-#ifdef HAVE_SYMLINK
+#ifdef WITH_SYMLINK
     /* Create some symlinks in a sub-directory. */
     if (symlink("../qcow2", datadir "/sub/link1") < 0 ||
         symlink("../wrap", datadir "/sub/link2") < 0) {
@@ -273,7 +271,6 @@ testStorageChain(const void *args)
     virStorageSourcePtr elt;
     size_t i = 0;
     g_autoptr(virStorageSource) meta = NULL;
-    g_autofree char *broken = NULL;
 
     meta = testStorageFileGetMetadata(data->start, data->format, -1, -1);
     if (!meta) {
@@ -289,11 +286,6 @@ testStorageChain(const void *args)
 
     if (virGetLastErrorCode()) {
         fprintf(stderr, "call should not have reported error\n");
-        return -1;
-    }
-
-    if (virStorageFileChainGetBroken(meta, &broken) || broken) {
-        fprintf(stderr, "chain should not be identified as broken\n");
         return -1;
     }
 
@@ -361,61 +353,20 @@ testStorageLookup(const void *args)
     int ret = 0;
     virStorageSourcePtr result;
     virStorageSourcePtr actualParent;
-    unsigned int idx;
 
-    if (virStorageFileParseChainIndex(data->target, data->name, &idx) < 0 &&
-        data->expIndex) {
-        fprintf(stderr, "call should not have failed\n");
-        ret = -1;
-    }
-    if (idx != data->expIndex) {
-        fprintf(stderr, "index: expected %u, got %u\n", data->expIndex, idx);
-        ret = -1;
-    }
-
-     /* Test twice to ensure optional parameter doesn't cause NULL deref. */
-    result = virStorageFileChainLookup(data->chain, data->from,
-                                       idx ? NULL : data->name,
-                                       idx, NULL);
-
-    if (!data->expResult) {
-        if (virGetLastErrorCode() == VIR_ERR_OK) {
-            fprintf(stderr, "call should have failed\n");
-            ret = -1;
-        }
-        virResetLastError();
-    } else {
-        if (virGetLastErrorCode()) {
-            fprintf(stderr, "call should not have warned\n");
-            ret = -1;
-        }
-    }
-
-    if (!result) {
-        if (data->expResult) {
-            fprintf(stderr, "result 1: expected %s, got NULL\n",
-                    data->expResult);
-            ret = -1;
-        }
-    } else if (STRNEQ_NULLABLE(data->expResult, result->path)) {
-        fprintf(stderr, "result 1: expected %s, got %s\n",
-                NULLSTR(data->expResult), NULLSTR(result->path));
-        ret = -1;
-    }
-
-    result = virStorageFileChainLookup(data->chain, data->from,
-                                       data->name, idx, &actualParent);
+    result = virStorageSourceChainLookup(data->chain, data->from,
+                                         data->name, data->target, &actualParent);
     if (!data->expResult)
         virResetLastError();
 
     if (!result) {
         if (data->expResult) {
-            fprintf(stderr, "result 2: expected %s, got NULL\n",
+            fprintf(stderr, "result: expected %s, got NULL\n",
                     data->expResult);
             ret = -1;
         }
     } else if (STRNEQ_NULLABLE(data->expResult, result->path)) {
-        fprintf(stderr, "result 2: expected %s, got %s\n",
+        fprintf(stderr, "result: expected %s, got %s\n",
                 NULLSTR(data->expResult), NULLSTR(result->path));
         ret = -1;
     }
@@ -423,6 +374,17 @@ testStorageLookup(const void *args)
         fprintf(stderr, "meta: expected %p, got %p\n",
                 data->expMeta, result);
         ret = -1;
+    }
+    if (data->expIndex > 0) {
+        if (!result) {
+            fprintf(stderr, "index: resulting lookup is empty, can't match index\n");
+            ret = -1;
+        } else {
+            if (result->id != data->expIndex) {
+                fprintf(stderr, "index: expected %u, got %u\n", data->expIndex, result->id);
+                ret = -1;
+            }
+        }
     }
     if (data->expParent != actualParent) {
         fprintf(stderr, "parent: expected %s, got %s\n",
@@ -560,9 +522,9 @@ testPathRelative(const void *args)
     const struct testPathRelativeBacking *data = args;
     g_autofree char *actual = NULL;
 
-    if (virStorageFileGetRelativeBackingPath(data->top,
-                                             data->base,
-                                             &actual) < 0) {
+    if (virStorageSourceGetRelativeBackingPath(data->top,
+                                               data->base,
+                                               &actual) < 0) {
         fprintf(stderr, "relative backing path resolution failed\n");
         return -1;
     }
@@ -614,7 +576,8 @@ testBackingParse(const void *args)
         return -1;
     }
 
-    if (virDomainDiskSourceFormat(&buf, src, "source", 0, false, xmlformatflags, true, NULL) < 0 ||
+    if (virDomainDiskSourceFormat(&buf, src, "source", 0, false, xmlformatflags,
+                                  false, false, NULL) < 0 ||
         !(xml = virBufferContentAndReset(&buf))) {
         fprintf(stderr, "failed to format disk source xml\n");
         return -1;
@@ -681,6 +644,7 @@ mymain(void)
     /* Missing file */
     TEST_ONE_CHAIN("bogus", VIR_STORAGE_FILE_RAW, EXP_FAIL);
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
     /* Raw image, whether with right format or no specified format */
     testFileData raw = {
         .path = absraw,
@@ -857,7 +821,7 @@ mymain(void)
     TEST_CHAIN(absdir, VIR_STORAGE_FILE_NONE, (&dir), EXP_PASS);
     TEST_CHAIN(absdir, VIR_STORAGE_FILE_DIR, (&dir), EXP_PASS);
 
-#ifdef HAVE_SYMLINK
+#ifdef WITH_SYMLINK
     /* Rewrite qcow2 and wrap file to use backing names relative to a
      * symlink from a different directory */
     virCommandFree(cmd);
@@ -962,6 +926,7 @@ mymain(void)
     };
     TEST_CHAIN(absqcow2, VIR_STORAGE_FILE_QCOW2, (&qcow2, &rbd2), EXP_PASS);
 
+    VIR_WARNINGS_RESET
 
     /* Rewrite wrap and qcow2 back to 3-deep chain, absolute backing */
     virCommandFree(cmd);
@@ -1112,13 +1077,13 @@ mymain(void)
     TEST_LOOKUP_TARGET(72, "vda", NULL, "vda[0]", 0, NULL, NULL, NULL);
     TEST_LOOKUP_TARGET(73, "vda", NULL, "vda[1]", 1, chain2->path, chain2, chain);
     TEST_LOOKUP_TARGET(74, "vda", chain, "vda[1]", 1, chain2->path, chain2, chain);
-    TEST_LOOKUP_TARGET(75, "vda", chain2, "vda[1]", 1, NULL, NULL, NULL);
-    TEST_LOOKUP_TARGET(76, "vda", chain3, "vda[1]", 1, NULL, NULL, NULL);
+    TEST_LOOKUP_TARGET(75, "vda", chain2, "vda[1]", 0, NULL, NULL, NULL);
+    TEST_LOOKUP_TARGET(76, "vda", chain3, "vda[1]", 0, NULL, NULL, NULL);
     TEST_LOOKUP_TARGET(77, "vda", NULL, "vda[2]", 2, chain3->path, chain3, chain2);
     TEST_LOOKUP_TARGET(78, "vda", chain, "vda[2]", 2, chain3->path, chain3, chain2);
     TEST_LOOKUP_TARGET(79, "vda", chain2, "vda[2]", 2, chain3->path, chain3, chain2);
-    TEST_LOOKUP_TARGET(80, "vda", chain3, "vda[2]", 2, NULL, NULL, NULL);
-    TEST_LOOKUP_TARGET(81, "vda", NULL, "vda[3]", 3, NULL, NULL, NULL);
+    TEST_LOOKUP_TARGET(80, "vda", chain3, "vda[2]", 0, NULL, NULL, NULL);
+    TEST_LOOKUP_TARGET(81, "vda", NULL, "vda[3]", 0, NULL, NULL, NULL);
 
 #define TEST_PATH_CANONICALIZE(id, PATH, EXPECT) \
     do { \
@@ -1261,9 +1226,25 @@ mymain(void)
                        "<source protocol='nbd' name=':test'>\n"
                        "  <host name='example.org' port='6000'/>\n"
                        "</source>\n");
+    TEST_BACKING_PARSE("nbd:[::1]:6000:exportname=:test",
+                       "<source protocol='nbd' name=':test'>\n"
+                       "  <host name='::1' port='6000'/>\n"
+                       "</source>\n");
+    TEST_BACKING_PARSE("nbd:127.0.0.1:6000:exportname=:test",
+                       "<source protocol='nbd' name=':test'>\n"
+                       "  <host name='127.0.0.1' port='6000'/>\n"
+                       "</source>\n");
     TEST_BACKING_PARSE("nbd:unix:/tmp/sock:exportname=/",
                        "<source protocol='nbd' name='/'>\n"
                        "  <host transport='unix' socket='/tmp/sock'/>\n"
+                       "</source>\n");
+    TEST_BACKING_PARSE("nbd:unix:/tmp/sock:",
+                       "<source protocol='nbd'>\n"
+                       "  <host transport='unix' socket='/tmp/sock:'/>\n"
+                       "</source>\n");
+    TEST_BACKING_PARSE("nbd:unix:/tmp/sock::exportname=:",
+                       "<source protocol='nbd' name=':'>\n"
+                       "  <host transport='unix' socket='/tmp/sock:'/>\n"
                        "</source>\n");
     TEST_BACKING_PARSE("nbd://example.org:1234",
                        "<source protocol='nbd'>\n"
@@ -1613,6 +1594,19 @@ mymain(void)
                             "}",
                        "<source protocol='vxhs' name='c6718f6b-0401-441d-a8c3-1f0064d75ee0'>\n"
                        "  <host name='example.com' port='9999'/>\n"
+                       "</source>\n");
+    TEST_BACKING_PARSE("json:{\"file\":{\"driver\":\"nfs\","
+                                   "\"user\":2,"
+                                   "\"group\":9,"
+                                   "\"path\":\"/foo/bar/baz\","
+                                   "\"server\": {  \"host\":\"example.com\","
+                                                  "\"type\":\"inet\""
+                                               "}"
+                                      "}"
+                            "}",
+                       "<source protocol='nfs' name='/foo/bar/baz'>\n"
+                       "  <host name='example.com'/>\n"
+                       "  <identity user='+2' group='+9'/>\n"
                        "</source>\n");
     TEST_BACKING_PARSE_FULL("json:{ \"driver\": \"raw\","
                                     "\"offset\": 10752,"

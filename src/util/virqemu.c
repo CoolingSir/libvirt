@@ -36,6 +36,8 @@ VIR_LOG_INIT("util.qemu");
 struct virQEMUCommandLineJSONIteratorData {
     const char *prefix;
     virBufferPtr buf;
+    const char *skipKey;
+    bool onOff;
     virQEMUBuildCommandLineJSONArrayFormatFunc arrayFunc;
 };
 
@@ -44,6 +46,8 @@ static int
 virQEMUBuildCommandLineJSONRecurse(const char *key,
                                    virJSONValuePtr value,
                                    virBufferPtr buf,
+                                   const char *skipKey,
+                                   bool onOff,
                                    virQEMUBuildCommandLineJSONArrayFormatFunc arrayFunc,
                                    bool nested);
 
@@ -52,7 +56,9 @@ virQEMUBuildCommandLineJSONRecurse(const char *key,
 int
 virQEMUBuildCommandLineJSONArrayBitmap(const char *key,
                                        virJSONValuePtr array,
-                                       virBufferPtr buf)
+                                       virBufferPtr buf,
+                                       const char *skipKey G_GNUC_UNUSED,
+                                       bool onOff G_GNUC_UNUSED)
 {
     ssize_t pos = -1;
     ssize_t end;
@@ -80,23 +86,62 @@ virQEMUBuildCommandLineJSONArrayBitmap(const char *key,
 int
 virQEMUBuildCommandLineJSONArrayNumbered(const char *key,
                                          virJSONValuePtr array,
-                                         virBufferPtr buf)
+                                         virBufferPtr buf,
+                                         const char *skipKey,
+                                         bool onOff)
 {
     virJSONValuePtr member;
     size_t i;
 
     for (i = 0; i < virJSONValueArraySize(array); i++) {
-        member = virJSONValueArrayGet((virJSONValuePtr) array, i);
         g_autofree char *prefix = NULL;
 
+        member = virJSONValueArrayGet((virJSONValuePtr) array, i);
         prefix = g_strdup_printf("%s.%zu", key, i);
 
-        if (virQEMUBuildCommandLineJSONRecurse(prefix, member, buf,
+        if (virQEMUBuildCommandLineJSONRecurse(prefix, member, buf, skipKey, onOff,
                                                virQEMUBuildCommandLineJSONArrayNumbered,
                                                true) < 0)
             return 0;
     }
 
+    return 0;
+}
+
+
+/**
+ * This array converter is for quirky cases where the QMP schema mandates an
+ * array of objects with only one attribute 'str' which needs to be formatted as
+ * repeated key-value pairs without the 'str' being printed:
+ *
+ * 'guestfwd': [
+ *                  { "str": "tcp:10.0.2.1:4600-chardev:charchannel0" },
+ *                  { "str": "...."},
+ *             ]
+ *
+ *  guestfwd=tcp:10.0.2.1:4600-chardev:charchannel0,guestfwd=...
+ */
+static int
+virQEMUBuildCommandLineJSONArrayObjectsStr(const char *key,
+                                           virJSONValuePtr array,
+                                           virBufferPtr buf,
+                                           const char *skipKey G_GNUC_UNUSED,
+                                           bool onOff G_GNUC_UNUSED)
+{
+    g_auto(virBuffer) tmp = VIR_BUFFER_INITIALIZER;
+    size_t i;
+
+    for (i = 0; i < virJSONValueArraySize(array); i++) {
+        virJSONValuePtr member = virJSONValueArrayGet(array, i);
+        const char *str = virJSONValueObjectGetString(member, "str");
+
+        if (!str)
+            return -1;
+
+        virBufferAsprintf(&tmp, "%s=%s,", key, str);
+    }
+
+    virBufferAddBuffer(buf, &tmp);
     return 0;
 }
 
@@ -109,15 +154,20 @@ virQEMUBuildCommandLineJSONIterate(const char *key,
 {
     struct virQEMUCommandLineJSONIteratorData *data = opaque;
 
+    if (STREQ_NULLABLE(key, data->skipKey))
+        return 0;
+
     if (data->prefix) {
         g_autofree char *tmpkey = NULL;
 
         tmpkey = g_strdup_printf("%s.%s", data->prefix, key);
 
         return virQEMUBuildCommandLineJSONRecurse(tmpkey, value, data->buf,
+                                                  data->skipKey, data->onOff,
                                                   data->arrayFunc, false);
     } else {
         return virQEMUBuildCommandLineJSONRecurse(key, value, data->buf,
+                                                  data->skipKey, data->onOff,
                                                   data->arrayFunc, false);
     }
 }
@@ -127,10 +177,12 @@ static int
 virQEMUBuildCommandLineJSONRecurse(const char *key,
                                    virJSONValuePtr value,
                                    virBufferPtr buf,
+                                   const char *skipKey,
+                                   bool onOff,
                                    virQEMUBuildCommandLineJSONArrayFormatFunc arrayFunc,
                                    bool nested)
 {
-    struct virQEMUCommandLineJSONIteratorData data = { key, buf, arrayFunc };
+    struct virQEMUCommandLineJSONIteratorData data = { key, buf, skipKey, onOff, arrayFunc };
     virJSONType type = virJSONValueGetType(value);
     virJSONValuePtr elem;
     bool tmp;
@@ -155,10 +207,17 @@ virQEMUBuildCommandLineJSONRecurse(const char *key,
 
     case VIR_JSON_TYPE_BOOLEAN:
         virJSONValueGetBoolean(value, &tmp);
-        if (tmp)
-            virBufferAsprintf(buf, "%s=yes,", key);
-        else
-            virBufferAsprintf(buf, "%s=no,", key);
+        if (onOff) {
+            if (tmp)
+                virBufferAsprintf(buf, "%s=on,", key);
+            else
+                virBufferAsprintf(buf, "%s=off,", key);
+        } else {
+            if (tmp)
+                virBufferAsprintf(buf, "%s=yes,", key);
+            else
+                virBufferAsprintf(buf, "%s=no,", key);
+        }
 
         break;
 
@@ -170,15 +229,15 @@ virQEMUBuildCommandLineJSONRecurse(const char *key,
             return -1;
         }
 
-        if (!arrayFunc || arrayFunc(key, value, buf) < 0) {
+        if (!arrayFunc || arrayFunc(key, value, buf, skipKey, onOff) < 0) {
             /* fallback, treat the array as a non-bitmap, adding the key
              * for each member */
             for (i = 0; i < virJSONValueArraySize(value); i++) {
                 elem = virJSONValueArrayGet((virJSONValuePtr)value, i);
 
                 /* recurse to avoid duplicating code */
-                if (virQEMUBuildCommandLineJSONRecurse(key, elem, buf,
-                                                       arrayFunc, true) < 0)
+                if (virQEMUBuildCommandLineJSONRecurse(key, elem, buf, skipKey,
+                                                       onOff, arrayFunc, true) < 0)
                     return -1;
             }
         }
@@ -205,6 +264,8 @@ virQEMUBuildCommandLineJSONRecurse(const char *key,
  * virQEMUBuildCommandLineJSON:
  * @value: json object containing the value
  * @buf: otuput buffer
+ * @skipKey: name of key that will be handled separately by caller
+ * @onOff: Use 'on' and 'off' for boolean values rather than 'yes' and 'no'
  * @arrayFunc: array formatter function to allow for different syntax
  *
  * Formats JSON value object into command line parameters suitable for use with
@@ -215,14 +276,46 @@ virQEMUBuildCommandLineJSONRecurse(const char *key,
 int
 virQEMUBuildCommandLineJSON(virJSONValuePtr value,
                             virBufferPtr buf,
+                            const char *skipKey,
+                            bool onOff,
                             virQEMUBuildCommandLineJSONArrayFormatFunc array)
 {
-    if (virQEMUBuildCommandLineJSONRecurse(NULL, value, buf, array, false) < 0)
+    if (virQEMUBuildCommandLineJSONRecurse(NULL, value, buf, skipKey, onOff, array, false) < 0)
         return -1;
 
     virBufferTrim(buf, ",");
 
     return 0;
+}
+
+
+/**
+ * virQEMUBuildNetdevCommandlineFromJSON:
+ * @props: JSON properties describing a netdev
+ * @rawjson: don't transform to commandline args, but just stringify json
+ *
+ * Converts @props into arguments for -netdev including all the quirks and
+ * differences between the monitor and command line syntax.
+ *
+ * @rawjson is meant for testing of the schema in the xml2argvtest
+ */
+char *
+virQEMUBuildNetdevCommandlineFromJSON(virJSONValuePtr props,
+                                      bool rawjson)
+{
+    const char *type = virJSONValueObjectGetString(props, "type");
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
+
+    if (rawjson)
+        return virJSONValueToString(props, false);
+
+    virBufferAsprintf(&buf, "%s,", type);
+
+    if (virQEMUBuildCommandLineJSON(props, &buf, "type", true,
+                                    virQEMUBuildCommandLineJSONArrayObjectsStr) < 0)
+        return NULL;
+
+    return virBufferContentAndReset(&buf);
 }
 
 
@@ -243,7 +336,7 @@ virQEMUBuildObjectCommandlineFromJSONInternal(virBufferPtr buf,
 
     if (props) {
         virBufferAddLit(buf, ",");
-        if (virQEMUBuildCommandLineJSON(props, buf,
+        if (virQEMUBuildCommandLineJSON(props, buf, NULL, false,
                                 virQEMUBuildCommandLineJSONArrayBitmap) < 0)
             return -1;
     }
@@ -267,18 +360,13 @@ virQEMUBuildObjectCommandlineFromJSON(virBufferPtr buf,
 char *
 virQEMUBuildDriveCommandlineFromJSON(virJSONValuePtr srcdef)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
-    char *ret = NULL;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
-    if (virQEMUBuildCommandLineJSON(srcdef, &buf,
+    if (virQEMUBuildCommandLineJSON(srcdef, &buf, NULL, false,
                                     virQEMUBuildCommandLineJSONArrayNumbered) < 0)
-        goto cleanup;
+        return NULL;
 
-    ret = virBufferContentAndReset(&buf);
-
- cleanup:
-    virBufferFreeAndReset(&buf);
-    return ret;
+    return virBufferContentAndReset(&buf);
 }
 
 
@@ -294,62 +382,4 @@ void
 virQEMUBuildBufferEscapeComma(virBufferPtr buf, const char *str)
 {
     virBufferEscape(buf, ',', ",", "%s", str);
-}
-
-
-/**
- * virQEMUBuildQemuImgKeySecretOpts:
- * @buf: buffer to build the string into
- * @encinfo: pointer to encryption info
- * @alias: alias to use
- *
- * Generate the string for id=$alias and any encryption options for
- * into the buffer.
- *
- * Important note, a trailing comma (",") is built into the return since
- * it's expected other arguments are appended after the id=$alias string.
- * So either turn something like:
- *
- *     "key-secret=$alias,"
- *
- * or
- *     "key-secret=$alias,cipher-alg=twofish-256,cipher-mode=cbc,
- *     hash-alg=sha256,ivgen-alg=plain64,igven-hash-alg=sha256,"
- *
- */
-void
-virQEMUBuildQemuImgKeySecretOpts(virBufferPtr buf,
-                                 virStorageEncryptionInfoDefPtr encinfo,
-                                 const char *alias)
-{
-    virBufferAsprintf(buf, "key-secret=%s,", alias);
-
-    if (!encinfo->cipher_name)
-        return;
-
-    virBufferAddLit(buf, "cipher-alg=");
-    virQEMUBuildBufferEscapeComma(buf, encinfo->cipher_name);
-    virBufferAsprintf(buf, "-%u,", encinfo->cipher_size);
-    if (encinfo->cipher_mode) {
-        virBufferAddLit(buf, "cipher-mode=");
-        virQEMUBuildBufferEscapeComma(buf, encinfo->cipher_mode);
-        virBufferAddLit(buf, ",");
-    }
-    if (encinfo->cipher_hash) {
-        virBufferAddLit(buf, "hash-alg=");
-        virQEMUBuildBufferEscapeComma(buf, encinfo->cipher_hash);
-        virBufferAddLit(buf, ",");
-    }
-    if (!encinfo->ivgen_name)
-        return;
-
-    virBufferAddLit(buf, "ivgen-alg=");
-    virQEMUBuildBufferEscapeComma(buf, encinfo->ivgen_name);
-    virBufferAddLit(buf, ",");
-
-    if (encinfo->ivgen_hash) {
-        virBufferAddLit(buf, "ivgen-hash-alg=");
-        virQEMUBuildBufferEscapeComma(buf, encinfo->ivgen_hash);
-        virBufferAddLit(buf, ",");
-    }
 }

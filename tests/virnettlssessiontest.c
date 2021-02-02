@@ -30,7 +30,7 @@
 #include "vircommand.h"
 #include "virsocket.h"
 
-#if !defined WIN32 && HAVE_LIBTASN1_H && LIBGNUTLS_VERSION_NUMBER >= 0x020600
+#if !defined WIN32 && WITH_LIBTASN1_H && LIBGNUTLS_VERSION_NUMBER >= 0x020600
 
 # define VIR_FROM_THIS VIR_FROM_RPC
 
@@ -277,6 +277,7 @@ mymain(void)
             ret = -1; \
     } while (0)
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
 # define TLS_CERT_REQ(varname, cavarname, \
                       co, cn, an1, an2, ia1, ia2, bce, bcc, bci, \
                       kue, kuc, kuv, kpe, kpc, kpo1, kpo2, so, eo) \
@@ -459,6 +460,8 @@ mymain(void)
 
     DO_SESS_TEST("cacertchain-sess.pem", servercertlevel3areq.filename, clientcertlevel2breq.filename,
                  false, false, "libvirt.org", NULL);
+
+    VIR_WARNINGS_RESET
 
     testTLSDiscardCert(&clientcertreq);
     testTLSDiscardCert(&clientcertaltreq);

@@ -92,9 +92,8 @@ virSecurityGetRefCountAttrName(const char *name G_GNUC_UNUSED)
 static char *
 virSecurityGetTimestampAttrName(const char *name)
 {
-    char *ret = NULL;
-    ret = g_strdup_printf(XATTR_NAMESPACE ".libvirt.security.timestamp_%s", name);
-    return ret;
+    return g_strdup_printf(XATTR_NAMESPACE ".libvirt.security.timestamp_%s",
+                           name);
 }
 #else /* !XATTR_NAMESPACE */
 static char *
@@ -108,11 +107,21 @@ virSecurityGetTimestampAttrName(const char *name G_GNUC_UNUSED)
 #endif /* !XATTR_NAMESPACE */
 
 
+bool
+virSecurityXATTRNamespaceDefined(void)
+{
+#ifdef XATTR_NAMESPACE
+    return true;
+#else
+    return false;
+#endif
+}
+
+
 static char *
 virSecurityGetTimestamp(void)
 {
     unsigned long long boottime = 0;
-    char *ret = NULL;
 
     if (virHostGetBootTime(&boottime) < 0) {
         virReportSystemError(errno, "%s",
@@ -120,8 +129,7 @@ virSecurityGetTimestamp(void)
         return NULL;
     }
 
-    ret = g_strdup_printf("%llu", boottime);
-    return ret;
+    return g_strdup_printf("%llu", boottime);
 }
 
 
@@ -272,8 +280,11 @@ virSecurityGetRememberedLabel(const char *name,
 
     *label = NULL;
 
-    if (!(ref_name = virSecurityGetRefCountAttrName(name)))
+    if (!(ref_name = virSecurityGetRefCountAttrName(name))) {
+        if (errno == ENOSYS)
+            return -2;
         return -1;
+    }
 
     if (virFileGetXAttrQuiet(path, ref_name, &value) < 0) {
         if (errno == ENOSYS || errno == ENODATA || errno == ENOTSUP)
@@ -367,8 +378,11 @@ virSecuritySetRememberedLabel(const char *name,
     g_autofree char *value = NULL;
     unsigned int refcount = 0;
 
-    if (!(ref_name = virSecurityGetRefCountAttrName(name)))
+    if (!(ref_name = virSecurityGetRefCountAttrName(name))) {
+        if (errno == ENOSYS)
+            return -2;
         return -1;
+    }
 
     if (virFileGetXAttrQuiet(path, ref_name, &value) < 0) {
         if (errno == ENOSYS || errno == ENOTSUP) {
@@ -455,8 +469,11 @@ virSecurityMoveRememberedLabel(const char *name,
 
     if (!(ref_name = virSecurityGetRefCountAttrName(name)) ||
         !(attr_name = virSecurityGetAttrName(name)) ||
-        !(timestamp_name = virSecurityGetTimestampAttrName(name)))
+        !(timestamp_name = virSecurityGetTimestampAttrName(name))) {
+        if (errno == ENOSYS)
+            return -2;
         return -1;
+    }
 
     if (virFileGetXAttrQuiet(src, ref_name, &ref_value) < 0) {
         if (errno == ENOSYS || errno == ENOTSUP) {

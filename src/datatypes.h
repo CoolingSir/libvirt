@@ -635,6 +635,8 @@ struct _virNetworkPort {
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(virNetworkPort, virObjectUnref);
 
+/* virNetworkDHCPLease is defined in the public API - libvirt-network.h */
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virNetworkDHCPLease, virNetworkDHCPLeaseFree);
 
 /**
 * _virInterface:
@@ -842,6 +844,12 @@ virAdmClientPtr virAdmGetClient(virAdmServerPtr srv,
                                 unsigned long long id,
                                 unsigned long long timestamp,
                                 unsigned int transport);
+
+/* Thread local to watch if an ObjectUnref causes a Dispoe */
+void virConnectWatchDispose(void);
+bool virConnectWasDisposed(void);
+void virAdmConnectWatchDispose(void);
+bool virAdmConnectWasDisposed(void);
 
 virConnectCloseCallbackDataPtr virNewConnectCloseCallbackData(void);
 void virConnectCloseCallbackDataRegister(virConnectCloseCallbackDataPtr close,

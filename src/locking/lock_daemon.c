@@ -56,12 +56,10 @@
 
 VIR_LOG_INIT("locking.lock_daemon");
 
-#define VIR_LOCK_DAEMON_NUM_LOCKSPACES 3
-
 struct _virLockDaemon {
-    virMutex lock;
+    GMutex lock;
     virNetDaemonPtr dmn;
-    virHashTablePtr lockspaces;
+    GHashTable *lockspaces;
     virLockSpacePtr defaultLockspace;
 };
 
@@ -89,7 +87,7 @@ virLockDaemonFree(virLockDaemonPtr lockd)
     if (!lockd)
         return;
 
-    virMutexDestroy(&lockd->lock);
+    g_mutex_clear(&lockd->lock);
     virObjectUnref(lockd->dmn);
     virHashFree(lockd->lockspaces);
     virLockSpaceFree(lockd->defaultLockspace);
@@ -100,13 +98,13 @@ virLockDaemonFree(virLockDaemonPtr lockd)
 static inline void
 virLockDaemonLock(virLockDaemonPtr lockd)
 {
-    virMutexLock(&lockd->lock);
+    g_mutex_lock(&lockd->lock);
 }
 
 static inline void
 virLockDaemonUnlock(virLockDaemonPtr lockd)
 {
-    virMutexUnlock(&lockd->lock);
+    g_mutex_unlock(&lockd->lock);
 }
 
 static void virLockDaemonLockSpaceDataFree(void *data)
@@ -120,15 +118,9 @@ virLockDaemonNew(virLockDaemonConfigPtr config, bool privileged)
     virLockDaemonPtr lockd;
     virNetServerPtr srv = NULL;
 
-    if (VIR_ALLOC(lockd) < 0)
-        return NULL;
+    lockd = g_new0(virLockDaemon, 1);
 
-    if (virMutexInit(&lockd->lock) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Unable to initialize mutex"));
-        VIR_FREE(lockd);
-        return NULL;
-    }
+    g_mutex_init(&lockd->lock);
 
     if (!(lockd->dmn = virNetDaemonNew()))
         goto error;
@@ -161,8 +153,7 @@ virLockDaemonNew(virLockDaemonConfigPtr config, bool privileged)
     virObjectUnref(srv);
     srv = NULL;
 
-    if (!(lockd->lockspaces = virHashCreate(VIR_LOCK_DAEMON_NUM_LOCKSPACES,
-                                            virLockDaemonLockSpaceDataFree)))
+    if (!(lockd->lockspaces = virHashNew(virLockDaemonLockSpaceDataFree)))
         goto error;
 
     if (!(lockd->defaultLockspace = virLockSpaceNew(NULL)))
@@ -217,18 +208,11 @@ virLockDaemonNewPostExecRestart(virJSONValuePtr object, bool privileged)
     size_t i;
     const char *serverNames[] = { "virtlockd" };
 
-    if (VIR_ALLOC(lockd) < 0)
-        return NULL;
+    lockd = g_new0(virLockDaemon, 1);
 
-    if (virMutexInit(&lockd->lock) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Unable to initialize mutex"));
-        VIR_FREE(lockd);
-        return NULL;
-    }
+    g_mutex_init(&lockd->lock);
 
-    if (!(lockd->lockspaces = virHashCreate(VIR_LOCK_DAEMON_NUM_LOCKSPACES,
-                                            virLockDaemonLockSpaceDataFree)))
+    if (!(lockd->lockspaces = virHashNew(virLockDaemonLockSpaceDataFree)))
         goto error;
 
     if (!(child = virJSONValueObjectGet(object, "defaultLockspace"))) {
@@ -378,7 +362,7 @@ struct virLockDaemonClientReleaseData {
 
 static int
 virLockDaemonClientReleaseLockspace(void *payload,
-                                    const void *name G_GNUC_UNUSED,
+                                    const char *name G_GNUC_UNUSED,
                                     void *opaque)
 {
     virLockSpacePtr lockspace = payload;
@@ -450,7 +434,7 @@ virLockDaemonClientFree(void *opaque)
         }
     }
 
-    virMutexDestroy(&priv->lock);
+    g_mutex_clear(&priv->lock);
     VIR_FREE(priv->ownerName);
     VIR_FREE(priv);
 }
@@ -466,14 +450,9 @@ virLockDaemonClientNew(virNetServerClientPtr client,
     unsigned long long timestamp;
     bool privileged = opaque != NULL;
 
-    if (VIR_ALLOC(priv) < 0)
-        return NULL;
+    priv = g_new0(virLockDaemonClient, 1);
 
-    if (virMutexInit(&priv->lock) < 0) {
-        VIR_FREE(priv);
-        virReportSystemError(errno, "%s", _("unable to init mutex"));
-        return NULL;
-    }
+    g_mutex_init(&priv->lock);
 
     if (virNetServerClientGetUNIXIdentity(client,
                                           &clientuid,
@@ -508,7 +487,7 @@ virLockDaemonClientNew(virNetServerClientPtr client,
     return priv;
 
  error:
-    virMutexDestroy(&priv->lock);
+    g_mutex_clear(&priv->lock);
     VIR_FREE(priv);
     return NULL;
 }
@@ -720,9 +699,8 @@ virLockDaemonPreExecRestart(const char *state_file,
 {
     virJSONValuePtr child;
     char *state = NULL;
-    int ret = -1;
     virJSONValuePtr object = virJSONValueNewObject();
-    char *magic;
+    char *magic = NULL;
     virHashKeyValuePairPtr pairs = NULL, tmp;
     virJSONValuePtr lockspaces;
 
@@ -752,7 +730,7 @@ virLockDaemonPreExecRestart(const char *state_file,
     }
 
 
-    tmp = pairs = virHashGetItems(lockDaemon->lockspaces, NULL);
+    tmp = pairs = virHashGetItems(lockDaemon->lockspaces, NULL, false);
     while (tmp && tmp->key) {
         virLockSpacePtr lockspace = (virLockSpacePtr)tmp->value;
 
@@ -770,10 +748,8 @@ virLockDaemonPreExecRestart(const char *state_file,
     if (!(magic = virLockDaemonGetExecRestartMagic()))
         goto cleanup;
 
-    if (virJSONValueObjectAppendString(object, "magic", magic) < 0) {
-        VIR_FREE(magic);
+    if (virJSONValueObjectAppendString(object, "magic", magic) < 0)
         goto cleanup;
-    }
 
     if (!(state = virJSONValueToString(object, true)))
         goto cleanup;
@@ -797,10 +773,11 @@ virLockDaemonPreExecRestart(const char *state_file,
     abort(); /* This should be impossible to reach */
 
  cleanup:
+    VIR_FREE(magic);
     VIR_FREE(pairs);
     VIR_FREE(state);
     virJSONValueFree(object);
-    return ret;
+    return -1;
 }
 
 

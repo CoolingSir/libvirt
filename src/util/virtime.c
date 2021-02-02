@@ -257,8 +257,7 @@ char *virTimeStringNow(void)
 {
     char *ret;
 
-    if (VIR_ALLOC_N(ret, VIR_TIME_STRING_BUFLEN) < 0)
-        return NULL;
+    ret = g_new0(char, VIR_TIME_STRING_BUFLEN);
 
     if (virTimeStringNowRaw(ret) < 0) {
         virReportSystemError(errno, "%s",
@@ -286,8 +285,7 @@ char *virTimeStringThen(unsigned long long when)
 {
     char *ret;
 
-    if (VIR_ALLOC_N(ret, VIR_TIME_STRING_BUFLEN) < 0)
-        return NULL;
+    ret = g_new0(char, VIR_TIME_STRING_BUFLEN);
 
     if (virTimeStringThenRaw(when, ret) < 0) {
         virReportSystemError(errno, "%s",
@@ -386,7 +384,7 @@ virTimeBackOffWait(virTimeBackOffVar *var)
     VIR_DEBUG("t=%llu, limit=%llu", t, var->limit_t);
 
     if (t > var->limit_t)
-        return 0;               /* ends the while loop */
+        return false;               /* ends the while loop */
 
     /* Compute next wait time. Cap at VIR_TIME_BACKOFF_CAP
      * to avoid long useless sleeps. */
@@ -406,5 +404,5 @@ virTimeBackOffWait(virTimeBackOffVar *var)
     VIR_DEBUG("sleeping for %llu ms", next);
 
     g_usleep(next * 1000);
-    return 1;
+    return true;
 }

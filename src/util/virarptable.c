@@ -26,6 +26,7 @@
 
 #include "viralloc.h"
 #include "virarptable.h"
+#include "virerror.h"
 #include "virfile.h"
 #include "virlog.h"
 #include "virnetlink.h"
@@ -74,8 +75,7 @@ virArpTableGet(void)
     if (msglen < 0)
         return NULL;
 
-    if (VIR_ALLOC(table) < 0)
-        return NULL;
+    table = g_new0(virArpTable, 1);
 
     nh = (struct nlmsghdr*)nlData;
 

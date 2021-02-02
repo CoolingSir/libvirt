@@ -25,17 +25,20 @@
 #include "virsh.h"
 #include "virstring.h"
 
-char **
-virshInterfaceNameCompleter(vshControl *ctl,
-                            const vshCmd *cmd G_GNUC_UNUSED,
-                            unsigned int flags)
+typedef const char *
+(*virInterfaceStringCallback)(virInterfacePtr iface);
+
+static char **
+virshInterfaceStringHelper(vshControl *ctl,
+                           const vshCmd *cmd G_GNUC_UNUSED,
+                           unsigned int flags,
+                           virInterfaceStringCallback cb)
 {
     virshControlPtr priv = ctl->privData;
     virInterfacePtr *ifaces = NULL;
     int nifaces = 0;
     size_t i = 0;
-    char **ret = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(VIR_CONNECT_LIST_INTERFACES_ACTIVE |
                   VIR_CONNECT_LIST_INTERFACES_INACTIVE,
@@ -47,20 +50,36 @@ virshInterfaceNameCompleter(vshControl *ctl,
     if ((nifaces = virConnectListAllInterfaces(priv->conn, &ifaces, flags)) < 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, nifaces + 1) < 0)
-        goto cleanup;
+    tmp = g_new0(char *, nifaces + 1);
 
     for (i = 0; i < nifaces; i++) {
-        const char *name = virInterfaceGetName(ifaces[i]);
+        const char *name = (cb)(ifaces[i]);
 
         tmp[i] = g_strdup(name);
     }
 
-    ret = g_steal_pointer(&tmp);
-
- cleanup:
     for (i = 0; i < nifaces; i++)
         virInterfaceFree(ifaces[i]);
-    VIR_FREE(ifaces);
-    return ret;
+    g_free(ifaces);
+
+    return g_steal_pointer(&tmp);
+}
+
+
+char **
+virshInterfaceNameCompleter(vshControl *ctl,
+                            const vshCmd *cmd,
+                            unsigned int flags)
+{
+    return virshInterfaceStringHelper(ctl, cmd, flags, virInterfaceGetName);
+}
+
+
+char **
+virshInterfaceMacCompleter(vshControl *ctl,
+                           const vshCmd *cmd,
+                           unsigned int flags)
+{
+    return virshInterfaceStringHelper(ctl, cmd, flags,
+                                      virInterfaceGetMACString);
 }

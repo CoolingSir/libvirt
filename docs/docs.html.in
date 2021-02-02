@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
-  <body class="docs">
+  <body id="docs">
+    <h1>Documentation</h1>
     <div class="panel">
       <h2>Deployment / operation</h2>
 
@@ -48,7 +49,7 @@
         <dt><a href="nss.html">NSS module</a></dt>
         <dd>Enable domain host name translation to IP addresses</dd>
 
-        <dt><a href="http://wiki.libvirt.org/page/FAQ">FAQ</a></dt>
+        <dt><a href="https://wiki.libvirt.org/page/FAQ">FAQ</a></dt>
         <dd>Frequently asked questions</dd>
       </dl>
 
@@ -82,10 +83,10 @@
         <dt><a href="bindings.html">Language bindings and API modules</a></dt>
         <dd>Bindings of the libvirt API for
           <a href="csharp.html">c#</a>,
-          <a href="https://godoc.org/github.com/libvirt/libvirt-go">go</a>,
+          <a href="https://pkg.go.dev/libvirt.org/libvirt-go">go</a>,
           <a href="java.html">java</a>,
           <a href="https://libvirt.org/ocaml/">ocaml</a>,
-          <a href="http://search.cpan.org/dist/Sys-Virt/">perl</a>,
+          <a href="https://search.cpan.org/dist/Sys-Virt/">perl</a>,
           <a href="python.html">python</a>,
           <a href="php.html">php</a>,
           <a href="https://libvirt.org/ruby/">ruby</a>
@@ -125,7 +126,7 @@
         <dt><a href="hvsupport.html">Driver support</a></dt>
         <dd>matrix of API support per hypervisor per release</dd>
 
-        <dt><a href="kbase.html">Knowledge Base</a></dt>
+        <dt><a href="kbase/index.html">Knowledge Base</a></dt>
         <dd>Task oriented guides to key features</dd>
       </dl>
     </div>
@@ -141,6 +142,9 @@
 
         <dt><a href="strategy.html">Project strategy</a></dt>
         <dd>Sets a vision for future direction &amp; technical choices</dd>
+
+        <dt><a href="ci.html">CI Testing</a></dt>
+        <dd>Details of the Continuous Integration testing strategy</dd>
 
         <dt><a href="bugs.html">Bug reports</a></dt>
         <dd>How and where to report bugs and request features</dd>

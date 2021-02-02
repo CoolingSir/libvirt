@@ -116,7 +116,7 @@ following to your ~/.vimrc file:
 Or if you don't want to mess your ~/.vimrc up, you can save the
 above into a file called .lvimrc (not .vimrc) located at the root
 of libvirt source, then install a vim script from
-http://www.vim.org/scripts/script.php?script_id=1408, which will
+https://www.vim.org/scripts/script.php?script_id=1408, which will
 load the .lvimrc only when you edit libvirt code.
 
 Code formatting (especially for new code)
@@ -131,7 +131,7 @@ around operators and keywords:
 
   indent-libvirt()
   {
-    indent -bad -bap -bbb -bli4 -br -ce -brs -cs -i4 -l75 -lc75 \
+    indent -bad -bap -bbb -bli4 -br -ce -brs -cs -i4 -l100 -lc100 \
            -sbi4 -psl -saf -sai -saw -sbi4 -ss -sc -cdw -cli4 -npcs -nbc \
            --no-tabs "$@"
   }
@@ -140,6 +140,9 @@ Note that sometimes you'll have to post-process that output
 further, by piping it through ``expand -i``, since some leading
 TABs can get through. Usually they're in macro definitions or
 strings, and should be converted anyhow.
+
+The maximum permitted line length is 100 characters, but lines
+should aim to be approximately 80 characters.
 
 Libvirt requires a C99 compiler for various reasons. However, most
 of the code base prefers to stick to C89 syntax unless there is a
@@ -258,15 +261,15 @@ comment, although use of a semicolon is not currently rejected.
 Curly braces
 ------------
 
-Omit the curly braces around an ``if``, ``while``, ``for`` etc.
-body only when both that body and the condition itself occupy a
-single line. In every other case we require the braces. This
+Curly braces around an ``if``, ``while``, ``for`` etc. can be omitted if the
+body and the condition itself occupy only a single line.
+In every other case we require the braces. This
 ensures that it is trivially easy to identify a
 single-\ *statement* loop: each has only one *line* in its body.
 
 ::
 
-  while (expr)             // single line body; {} is forbidden
+  while (expr)             // single line body; {} is optional
       single_line_stmt();
 
 ::
@@ -474,7 +477,7 @@ indentation to track nesting:
 
 ::
 
-  #if defined(HAVE_POSIX_FALLOCATE) && !defined(HAVE_FALLOCATE)
+  #if defined(WITH_POSIX_FALLOCATE) && !defined(WITH_FALLOCATE)
   # define fallocate(a, ignored, b, c) posix_fallocate(a, b, c)
   #endif
 
@@ -541,33 +544,76 @@ diligent about this, when you see a non-const pointer, you're
 guaranteed that it is used to modify the storage it points to, or
 it is aliased to another pointer that is.
 
+Defining Local Variables
+------------------------
+
+Always define local variables at the top of the block in which they
+are used (before any pure code). Although modern C compilers allow
+defining a local variable in the middle of a block of code, this
+practice can lead to bugs, and must be avoided in all libvirt
+code. As indicated in these examples, it is okay to initialize
+variables where they are defined, even if the initialization involves
+calling another function.
+
+::
+
+  GOOD:
+    int
+    bob(char *loblaw)
+    {
+        int x;
+        int y = lawBlog();
+        char *z = NULL;
+
+        x = y + 20;
+        ...
+    }
+
+  BAD:
+    int
+    bob(char *loblaw)
+    {
+        int x;
+        int y = lawBlog();
+
+        x = y + 20;
+
+        char *z = NULL; // <===
+        ...
+    }
+
 Attribute annotations
 ---------------------
 
 Use the following annotations to help the compiler and/or static
 analysis tools understand the code better:
 
-+-------------------------------+------------------------------------------------------------+
-| Macro                         | Meaning                                                    |
-+===============================+============================================================+
-| ``ATTRIBUTE_NONNULL``         | passing NULL for this parameter is not allowed             |
-+-------------------------------+------------------------------------------------------------+
-| ``ATTRIBUTE_PACKED``          | force a structure to be packed                             |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_FALLTHROUGH``        | allow code reuse by multiple switch cases                  |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_NO_INLINE``          | the function is mocked in the test suite                   |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_NORETURN``           | the function never returns                                 |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_NULL_TERMINATED``    | last parameter must be NULL                                |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_PRINTF``             | validate that the formatting string matches parameters     |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_UNUSED``             | parameter is unused in this implementation of the function |
-+-------------------------------+------------------------------------------------------------+
-| ``G_GNUC_WARN_UNUSED_RESULT`` | the return value must be checked                           |
-+-------------------------------+------------------------------------------------------------+
+``ATTRIBUTE_NONNULL``
+   passing NULL for this parameter is not allowed
+
+``ATTRIBUTE_PACKED``
+   force a structure to be packed
+
+``G_GNUC_FALLTHROUGH``
+   allow code reuse by multiple switch cases
+
+``G_GNUC_NO_INLINE``
+   the function is mocked in the test suite
+
+``G_GNUC_NORETURN``
+   the function never returns
+
+``G_GNUC_NULL_TERMINATED``
+   last parameter must be NULL
+
+``G_GNUC_PRINTF``
+   validate that the formatting string matches parameters
+
+``G_GNUC_UNUSED``
+   parameter is unused in this implementation of the function
+
+``G_GNUC_WARN_UNUSED_RESULT``
+   the return value must be checked
 
 File handling
 -------------
@@ -893,7 +939,7 @@ ok:
 Although libvirt does not encourage the Linux kernel wind/unwind
 style of multiple labels, there's a good general discussion of the
 issue archived at
-`KernelTrap <http://kerneltrap.org/node/553/2131>`__
+`KernelTrap <https://web.archive.org/web/20130521051957/http://kerneltrap.org/node/553/2131>`__
 
 When using goto, please use one of these standard labels if it
 makes sense:
@@ -917,3 +963,18 @@ git):
    cleanup:
       /* ... do other stuff ... */
   }
+
+
+XML element and attribute naming
+--------------------------------
+
+New elements and/or attributes should be short and descriptive.
+In general, they should reflect what the feature does instead of
+how exactly it is named in given hypervisor because this creates
+an abstraction that other drivers can benefit from (for instance
+if the same feature is named differently in two hypervisors).
+That is not to say an element or attribute can't have the same
+name as in a hypervisor, but proceed with caution.
+
+Single worded names are preferred, but if more words must be
+used then they shall be joined in camelCase style.

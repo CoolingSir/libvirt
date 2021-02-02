@@ -38,6 +38,7 @@
 #include "virbuffer.h"
 #include "remote_driver.h"
 #include "remote_protocol.h"
+#include "remote_sockets.h"
 #include "lxc_protocol.h"
 #include "qemu_protocol.h"
 #include "viralloc.h"
@@ -54,46 +55,6 @@
 
 VIR_LOG_INIT("remote.remote_driver");
 
-typedef enum {
-    REMOTE_DRIVER_TRANSPORT_TLS,
-    REMOTE_DRIVER_TRANSPORT_UNIX,
-    REMOTE_DRIVER_TRANSPORT_SSH,
-    REMOTE_DRIVER_TRANSPORT_LIBSSH2,
-    REMOTE_DRIVER_TRANSPORT_EXT,
-    REMOTE_DRIVER_TRANSPORT_TCP,
-    REMOTE_DRIVER_TRANSPORT_LIBSSH,
-
-    REMOTE_DRIVER_TRANSPORT_LAST,
-} remoteDriverTransport;
-
-VIR_ENUM_DECL(remoteDriverTransport);
-VIR_ENUM_IMPL(remoteDriverTransport,
-              REMOTE_DRIVER_TRANSPORT_LAST,
-              "tls",
-              "unix",
-              "ssh",
-              "libssh2",
-              "ext",
-              "tcp",
-              "libssh");
-
-typedef enum {
-    /* Try to figure out the "best" choice magically */
-    REMOTE_DRIVER_MODE_AUTO,
-    /* Always use the legacy libvirtd */
-    REMOTE_DRIVER_MODE_LEGACY,
-    /* Always use the per-driver virt*d daemons */
-    REMOTE_DRIVER_MODE_DIRECT,
-
-    REMOTE_DRIVER_MODE_LAST
-} remoteDriverMode;
-
-VIR_ENUM_DECL(remoteDriverMode);
-VIR_ENUM_IMPL(remoteDriverMode,
-              REMOTE_DRIVER_MODE_LAST,
-              "auto",
-              "legacy",
-              "direct");
 
 #if SIZEOF_LONG < 8
 # define HYPER_TO_TYPE(_type, _to, _from) \
@@ -204,31 +165,6 @@ static void make_nonnull_domain_snapshot(remote_nonnull_domain_snapshot *snapsho
 /*----------------------------------------------------------------------*/
 
 /* Helper functions for remoteOpen. */
-static int remoteSplitURIScheme(virURIPtr uri,
-                                char **driver,
-                                char **transport)
-{
-    char *p = strchr(uri->scheme, '+');
-
-    *driver = *transport = NULL;
-
-    if (p)
-        *driver = g_strndup(uri->scheme, p - uri->scheme);
-    else
-        *driver = g_strdup(uri->scheme);
-
-    if (p) {
-        *transport = g_strdup(p + 1);
-
-        p = *transport;
-        while (*p) {
-            *p = g_ascii_tolower(*p);
-            p++;
-        }
-    }
-
-    return 0;
-}
 
 
 static int
@@ -469,6 +405,11 @@ remoteDomainBuildEventBlockThreshold(virNetClientProgramPtr prog,
                                      void *evdata, void *opaque);
 
 static void
+remoteDomainBuildEventMemoryFailure(virNetClientProgramPtr prog,
+                                    virNetClientPtr client,
+                                    void *evdata, void *opaque);
+
+static void
 remoteConnectNotifyEventConnectionClosed(virNetClientProgramPtr prog G_GNUC_UNUSED,
                                          virNetClientPtr client G_GNUC_UNUSED,
                                          void *evdata, void *opaque);
@@ -679,6 +620,10 @@ static virNetClientProgramEvent remoteEvents[] = {
       remoteDomainBuildEventBlockThreshold,
       sizeof(remote_domain_event_block_threshold_msg),
       (xdrproc_t)xdr_remote_domain_event_block_threshold_msg },
+    { REMOTE_PROC_DOMAIN_EVENT_MEMORY_FAILURE,
+      remoteDomainBuildEventMemoryFailure,
+      sizeof(remote_domain_event_memory_failure_msg),
+      (xdrproc_t)xdr_remote_domain_event_memory_failure_msg },
 };
 
 static void
@@ -761,131 +706,6 @@ remoteConnectSupportsFeatureUnlocked(virConnectPtr conn,
     }
 
 
-static char *
-remoteGetUNIXSocketHelper(remoteDriverTransport transport,
-                          const char *sock_prefix,
-                          unsigned int flags)
-{
-    char *sockname = NULL;
-    g_autofree char *userdir = NULL;
-
-    if (flags & VIR_DRV_OPEN_REMOTE_USER) {
-        if (transport != REMOTE_DRIVER_TRANSPORT_UNIX) {
-            virReportError(VIR_ERR_OPERATION_UNSUPPORTED,
-                           _("Connecting to session instance without "
-                             "socket path is not supported by the %s "
-                             "transport"),
-                           remoteDriverTransportTypeToString(transport));
-            return NULL;
-        }
-        userdir = virGetUserRuntimeDirectory();
-
-        sockname = g_strdup_printf("%s/%s-sock", userdir, sock_prefix);
-    } else {
-        /* Intentionally do *NOT* use RUNSTATEDIR here. We might
-         * be connecting to a remote machine, and cannot assume
-         * the remote host has /run. The converse is ok though,
-         * any machine with /run will have a /var/run symlink.
-         * The portable option is to thus use $LOCALSTATEDIR/run
-         */
-        sockname = g_strdup_printf("%s/run/libvirt/%s-%s", LOCALSTATEDIR,
-                                   sock_prefix,
-                                   flags & VIR_DRV_OPEN_REMOTE_RO ? "sock-ro" : "sock");
-    }
-
-    VIR_DEBUG("Built UNIX sockname %s for transport %s prefix %s flags=0x%x",
-              sockname, remoteDriverTransportTypeToString(transport),
-              sock_prefix, flags);
-    return sockname;
-}
-
-
-static char *
-remoteGetUNIXSocket(remoteDriverTransport transport,
-                    remoteDriverMode mode,
-                    const char *driver,
-                    char **daemon,
-                    unsigned int flags)
-{
-    char *sock_name = NULL;
-    g_autofree char *direct_daemon = NULL;
-    g_autofree char *legacy_daemon = NULL;
-    g_autofree char *direct_sock_name = NULL;
-    g_autofree char *legacy_sock_name = NULL;
-
-    if (driver)
-        direct_daemon = g_strdup_printf("virt%sd", driver);
-
-    legacy_daemon = g_strdup("libvirtd");
-
-    if (driver &&
-        !(direct_sock_name = remoteGetUNIXSocketHelper(transport, direct_daemon, flags)))
-        return NULL;
-
-    if (!(legacy_sock_name = remoteGetUNIXSocketHelper(transport, "libvirt", flags)))
-        return NULL;
-
-    if (mode == REMOTE_DRIVER_MODE_AUTO) {
-        if (transport == REMOTE_DRIVER_TRANSPORT_UNIX) {
-            if (direct_sock_name && virFileExists(direct_sock_name)) {
-                mode = REMOTE_DRIVER_MODE_DIRECT;
-            } else if (virFileExists(legacy_sock_name)) {
-                mode = REMOTE_DRIVER_MODE_LEGACY;
-            } else if (driver) {
-                /*
-                 * This constant comes from the configure script and
-                 * maps to either the direct or legacy mode constant
-                 */
-                mode = REMOTE_DRIVER_MODE_DEFAULT;
-            } else {
-                mode = REMOTE_DRIVER_MODE_LEGACY;
-            }
-        } else {
-            mode = REMOTE_DRIVER_MODE_LEGACY;
-        }
-    }
-
-    switch ((remoteDriverMode)mode) {
-    case REMOTE_DRIVER_MODE_LEGACY:
-        sock_name = g_steal_pointer(&legacy_sock_name);
-        *daemon = g_steal_pointer(&legacy_daemon);
-        break;
-
-    case REMOTE_DRIVER_MODE_DIRECT:
-        if (transport != REMOTE_DRIVER_TRANSPORT_UNIX) {
-            virReportError(VIR_ERR_OPERATION_UNSUPPORTED,
-                           _("Cannot use direct socket mode for %s transport"),
-                           remoteDriverTransportTypeToString(transport));
-            return NULL;
-        }
-
-        if (!direct_sock_name) {
-            virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
-                           _("Cannot use direct socket mode if no URI is set"));
-            return NULL;
-        }
-
-        sock_name = g_steal_pointer(&direct_sock_name);
-        *daemon = g_steal_pointer(&direct_daemon);
-        break;
-
-    case REMOTE_DRIVER_MODE_AUTO:
-    case REMOTE_DRIVER_MODE_LAST:
-    default:
-        virReportEnumRangeError(remoteDriverMode, mode);
-        return NULL;
-    }
-
-    VIR_DEBUG("Chosen UNIX sockname %s daemon %s "
-              "for mode %s transport %s flags=0x%x",
-              sock_name, NULLSTR(*daemon),
-              remoteDriverModeTypeToString(mode),
-              remoteDriverTransportTypeToString(transport),
-              flags);
-    return sock_name;
-}
-
-
 #ifndef WIN32
 static const char *
 remoteGetDaemonPathEnv(void)
@@ -927,12 +747,11 @@ static int
 doRemoteOpen(virConnectPtr conn,
              struct private_data *priv,
              const char *driver_str,
-             const char *transport_str,
+             remoteDriverTransport transport,
              virConnectAuthPtr auth G_GNUC_UNUSED,
              virConfPtr conf,
              unsigned int flags)
 {
-    int transport;
 #ifndef WIN32
     g_autofree char *daemonPath = NULL;
 #endif
@@ -951,12 +770,15 @@ doRemoteOpen(virConnectPtr conn,
     g_autofree char *knownHosts = NULL;
     g_autofree char *mode_str = NULL;
     g_autofree char *daemon_name = NULL;
+    g_autofree char *proxy_str = NULL;
     bool sanity = true;
     bool verify = true;
 #ifndef WIN32
     bool tty = true;
 #endif
     int mode;
+    size_t i;
+    int proxy;
 
     if (inside_daemon && !conn->uri->server) {
         mode = REMOTE_DRIVER_MODE_DIRECT;
@@ -964,36 +786,16 @@ doRemoteOpen(virConnectPtr conn,
         mode = REMOTE_DRIVER_MODE_AUTO;
     }
 
+    /* Historically we didn't allow ssh tunnel with session mode,
+     * since we can't construct the accurate path remotely,
+     * so we can default to modern virt-ssh-helper */
+    if (flags & VIR_DRV_OPEN_REMOTE_USER)
+        proxy = VIR_NET_CLIENT_PROXY_NATIVE;
+    else
+        proxy = VIR_NET_CLIENT_PROXY_AUTO;
+
     /* We handle *ALL* URIs here. The caller has rejected any
      * URIs we don't care about */
-
-    if (conn->uri) {
-        if (!transport_str) {
-            if (conn->uri->server)
-                transport = REMOTE_DRIVER_TRANSPORT_TLS;
-            else
-                transport = REMOTE_DRIVER_TRANSPORT_UNIX;
-        } else {
-            if ((transport = remoteDriverTransportTypeFromString(transport_str)) < 0) {
-                virReportError(VIR_ERR_INVALID_ARG, "%s",
-                               _("remote_open: transport in URL not recognised "
-                                 "(should be tls|unix|ssh|ext|tcp|libssh2|libssh)"));
-                return VIR_DRV_OPEN_ERROR;
-            }
-
-            if (transport == REMOTE_DRIVER_TRANSPORT_UNIX &&
-                conn->uri->server) {
-                virReportError(VIR_ERR_INVALID_ARG,
-                               _("using unix socket and remote "
-                                 "server '%s' is not supported."),
-                               conn->uri->server);
-                return VIR_DRV_OPEN_ERROR;
-            }
-        }
-    } else {
-        /* No URI, then must be probing so use UNIX socket */
-        transport = REMOTE_DRIVER_TRANSPORT_UNIX;
-    }
 
     /* Remote server defaults to "localhost" if not specified. */
     if (conn->uri && conn->uri->port != 0) {
@@ -1014,8 +816,6 @@ doRemoteOpen(virConnectPtr conn,
      * feasibly it might contain variables needed by the real driver,
      * although that won't be the case for now).
      */
-    size_t i;
-
     if (conn->uri) {
         for (i = 0; i < conn->uri->paramsCount; i++) {
             virURIParamPtr var = &conn->uri->params[i];
@@ -1031,6 +831,7 @@ doRemoteOpen(virConnectPtr conn,
             EXTRACT_URI_ARG_STR("known_hosts_verify", knownHostsVerify);
             EXTRACT_URI_ARG_STR("tls_priority", tls_priority);
             EXTRACT_URI_ARG_STR("mode", mode_str);
+            EXTRACT_URI_ARG_STR("proxy", proxy_str);
             EXTRACT_URI_ARG_BOOL("no_sanity", sanity);
             EXTRACT_URI_ARG_BOOL("no_verify", verify);
 #ifndef WIN32
@@ -1080,8 +881,22 @@ doRemoteOpen(virConnectPtr conn,
         goto failed;
 
     if (mode_str &&
-        (mode = remoteDriverModeTypeFromString(mode_str)) < 0)
+        (mode = remoteDriverModeTypeFromString(mode_str)) < 0) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("Unknown remote mode '%s'"), mode_str);
         goto failed;
+    }
+
+    if (conf && !proxy_str &&
+        virConfGetValueString(conf, "remote_proxy", &proxy_str) < 0)
+        goto failed;
+
+    if (proxy_str &&
+        (proxy = virNetClientProxyTypeFromString(proxy_str)) < 0) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("Unnkown proxy type '%s'"), proxy_str);
+        goto failed;
+    }
 
     /* Sanity check that nothing requested !direct mode by mistake */
     if (inside_daemon && !conn->uri->server && mode != REMOTE_DRIVER_MODE_DIRECT) {
@@ -1108,7 +923,9 @@ doRemoteOpen(virConnectPtr conn,
     case REMOTE_DRIVER_TRANSPORT_LIBSSH2:
         if (!sockname &&
             !(sockname = remoteGetUNIXSocket(transport, mode, driver_str,
-                                             &daemon_name, flags)))
+                                             flags & VIR_DRV_OPEN_REMOTE_RO,
+                                             flags & VIR_DRV_OPEN_REMOTE_USER,
+                                             &daemon_name)))
             goto failed;
         break;
 
@@ -1133,7 +950,7 @@ doRemoteOpen(virConnectPtr conn,
             goto failed;
 
         priv->tls = virNetTLSContextNewClientPath(pkipath,
-                                                  geteuid() != 0 ? true : false,
+                                                  geteuid() != 0,
                                                   tls_priority,
                                                   sanity, verify);
         if (!priv->tls)
@@ -1165,8 +982,11 @@ doRemoteOpen(virConnectPtr conn,
                                               knownHosts,
                                               knownHostsVerify,
                                               sshauth,
+                                              proxy,
                                               netcat,
                                               sockname,
+                                              name,
+                                              flags & VIR_DRV_OPEN_REMOTE_RO,
                                               auth,
                                               conn->uri);
         if (!priv->client)
@@ -1186,8 +1006,11 @@ doRemoteOpen(virConnectPtr conn,
                                              knownHosts,
                                              knownHostsVerify,
                                              sshauth,
+                                             proxy,
                                              netcat,
                                              sockname,
+                                             name,
+                                             flags & VIR_DRV_OPEN_REMOTE_RO,
                                              auth,
                                              conn->uri);
         if (!priv->client)
@@ -1226,9 +1049,12 @@ doRemoteOpen(virConnectPtr conn,
                                                 username,
                                                 !tty,
                                                 !verify,
-                                                netcat ? netcat : "nc",
                                                 keyfile,
-                                                sockname)))
+                                                proxy,
+                                                netcat,
+                                                sockname,
+                                                name,
+                                                flags & VIR_DRV_OPEN_REMOTE_RO)))
             goto failed;
 
         priv->is_secure = 1;
@@ -1390,8 +1216,7 @@ static struct private_data *
 remoteAllocPrivateData(void)
 {
     struct private_data *priv;
-    if (VIR_ALLOC(priv) < 0)
-        return NULL;
+    priv = g_new0(struct private_data, 1);
 
     if (virMutexInit(&priv->lock) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -1414,13 +1239,19 @@ remoteConnectOpen(virConnectPtr conn,
     struct private_data *priv;
     int ret = VIR_DRV_OPEN_ERROR;
     int rflags = 0;
-    const char *autostart = getenv("LIBVIRT_AUTOSTART");
+    bool user;
+    bool autostart;
     char *driver = NULL;
-    char *transport = NULL;
+    remoteDriverTransport transport;
 
-    if (conn->uri &&
-        remoteSplitURIScheme(conn->uri, &driver, &transport) < 0)
-        goto cleanup;
+    if (conn->uri) {
+        if (remoteSplitURIScheme(conn->uri, &driver, &transport) < 0)
+            goto cleanup;
+    } else {
+        /* No URI, then must be probing so use UNIX socket */
+        transport = REMOTE_DRIVER_TRANSPORT_UNIX;
+    }
+
 
     if (inside_daemon) {
         if (!conn->uri) {
@@ -1430,9 +1261,13 @@ remoteConnectOpen(virConnectPtr conn,
 
         /* If there's a driver registered we must defer to that.
          * If there isn't a driver, we must connect in "direct"
-         * mode - see doRemoteOpen */
+         * mode - see doRemoteOpen.
+         * One exception is if we are trying to connect to an
+         * unknown socket path as that might be proxied to remote
+         * host */
         if (!conn->uri->server &&
-            virHasDriverForURIScheme(driver)) {
+            virHasDriverForURIScheme(driver) &&
+            !virURICheckUnixSocket(conn->uri)) {
             ret = VIR_DRV_OPEN_DECLINED;
             goto cleanup;
         }
@@ -1444,51 +1279,11 @@ remoteConnectOpen(virConnectPtr conn,
     if (flags & VIR_CONNECT_RO)
         rflags |= VIR_DRV_OPEN_REMOTE_RO;
 
-    /*
-     * User session daemon is used for
-     *
-     *  - Any URI with /session suffix
-     *  - Test driver, if a protocol is given
-     *
-     * provided we are running non-root
-     */
-    if (conn->uri &&
-        conn->uri->path &&
-        conn->uri->scheme &&
-        (STREQ(conn->uri->path, "/session") ||
-         STRPREFIX(conn->uri->scheme, "test+")) &&
-        geteuid() > 0) {
-        VIR_DEBUG("User session daemon required");
+    remoteGetURIDaemonInfo(conn->uri, transport, &user, &autostart);
+    if (user)
         rflags |= VIR_DRV_OPEN_REMOTE_USER;
-
-        /*
-         * Furthermore if no servername is given, and no +XXX
-         * transport is listed, or transport is unix,
-         * and uid is unprivileged then auto-spawn a daemon.
-         */
-        if (!conn->uri->server &&
-            (transport == NULL || STREQ(transport, "unix")) &&
-            (!autostart ||
-             STRNEQ(autostart, "0"))) {
-            VIR_DEBUG("Try daemon autostart");
-            rflags |= VIR_DRV_OPEN_REMOTE_AUTOSTART;
-        }
-    }
-
-    /*
-     * If URI is NULL, then do a UNIX connection possibly auto-spawning
-     * unprivileged server and probe remote server for URI.
-     */
-    if (!conn->uri) {
-        VIR_DEBUG("Auto-probe remote URI");
-        if (geteuid() > 0) {
-            VIR_DEBUG("Auto-spawn user daemon instance");
-            rflags |= VIR_DRV_OPEN_REMOTE_USER;
-            if (!autostart ||
-                STRNEQ(autostart, "0"))
-                rflags |= VIR_DRV_OPEN_REMOTE_AUTOSTART;
-        }
-    }
+    if (autostart)
+        rflags |= VIR_DRV_OPEN_REMOTE_AUTOSTART;
 
     ret = doRemoteOpen(conn, priv, driver, transport, auth, conf, rflags);
     if (ret != VIR_DRV_OPEN_SUCCESS) {
@@ -1502,7 +1297,6 @@ remoteConnectOpen(virConnectPtr conn,
 
  cleanup:
     VIR_FREE(driver);
-    VIR_FREE(transport);
     return ret;
 }
 
@@ -1577,7 +1371,7 @@ remoteConnectClose(virConnectPtr conn)
  * private data, and free it when we close the connection.
  *
  * See also:
- * http://www.redhat.com/archives/libvir-list/2007-February/msg00096.html
+ * https://www.redhat.com/archives/libvir-list/2007-February/msg00096.html
  */
 static const char *
 remoteConnectGetType(virConnectPtr conn)
@@ -2454,7 +2248,6 @@ remoteDomainGetIOThreadInfo(virDomainPtr dom,
     remote_domain_get_iothread_info_args args;
     remote_domain_get_iothread_info_ret ret;
     remote_domain_iothread_info *src;
-    virDomainIOThreadInfoPtr *info_ret = NULL;
 
     remoteDriverLock(priv);
 
@@ -2479,40 +2272,33 @@ remoteDomainGetIOThreadInfo(virDomainPtr dom,
     }
 
     if (info) {
+        virDomainIOThreadInfoPtr *info_ret = NULL;
+
         if (!ret.info.info_len) {
             *info = NULL;
             rv = ret.ret;
             goto cleanup;
         }
 
-        if (VIR_ALLOC_N(info_ret, ret.info.info_len) < 0)
-            goto cleanup;
+        info_ret = g_new0(virDomainIOThreadInfoPtr, ret.info.info_len);
 
         for (i = 0; i < ret.info.info_len; i++) {
             src = &ret.info.info_val[i];
 
-            if (VIR_ALLOC(info_ret[i]) < 0)
-                goto cleanup;
+            info_ret[i] = g_new0(virDomainIOThreadInfo, 1);
 
             info_ret[i]->iothread_id = src->iothread_id;
-            if (VIR_ALLOC_N(info_ret[i]->cpumap, src->cpumap.cpumap_len) < 0)
-                goto cleanup;
+            info_ret[i]->cpumap = g_new0(unsigned char, src->cpumap.cpumap_len);
             memcpy(info_ret[i]->cpumap, src->cpumap.cpumap_val,
                    src->cpumap.cpumap_len);
             info_ret[i]->cpumaplen = src->cpumap.cpumap_len;
         }
         *info = info_ret;
-        info_ret = NULL;
     }
 
     rv = ret.ret;
 
  cleanup:
-    if (info_ret) {
-        for (i = 0; i < ret.info.info_len; i++)
-            virDomainIOThreadInfoFree(info_ret[i]);
-        VIR_FREE(info_ret);
-    }
     xdr_free((xdrproc_t)xdr_remote_domain_get_iothread_info_ret,
              (char *) &ret);
 
@@ -2542,12 +2328,11 @@ remoteDomainGetSecurityLabel(virDomainPtr domain, virSecurityLabelPtr seclabel)
     }
 
     if (ret.label.label_val != NULL) {
-        if (strlen(ret.label.label_val) >= sizeof(seclabel->label)) {
+        if (virStrcpyStatic(seclabel->label, ret.label.label_val) < 0) {
             virReportError(VIR_ERR_RPC, _("security label exceeds maximum: %zu"),
                            sizeof(seclabel->label) - 1);
             goto cleanup;
         }
-        strcpy(seclabel->label, ret.label.label_val);
         seclabel->enforcing = ret.enforcing;
     }
 
@@ -2581,19 +2366,17 @@ remoteDomainGetSecurityLabelList(virDomainPtr domain, virSecurityLabelPtr* secla
         goto done;
     }
 
-    if (VIR_ALLOC_N(*seclabels, ret.labels.labels_len) < 0)
-        goto cleanup;
+    *seclabels = g_new0(virSecurityLabel, ret.labels.labels_len);
 
     for (i = 0; i < ret.labels.labels_len; i++) {
         remote_domain_get_security_label_ret *cur = &ret.labels.labels_val[i];
         if (cur->label.label_val != NULL) {
-            if (strlen(cur->label.label_val) >= sizeof((*seclabels)->label)) {
+            if (virStrcpyStatic((*seclabels)[i].label, cur->label.label_val) < 0) {
                 virReportError(VIR_ERR_RPC, _("security label exceeds maximum: %zd"),
                                sizeof((*seclabels)->label) - 1);
                 VIR_FREE(*seclabels);
                 goto cleanup;
             }
-            strcpy((*seclabels)[i].label, cur->label.label_val);
             (*seclabels)[i].enforcing = cur->enforcing;
         }
     }
@@ -2659,21 +2442,19 @@ remoteNodeGetSecurityModel(virConnectPtr conn, virSecurityModelPtr secmodel)
     }
 
     if (ret.model.model_val != NULL) {
-        if (strlen(ret.model.model_val) >= sizeof(secmodel->model)) {
+        if (virStrcpyStatic(secmodel->model, ret.model.model_val) < 0) {
             virReportError(VIR_ERR_RPC, _("security model exceeds maximum: %zu"),
                            sizeof(secmodel->model) - 1);
             goto cleanup;
         }
-        strcpy(secmodel->model, ret.model.model_val);
     }
 
     if (ret.doi.doi_val != NULL) {
-        if (strlen(ret.doi.doi_val) >= sizeof(secmodel->doi)) {
+        if (virStrcpyStatic(secmodel->doi, ret.doi.doi_val) < 0) {
             virReportError(VIR_ERR_RPC, _("security doi exceeds maximum: %zu"),
                            sizeof(secmodel->doi) - 1);
             goto cleanup;
         }
-        strcpy(secmodel->doi, ret.doi.doi_val);
     }
 
     rv = 0;
@@ -3980,8 +3761,7 @@ static sasl_callback_t *remoteAuthMakeCallbacks(int *credtype, int ncredtype)
     sasl_callback_t *cbs;
     size_t i;
     int n;
-    if (VIR_ALLOC_N(cbs, ncredtype+1) < 0)
-        return NULL;
+    cbs = g_new0(sasl_callback_t, ncredtype + 1);
 
     for (i = 0, n = 0; i < ncredtype; i++) {
         int id = remoteAuthCredVir2SASL(credtype[i]);
@@ -4018,8 +3798,7 @@ static int remoteAuthMakeCredentials(sasl_interact_t *interact,
         (*ncred)++;
     }
 
-    if (VIR_ALLOC_N(*cred, *ncred) < 0)
-        return -1;
+    *cred = g_new0(virConnectCredential, *ncred);
 
     for (ninteract = 0, *ncred = 0; interact[ninteract].id != 0; ninteract++) {
         if (interact[ninteract].result)
@@ -4097,7 +3876,7 @@ static int remoteAuthFillFromConfig(virConnectPtr conn,
     }
 
     for (ninteract = 0; state->interact[ninteract].id != 0; ninteract++) {
-        const char *value = NULL;
+        char *value = NULL;
 
         switch (state->interact[ninteract].id) {
         case SASL_CB_USER:
@@ -4879,22 +4658,18 @@ remoteDomainBuildEventGraphicsHelper(virConnectPtr conn,
     if (!dom)
         return;
 
-    if (VIR_ALLOC(localAddr) < 0)
-        goto error;
+    localAddr = g_new0(virDomainEventGraphicsAddress, 1);
     localAddr->family = msg->local.family;
     localAddr->service = g_strdup(msg->local.service);
     localAddr->node = g_strdup(msg->local.node);
 
-    if (VIR_ALLOC(remoteAddr) < 0)
-        goto error;
+    remoteAddr = g_new0(virDomainEventGraphicsAddress, 1);
     remoteAddr->family = msg->remote.family;
     remoteAddr->service = g_strdup(msg->remote.service);
     remoteAddr->node = g_strdup(msg->remote.node);
 
-    if (VIR_ALLOC(subject) < 0)
-        goto error;
-    if (VIR_ALLOC_N(subject->identities, msg->subject.subject_len) < 0)
-        goto error;
+    subject = g_new0(virDomainEventGraphicsSubject, 1);
+    subject->identities = g_new0(virDomainEventGraphicsSubjectIdentity, msg->subject.subject_len);
     subject->nidentity = msg->subject.subject_len;
     for (i = 0; i < subject->nidentity; i++) {
         subject->identities[i].type = g_strdup(msg->subject.subject_val[i].type);
@@ -4911,28 +4686,6 @@ remoteDomainBuildEventGraphicsHelper(virConnectPtr conn,
     virObjectUnref(dom);
 
     virObjectEventStateQueueRemote(priv->eventState, event, callbackID);
-    return;
-
- error:
-    if (localAddr) {
-        VIR_FREE(localAddr->service);
-        VIR_FREE(localAddr->node);
-        VIR_FREE(localAddr);
-    }
-    if (remoteAddr) {
-        VIR_FREE(remoteAddr->service);
-        VIR_FREE(remoteAddr->node);
-        VIR_FREE(remoteAddr);
-    }
-    if (subject) {
-        for (i = 0; i < subject->nidentity; i++) {
-            VIR_FREE(subject->identities[i].type);
-            VIR_FREE(subject->identities[i].name);
-        }
-        VIR_FREE(subject->identities);
-        VIR_FREE(subject);
-    }
-    virObjectUnref(dom);
     return;
 }
 static void
@@ -5687,15 +5440,39 @@ remoteDomainBuildEventBlockThreshold(virNetClientProgramPtr prog G_GNUC_UNUSED,
 }
 
 
+static void
+remoteDomainBuildEventMemoryFailure(virNetClientProgramPtr prog G_GNUC_UNUSED,
+                                    virNetClientPtr client G_GNUC_UNUSED,
+                                    void *evdata, void *opaque)
+{
+    virConnectPtr conn = opaque;
+    remote_domain_event_memory_failure_msg *msg = evdata;
+    struct private_data *priv = conn->privateData;
+    virDomainPtr dom;
+    virObjectEventPtr event = NULL;
+
+    if (!(dom = get_nonnull_domain(conn, msg->dom)))
+        return;
+
+    event = virDomainEventMemoryFailureNewFromDom(dom, msg->recipient,
+                                                  msg->action, msg->flags);
+
+    virObjectUnref(dom);
+
+    virObjectEventStateQueueRemote(priv->eventState, event, msg->callbackID);
+}
+
+
 static int
 remoteStreamSend(virStreamPtr st,
                  const char *data,
                  size_t nbytes)
 {
-    VIR_DEBUG("st=%p data=%p nbytes=%zu", st, data, nbytes);
     struct private_data *priv = st->conn->privateData;
     virNetClientStreamPtr privst = st->privateData;
     int rv;
+
+    VIR_DEBUG("st=%p data=%p nbytes=%zu", st, data, nbytes);
 
     remoteDriverLock(priv);
     priv->localUses++;
@@ -5720,11 +5497,12 @@ remoteStreamRecvFlags(virStreamPtr st,
                       size_t nbytes,
                       unsigned int flags)
 {
-    VIR_DEBUG("st=%p data=%p nbytes=%zu flags=0x%x",
-              st, data, nbytes, flags);
     struct private_data *priv = st->conn->privateData;
     virNetClientStreamPtr privst = st->privateData;
     int rv;
+
+    VIR_DEBUG("st=%p data=%p nbytes=%zu flags=0x%x",
+              st, data, nbytes, flags);
 
     virCheckFlags(VIR_STREAM_RECV_STOP_AT_HOLE, -1);
 
@@ -5761,11 +5539,12 @@ remoteStreamSendHole(virStreamPtr st,
                      long long length,
                      unsigned int flags)
 {
-    VIR_DEBUG("st=%p length=%lld flags=0x%x",
-              st, length, flags);
     struct private_data *priv = st->conn->privateData;
     virNetClientStreamPtr privst = st->privateData;
     int rv;
+
+    VIR_DEBUG("st=%p length=%lld flags=0x%x",
+              st, length, flags);
 
     remoteDriverLock(priv);
     priv->localUses++;
@@ -5851,8 +5630,7 @@ remoteStreamEventAddCallback(virStreamPtr st,
     int ret = -1;
     struct remoteStreamCallbackData *cbdata;
 
-    if (VIR_ALLOC(cbdata) < 0)
-        return -1;
+    cbdata = g_new0(struct remoteStreamCallbackData, 1);
     cbdata->cb = cb;
     cbdata->opaque = opaque;
     cbdata->ff = ff;
@@ -6515,8 +6293,7 @@ remoteConnectGetCPUModelNames(virConnectPtr conn,
     }
 
     if (models) {
-        if (VIR_ALLOC_N(retmodels, ret.models.models_len + 1) < 0)
-            goto cleanup;
+        retmodels = g_new0(char *, ret.models.models_len + 1);
 
         for (i = 0; i < ret.models.models_len; i++) {
             retmodels[i] = ret.models.models_val[i];
@@ -6529,7 +6306,7 @@ remoteConnectGetCPUModelNames(virConnectPtr conn,
     rv = ret.ret;
 
  cleanup:
-    virStringListFree(retmodels);
+    g_strfreev(retmodels);
 
     xdr_free((xdrproc_t) xdr_remote_connect_get_cpu_model_names_ret, (char *) &ret);
 
@@ -6949,8 +6726,7 @@ remoteNodeGetCPUMap(virConnectPtr conn,
         goto cleanup;
 
     if (cpumap) {
-        if (VIR_ALLOC_N(*cpumap, ret.cpumap.cpumap_len) < 0)
-            goto cleanup;
+        *cpumap = g_new0(unsigned char, ret.cpumap.cpumap_len);
         memcpy(*cpumap, ret.cpumap.cpumap_val, ret.cpumap.cpumap_len);
     }
 
@@ -7678,13 +7454,11 @@ remoteNetworkGetDHCPLeases(virNetworkPtr net,
     }
 
     if (leases) {
-        if (ret.leases.leases_len &&
-            VIR_ALLOC_N(leases_ret, ret.leases.leases_len + 1) < 0)
-            goto cleanup;
+        if (ret.leases.leases_len)
+            leases_ret = g_new0(virNetworkDHCPLeasePtr, ret.leases.leases_len + 1);
 
         for (i = 0; i < ret.leases.leases_len; i++) {
-            if (VIR_ALLOC(leases_ret[i]) < 0)
-                goto cleanup;
+            leases_ret[i] = g_new0(virNetworkDHCPLease, 1);
 
             if (remoteSerializeDHCPLease(leases_ret[i], &ret.leases.leases_val[i]) < 0)
                 goto cleanup;
@@ -7730,8 +7504,7 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
     memset(&args, 0, sizeof(args));
 
     if (ndoms) {
-        if (VIR_ALLOC_N(args.doms.doms_val, ndoms) < 0)
-            goto cleanup;
+        args.doms.doms_val = g_new0(remote_nonnull_domain, ndoms);
 
         for (i = 0; i < ndoms; i++)
             make_nonnull_domain(args.doms.doms_val + i, doms[i]);
@@ -7761,14 +7534,12 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
 
     *retStats = NULL;
 
-    if (VIR_ALLOC_N(tmpret, ret.retStats.retStats_len + 1) < 0)
-        goto cleanup;
+    tmpret = g_new0(virDomainStatsRecordPtr, ret.retStats.retStats_len + 1);
 
     for (i = 0; i < ret.retStats.retStats_len; i++) {
         remote_domain_stats_record *rec = ret.retStats.retStats_val + i;
 
-        if (VIR_ALLOC(elem) < 0)
-            goto cleanup;
+        elem = g_new0(virDomainStatsRecord, 1);
 
         if (!(elem->dom = get_nonnull_domain(conn, rec->dom)))
             goto cleanup;
@@ -7858,7 +7629,6 @@ remoteDomainGetFSInfo(virDomainPtr dom,
     remote_domain_get_fsinfo_args args;
     remote_domain_get_fsinfo_ret ret;
     remote_domain_fsinfo *src;
-    virDomainFSInfoPtr *info_ret = NULL;
 
     remoteDriverLock(priv);
 
@@ -7881,20 +7651,20 @@ remoteDomainGetFSInfo(virDomainPtr dom,
     }
 
     if (info) {
+        virDomainFSInfoPtr *info_ret = NULL;
+
         if (!ret.info.info_len) {
             *info = NULL;
             rv = ret.ret;
             goto cleanup;
         }
 
-        if (VIR_ALLOC_N(info_ret, ret.info.info_len) < 0)
-            goto cleanup;
+        info_ret = g_new0(virDomainFSInfoPtr, ret.info.info_len);
 
         for (i = 0; i < ret.info.info_len; i++) {
             src = &ret.info.info_val[i];
 
-            if (VIR_ALLOC(info_ret[i]) < 0)
-                goto cleanup;
+            info_ret[i] = g_new0(virDomainFSInfo, 1);
 
             info_ret[i]->mountpoint = g_strdup(src->mountpoint);
 
@@ -7904,26 +7674,19 @@ remoteDomainGetFSInfo(virDomainPtr dom,
 
             len = src->dev_aliases.dev_aliases_len;
             info_ret[i]->ndevAlias = len;
-            if (len &&
-                VIR_ALLOC_N(info_ret[i]->devAlias, len) < 0)
-                goto cleanup;
+            if (len)
+                info_ret[i]->devAlias = g_new0(char *, len);
 
             for (j = 0; j < len; j++)
                 info_ret[i]->devAlias[j] = g_strdup(src->dev_aliases.dev_aliases_val[j]);
         }
 
         *info = info_ret;
-        info_ret = NULL;
     }
 
     rv = ret.ret;
 
  cleanup:
-    if (info_ret) {
-        for (i = 0; i < ret.info.info_len; i++)
-            virDomainFSInfoFree(info_ret[i]);
-        VIR_FREE(info_ret);
-    }
     xdr_free((xdrproc_t)xdr_remote_domain_get_fsinfo_ret,
              (char *) &ret);
 
@@ -7971,16 +7734,14 @@ remoteDomainInterfaceAddresses(virDomainPtr dom,
         goto cleanup;
     }
 
-    if (ret.ifaces.ifaces_len &&
-        VIR_ALLOC_N(ifaces_ret, ret.ifaces.ifaces_len) < 0)
-        goto cleanup;
+    if (ret.ifaces.ifaces_len)
+        ifaces_ret = g_new0(virDomainInterfacePtr, ret.ifaces.ifaces_len);
 
     for (i = 0; i < ret.ifaces.ifaces_len; i++) {
         virDomainInterfacePtr iface;
         remote_domain_interface *iface_ret = &(ret.ifaces.ifaces_val[i]);
 
-        if (VIR_ALLOC(ifaces_ret[i]) < 0)
-            goto cleanup;
+        ifaces_ret[i] = g_new0(virDomainInterface, 1);
 
         iface = ifaces_ret[i];
 
@@ -7999,8 +7760,7 @@ remoteDomainInterfaceAddresses(virDomainPtr dom,
         iface->naddrs = iface_ret->addrs.addrs_len;
 
         if (iface->naddrs) {
-            if (VIR_ALLOC_N(iface->addrs, iface->naddrs) < 0)
-                goto cleanup;
+            iface->addrs = g_new0(virDomainIPAddress, iface->naddrs);
 
            for (j = 0; j < iface->naddrs; j++) {
                 virDomainIPAddressPtr ip_addr = &(iface->addrs[j]);
@@ -8252,6 +8012,91 @@ remoteDomainGetGuestInfo(virDomainPtr dom,
     remoteDriverUnlock(priv);
     return rv;
 }
+
+static int
+remoteDomainAuthorizedSSHKeysGet(virDomainPtr domain,
+                                 const char *user,
+                                 char ***keys,
+                                 unsigned int flags)
+{
+    int rv = -1;
+    size_t i;
+    struct private_data *priv = domain->conn->privateData;
+    remote_domain_authorized_ssh_keys_get_args args;
+    remote_domain_authorized_ssh_keys_get_ret ret;
+
+    remoteDriverLock(priv);
+
+    make_nonnull_domain(&args.dom, domain);
+    args.user = (char *) user;
+    args.flags = flags;
+    memset(&ret, 0, sizeof(ret));
+
+    if (call(domain->conn, priv, 0, REMOTE_PROC_DOMAIN_AUTHORIZED_SSH_KEYS_GET,
+             (xdrproc_t) xdr_remote_domain_authorized_ssh_keys_get_args, (char *)&args,
+             (xdrproc_t) xdr_remote_domain_authorized_ssh_keys_get_ret, (char *)&ret) == -1) {
+        goto cleanup;
+    }
+
+    if (ret.keys.keys_len > REMOTE_DOMAIN_AUTHORIZED_SSH_KEYS_MAX) {
+        virReportError(VIR_ERR_RPC, "%s",
+                       _("remoteDomainAuthorizedSSHKeysGet: "
+                         "returned number of keys exceeds limit"));
+        goto cleanup;
+    }
+
+    *keys = g_new0(char *, ret.keys.keys_len + 1);
+    for (i = 0; i < ret.keys.keys_len; i++)
+        (*keys)[i] = g_strdup(ret.keys.keys_val[i]);
+
+    rv = ret.keys.keys_len;
+
+ cleanup:
+    remoteDriverUnlock(priv);
+    xdr_free((xdrproc_t)xdr_remote_domain_authorized_ssh_keys_get_ret,
+             (char *) &ret);
+    return rv;
+}
+
+static int
+remoteDomainAuthorizedSSHKeysSet(virDomainPtr domain,
+                                 const char *user,
+                                 const char **keys,
+                                 unsigned int nkeys,
+                                 unsigned int flags)
+{
+    int rv = -1;
+    struct private_data *priv = domain->conn->privateData;
+    remote_domain_authorized_ssh_keys_set_args args;
+
+    remoteDriverLock(priv);
+
+    if (nkeys > REMOTE_DOMAIN_AUTHORIZED_SSH_KEYS_MAX) {
+        virReportError(VIR_ERR_RPC, "%s",
+                       _("remoteDomainAuthorizedSSHKeysSet: "
+                         "returned number of keys exceeds limit"));
+        goto cleanup;
+    }
+
+    make_nonnull_domain(&args.dom, domain);
+    args.user = (char *) user;
+    args.keys.keys_len = nkeys;
+    args.keys.keys_val = (char **) keys;
+    args.flags = flags;
+
+    if (call(domain->conn, priv, 0, REMOTE_PROC_DOMAIN_AUTHORIZED_SSH_KEYS_SET,
+             (xdrproc_t) xdr_remote_domain_authorized_ssh_keys_set_args, (char *)&args,
+             (xdrproc_t) xdr_void, (char *) NULL) == -1) {
+        goto cleanup;
+    }
+
+    rv = 0;
+
+ cleanup:
+    remoteDriverUnlock(priv);
+    return rv;
+}
+
 
 /* get_nonnull_domain and get_nonnull_network turn an on-wire
  * (name, uuid) pair into virDomainPtr or virNetworkPtr object.
@@ -8684,6 +8529,8 @@ static virHypervisorDriver hypervisor_driver = {
     .domainAgentSetResponseTimeout = remoteDomainAgentSetResponseTimeout, /* 5.10.0 */
     .domainBackupBegin = remoteDomainBackupBegin, /* 6.0.0 */
     .domainBackupGetXMLDesc = remoteDomainBackupGetXMLDesc, /* 6.0.0 */
+    .domainAuthorizedSSHKeysGet = remoteDomainAuthorizedSSHKeysGet, /* 6.10.0 */
+    .domainAuthorizedSSHKeysSet = remoteDomainAuthorizedSSHKeysSet, /* 6.10.0 */
 };
 
 static virNetworkDriver network_driver = {

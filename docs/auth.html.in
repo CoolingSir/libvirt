@@ -122,17 +122,19 @@ credentials=defgrp</pre>
 
 
     <p>
-      The following service types are known to libvirt
+      The following service types are known to libvirt:
     </p>
 
-    <ol>
-      <li><code>libvirt</code> - used for connections to a libvirtd
-        server, which is configured with SASL auth</li>
-      <li><code>ssh</code> - used for connections to a Phyp server
-        over SSH, but the Phyp driver has been removed</li>
+    <ul>
       <li><code>esx</code> - used for connections to an ESX or
         VirtualCenter server</li>
-    </ol>
+      <li><code>hyperv</code> - used for connections to an HyperV
+        server</li>
+      <li><code>libvirt</code> - used for connections to a libvirtd
+        server, which is configured with SASL auth</li>
+      <li><code>ssh</code> - used for connections to a remote QEMU driver
+        over SSH</li>
+    </ul>
 
     <p>
       Applications using libvirt are free to use this same configuration
@@ -275,7 +277,7 @@ to turn on SASL auth in these listeners.
     <p>
 Since the libvirt SASL config file defaults to using GSSAPI (Kerberos), a
 config change is required to enable plain password auth. This is done by
-editting <code>/etc/sasl2/libvirt.conf</code> to set the <code>mech_list</code>
+editing <code>/etc/sasl2/libvirt.conf</code> to set the <code>mech_list</code>
 parameter to <code>scram-sha-1</code>.
     </p>
     <p>

@@ -235,8 +235,7 @@ virHostdevGetPCIHostDevice(const virDomainHostdevDef *hostdev,
         hostdev->source.subsys.type != VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI)
         return 0;
 
-    actual = virPCIDeviceNew(pcisrc->addr.domain, pcisrc->addr.bus,
-                             pcisrc->addr.slot, pcisrc->addr.function);
+    actual = virPCIDeviceNew(&pcisrc->addr);
 
     if (!actual)
         return -1;
@@ -285,18 +284,12 @@ virHostdevGetPCIHostDeviceList(virDomainHostdevDefPtr *hostdevs, int nhostdevs)
     return g_steal_pointer(&pcidevs);
 }
 
+
 static int
 virHostdevPCISysfsPath(virDomainHostdevDefPtr hostdev,
                        char **sysfs_path)
 {
-    virPCIDeviceAddress config_address;
-
-    config_address.domain = hostdev->source.subsys.u.pci.addr.domain;
-    config_address.bus = hostdev->source.subsys.u.pci.addr.bus;
-    config_address.slot = hostdev->source.subsys.u.pci.addr.slot;
-    config_address.function = hostdev->source.subsys.u.pci.addr.function;
-
-    return virPCIDeviceAddressGetSysfsFile(&config_address, sysfs_path);
+    return virPCIDeviceAddressGetSysfsFile(&hostdev->source.subsys.u.pci.addr, sysfs_path);
 }
 
 
@@ -491,17 +484,9 @@ virHostdevSetNetConfig(virDomainHostdevDefPtr hostdev,
 }
 
 
-/* @oldStateDir:
- * For upgrade purpose:
- * To an existing VM on QEMU, the hostdev netconfig file is originally stored
- * in cfg->stateDir (/var/run/libvirt/qemu). Switch to new version, it uses new
- * location (mgr->stateDir) but certainly will not find it. In this
- * case, try to find in the old state dir.
- */
 static int
 virHostdevRestoreNetConfig(virDomainHostdevDefPtr hostdev,
-                           const char *stateDir,
-                           const char *oldStateDir)
+                           const char *stateDir)
 {
     g_autofree char *linkdev = NULL;
     g_autofree virMacAddrPtr MAC = NULL;
@@ -535,16 +520,11 @@ virHostdevRestoreNetConfig(virDomainHostdevDefPtr hostdev,
                                                   NULL,
                                                   port_profile_associate);
     } else {
-        /* we need to try 3 different places for the config file:
+        /* we need to try 2 different places for the config file:
          * 1) ${stateDir}/${PF}_vf${vf}
          *    This is almost always where the saved config is
          *
-         * 2) ${oldStateDir/${PF}_vf${vf}
-         *    saved config is only here if this machine was running a
-         *    (by now *very*) old version of libvirt that saved the
-         *    file in a different directory
-         *
-         * 3) ${stateDir}${PF[1]}_vf${VF}
+         * 2) ${stateDir}${PF[1]}_vf${VF}
          *    PF[1] means "the netdev for port 2 of the PF device", and
          *    is only valid when the PF is a Mellanox dual port NIC with
          *    a VF that was created in "single port" mode.
@@ -563,18 +543,7 @@ virHostdevRestoreNetConfig(virDomainHostdevDefPtr hostdev,
             return -1;
         }
 
-        /* 2) "old" (pre-1.2.3 circa 2014) location - whenever we get
-        *  to the point that nobody will ever upgrade directly from
-        *  1.2.3 (or older) directly to current libvirt, we can
-        *  eliminate this clause
-        **/
-        if (!(adminMAC || vlan || MAC) && oldStateDir &&
-            virNetDevReadNetConfig(linkdev, vf, oldStateDir,
-                                   &adminMAC, &vlan, &MAC) < 0) {
-            return -1;
-        }
-
-        /* 3) try using the PF's "port 2" netdev as the name of the
+        /* 2) try using the PF's "port 2" netdev as the name of the
          * config file
          */
         if (!(adminMAC || vlan || MAC)) {
@@ -925,7 +894,7 @@ virHostdevPreparePCIDevicesImpl(virHostdevManagerPtr mgr,
  resetvfnetconfig:
     if (last_processed_hostdev_vf >= 0) {
         for (i = 0; i <= last_processed_hostdev_vf; i++)
-            virHostdevRestoreNetConfig(hostdevs[i], mgr->stateDir, NULL);
+            virHostdevRestoreNetConfig(hostdevs[i], mgr->stateDir);
     }
 
  reattachdevs:
@@ -967,8 +936,7 @@ virHostdevReAttachPCIDevicesImpl(virHostdevManagerPtr mgr,
                                  const char *dom_name,
                                  virPCIDeviceListPtr pcidevs,
                                  virDomainHostdevDefPtr *hostdevs,
-                                 int nhostdevs,
-                                 const char *oldStateDir)
+                                 int nhostdevs)
 {
     size_t i;
 
@@ -1050,8 +1018,7 @@ virHostdevReAttachPCIDevicesImpl(virHostdevManagerPtr mgr,
             if (actual) {
                 VIR_DEBUG("Restoring network configuration of PCI device %s",
                           virPCIDeviceGetName(actual));
-                virHostdevRestoreNetConfig(hostdev, mgr->stateDir,
-                                           oldStateDir);
+                virHostdevRestoreNetConfig(hostdev, mgr->stateDir);
             }
         }
     }
@@ -1068,16 +1035,12 @@ virHostdevReAttachPCIDevicesImpl(virHostdevManagerPtr mgr,
 }
 
 
-/* @oldStateDir:
- * For upgrade purpose: see virHostdevRestoreNetConfig
- */
 void
 virHostdevReAttachPCIDevices(virHostdevManagerPtr mgr,
                              const char *drv_name,
                              const char *dom_name,
                              virDomainHostdevDefPtr *hostdevs,
-                             int nhostdevs,
-                             const char *oldStateDir)
+                             int nhostdevs)
 {
     g_autoptr(virPCIDeviceList) pcidevs = NULL;
 
@@ -1092,7 +1055,7 @@ virHostdevReAttachPCIDevices(virHostdevManagerPtr mgr,
     }
 
     virHostdevReAttachPCIDevicesImpl(mgr, drv_name, dom_name, pcidevs,
-                                     hostdevs, nhostdevs, oldStateDir);
+                                     hostdevs, nhostdevs);
 }
 
 
@@ -1425,7 +1388,7 @@ virHostdevFindUSBDevice(virDomainHostdevDefPtr hostdev,
                      usbsrc->bus, usbsrc->device,
                      bus, device);
         }
-    } else if (!vendor && bus) {
+    } else if (bus) {
         if (virUSBDeviceFindByBus(bus, device, NULL, mandatory, usb) < 0)
             return -1;
     }
@@ -1981,23 +1944,21 @@ virHostdevReAttachMediatedDevices(virHostdevManagerPtr mgr,
 
     virObjectLock(mgr->activeMediatedHostdevs);
     for (i = 0; i < nhostdevs; i++) {
-        g_autoptr(virMediatedDevice) mdev = NULL;
+        g_autofree char *sysfspath = NULL;
         virMediatedDevicePtr tmp;
         virDomainHostdevSubsysMediatedDevPtr mdevsrc;
         virDomainHostdevDefPtr hostdev = hostdevs[i];
 
-        mdevsrc = &hostdev->source.subsys.u.mdev;
-
         if (!virHostdevIsMdevDevice(hostdev))
             continue;
 
-        if (!(mdev = virMediatedDeviceNew(mdevsrc->uuidstr,
-                                          mdevsrc->model)))
-            continue;
+        mdevsrc = &hostdev->source.subsys.u.mdev;
+        sysfspath = virMediatedDeviceGetSysfsPath(mdevsrc->uuidstr);
 
         /* Remove from the list only mdevs assigned to @drv_name/@dom_name */
 
-        tmp = virMediatedDeviceListFind(mgr->activeMediatedHostdevs, mdev);
+        tmp = virMediatedDeviceListFind(mgr->activeMediatedHostdevs,
+                                        sysfspath);
 
         /* skip inactive devices */
         if (!tmp)
@@ -2129,23 +2090,18 @@ virHostdevPrepareDomainDevices(virHostdevManagerPtr mgr,
     return 0;
 }
 
-/* @oldStateDir
- * For upgrade purpose: see virHostdevReAttachPCIHostdevs
- */
 void
 virHostdevReAttachDomainDevices(virHostdevManagerPtr mgr,
                                 const char *driver,
                                 virDomainDefPtr def,
-                                unsigned int flags,
-                                const char *oldStateDir)
+                                unsigned int flags)
 {
     if (!def->nhostdevs || !mgr)
         return;
 
     if (flags & VIR_HOSTDEV_SP_PCI) {
         virHostdevReAttachPCIDevices(mgr, driver, def->name,
-                                     def->hostdevs, def->nhostdevs,
-                                     oldStateDir);
+                                     def->hostdevs, def->nhostdevs);
     }
 
     if (flags & VIR_HOSTDEV_SP_USB) {
@@ -2397,8 +2353,7 @@ virHostdevReAttachOneNVMeDevice(virHostdevManagerPtr hostdev_mgr,
         goto cleanup;
 
     virHostdevReAttachPCIDevicesImpl(hostdev_mgr,
-                                     drv_name, dom_name, pciDevices,
-                                     NULL, 0, NULL);
+                                     drv_name, dom_name, pciDevices, NULL, 0);
 
     for (i = 0; i < virNVMeDeviceListCount(nvmeDevices); i++) {
         virNVMeDevicePtr temp = virNVMeDeviceListGet(nvmeDevices, i);

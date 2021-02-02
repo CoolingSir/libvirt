@@ -22,8 +22,8 @@
 #pragma once
 
 #include "internal.h"
-#include "virstorageencryption.h"
-#include "virstoragefile.h"
+#include "storage_encryption_conf.h"
+#include "storage_source_conf.h"
 #include "virbitmap.h"
 #include "virthread.h"
 #include "device_conf.h"
@@ -180,6 +180,13 @@ struct _virStoragePoolSourceDevice {
     } geometry;
 };
 
+typedef struct _virStoragePoolFeatures virStoragePoolFeatures;
+typedef virStoragePoolFeatures *virStoragePoolFeaturesPtr;
+struct _virStoragePoolFeatures {
+    virTristateBool cow;
+};
+
+
 typedef struct _virStoragePoolSource virStoragePoolSource;
 typedef virStoragePoolSource *virStoragePoolSourcePtr;
 struct _virStoragePoolSource {
@@ -256,6 +263,7 @@ struct _virStoragePoolDef {
     unsigned long long capacity; /* bytes */
     unsigned long long available; /* bytes */
 
+    virStoragePoolFeatures features;
     virStoragePoolSource source;
     virStoragePoolTarget target;
 

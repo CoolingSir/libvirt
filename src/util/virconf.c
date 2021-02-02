@@ -163,8 +163,7 @@ virConfNew(void)
 {
     virConfPtr ret;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virConf, 1);
     ret->filename = NULL;
     ret->flags = 0;
 
@@ -219,8 +218,7 @@ virConfAddEntry(virConfPtr conf, char *name, virConfValuePtr value, char *comm)
     if (name)
         VIR_DEBUG("Add entry %s %p", name, value);
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virConfEntry, 1);
 
     ret->name = name;
     ret->value = value;
@@ -522,11 +520,7 @@ virConfParseValue(virConfParserCtxtPtr ctxt)
         virConfError(ctxt, VIR_ERR_CONF_SYNTAX, _("expecting a value"));
         return NULL;
     }
-    if (VIR_ALLOC(ret) < 0) {
-        virConfFreeList(lst);
-        VIR_FREE(str);
-        return NULL;
-    }
+    ret = g_new0(virConfValue, 1);
     ret->type = type;
     ret->l = l;
     ret->str = str;
@@ -932,7 +926,7 @@ int virConfGetValueStringList(virConfPtr conf,
     if (!cval)
         return 0;
 
-    virStringListFree(*values);
+    g_strfreev(*values);
     *values = NULL;
 
     switch (cval->type) {
@@ -947,8 +941,7 @@ int virConfGetValueStringList(virConfPtr conf,
             }
         }
 
-        if (VIR_ALLOC_N(*values, len + 1) < 0)
-            return -1;
+        *values = g_new0(char *, len + 1);
 
         for (len = 0, eval = cval->list; eval; len++, eval = eval->next)
             (*values)[len] = g_strdup(eval->str);
@@ -956,8 +949,7 @@ int virConfGetValueStringList(virConfPtr conf,
 
     case VIR_CONF_STRING:
         if (compatString) {
-            if (VIR_ALLOC_N(*values, cval->str ? 2 : 1) < 0)
-                return -1;
+            *values = g_new0(char *, cval->str ? 2 : 1);
             if (cval->str)
                 (*values)[0] = g_strdup(cval->str);
             break;
@@ -1356,10 +1348,7 @@ virConfSetValue(virConfPtr conf,
     }
 
     if (!cur) {
-        if (VIR_ALLOC(cur) < 0) {
-            virConfFreeValue(value);
-            return -1;
-        }
+        cur = g_new0(virConfEntry, 1);
         cur->comment = NULL;
         cur->name = g_strdup(setting);
         cur->value = value;
@@ -1419,7 +1408,7 @@ int virConfWalk(virConfPtr conf,
 int
 virConfWriteFile(const char *filename, virConfPtr conf)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virConfEntryPtr cur;
     int ret;
     int fd;
@@ -1437,7 +1426,6 @@ virConfWriteFile(const char *filename, virConfPtr conf)
 
     fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
     if (fd < 0) {
-        virBufferFreeAndReset(&buf);
         virConfError(NULL, VIR_ERR_WRITE_FAILED, _("failed to open file"));
         return -1;
     }
@@ -1471,7 +1459,7 @@ virConfWriteFile(const char *filename, virConfPtr conf)
 int
 virConfWriteMem(char *memory, int *len, virConfPtr conf)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virConfEntryPtr cur;
     char *content;
     unsigned int use;

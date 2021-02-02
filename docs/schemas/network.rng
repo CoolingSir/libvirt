@@ -6,8 +6,8 @@
     <ref name="network"/>
   </start>
 
-  <include href='basictypes.rng'/>
-  <include href='networkcommon.rng'/>
+  <include href="basictypes.rng"/>
+  <include href="networkcommon.rng"/>
 
   <define name="network">
 
@@ -133,9 +133,9 @@
               <choice>
                 <group>
                   <zeroOrMore>
-                    <element name='interface'>
-                      <attribute name='dev'>
-                        <ref name='deviceName'/>
+                    <element name="interface">
+                      <attribute name="dev">
+                        <ref name="deviceName"/>
                       </attribute>
                       <optional>
                         <attribute name="connections">
@@ -147,8 +147,8 @@
                 </group>
                 <group>
                   <zeroOrMore>
-                    <element name='address'>
-                      <attribute name='type'>
+                    <element name="address">
+                      <attribute name="type">
                         <value>pci</value>
                       </attribute>
                       <ref name="pciaddress"/>
@@ -162,9 +162,9 @@
                 </group>
               </choice>
               <optional>
-                <element name='pf'>
-                  <attribute name='dev'>
-                    <ref name='deviceName'/>
+                <element name="pf">
+                  <attribute name="dev">
+                    <ref name="deviceName"/>
                   </attribute>
                 </element>
               </optional>
@@ -180,25 +180,30 @@
                 </element>
               </optional>
               <optional>
-                <element name='nat'>
+                <element name="nat">
+                  <optional>
+                    <attribute name="ipv6">
+                      <ref name="virYesNo"/>
+                    </attribute>
+                  </optional>
                   <interleave>
                     <optional>
-                      <element name='address'>
-                        <attribute name='start'>
-                          <ref name='ipv4Addr'/>
+                      <element name="address">
+                        <attribute name="start">
+                          <ref name="ipv4Addr"/>
                         </attribute>
-                        <attribute name='end'>
-                          <ref name='ipv4Addr'/>
+                        <attribute name="end">
+                          <ref name="ipv4Addr"/>
                         </attribute>
                       </element>
                     </optional>
                     <optional>
-                      <element name='port'>
-                        <attribute name='start'>
-                          <ref name='port'/>
+                      <element name="port">
+                        <attribute name="start">
+                          <ref name="port"/>
                         </attribute>
-                        <attribute name='end'>
-                          <ref name='port'/>
+                        <attribute name="end">
+                          <ref name="port"/>
                         </attribute>
                       </element>
                     </optional>
@@ -371,6 +376,16 @@
                       <element name="range">
                         <attribute name="start"><ref name="ipAddr"/></attribute>
                         <attribute name="end"><ref name="ipAddr"/></attribute>
+                        <interleave>
+                          <optional>
+                            <element name="lease">
+                              <attribute name="expiry"><ref name="unsignedLong"/></attribute>
+                              <optional>
+                                <attribute name="unit"><ref name="leaseUnit"/></attribute>
+                              </optional>
+                            </element>
+                          </optional>
+                        </interleave>
                       </element>
                     </zeroOrMore>
                     <zeroOrMore>
@@ -388,6 +403,16 @@
                           <attribute name="name"><text/></attribute>
                         </choice>
                         <attribute name="ip"><ref name="ipAddr"/></attribute>
+                        <interleave>
+                          <optional>
+                            <element name="lease">
+                              <attribute name="expiry"><ref name="unsignedLong"/></attribute>
+                              <optional>
+                                <attribute name="unit"><ref name="leaseUnit"/></attribute>
+                              </optional>
+                            </element>
+                          </optional>
+                        </interleave>
                       </element>
                     </zeroOrMore>
                     <optional>
@@ -414,7 +439,7 @@
         <element name="options" ns="http://libvirt.org/schemas/network/dnsmasq/1.0">
           <zeroOrMore>
             <element name="option">
-              <attribute name='value'/>
+              <attribute name="value"/>
             </element>
           </zeroOrMore>
         </element>

@@ -30,12 +30,15 @@ Enabling SEV on the host
 ========================
 
 Before VMs can make use of the SEV feature you need to make sure your
-AMD CPU does support SEV. You can check whether SEV is among the CPU
-flags with:
+AMD CPU does support SEV. You can run ``virt-host-validate``
+(libvirt >= 6.5.0) to check if your host supports secure guests or you
+can follow the manual checks below.
+
+You can manually check whether SEV is among the CPU flags with:
 
 ::
 
-   $ cat /proc/cpuinfo | grep sev
+   $ grep -w sev /proc/cpuinfo
    ...
    sme ssbd sev ibpb
 
@@ -109,7 +112,7 @@ following:
      </features>
    </domainCapabilities>
 
-Note that if libvirt was already installed and libvirtd running before
+Note that if libvirt (<6.5.0) was already installed and libvirtd running before
 enabling SEV in the kernel followed by the host reboot you need to force
 libvirtd to re-probe both the host and QEMU capabilities. First stop
 libvirtd:
@@ -288,8 +291,9 @@ can still perform DoS on each other.
 Virtio
 ------
 
-In order to make virtio devices work, we need to enable emulated IOMMU
-on the devices so that virtual DMA can work.
+In order to make virtio devices work, we need to use
+``<driver iommu='on'/>`` inside the given device XML element in order
+to enable DMA API in the virtio driver.
 
 ::
 
@@ -334,6 +338,26 @@ model, which means that virtio GPU cannot be used.
      ...
    </domain>
 
+Virtio-net
+~~~~~~~~~~
+With virtio-net it's also necessary to disable the iPXE option ROM as
+iPXE is not aware of SEV (at the time of this writing). This translates to the
+following XML:
+
+::
+
+   <domain>
+     ...
+     <interface type='network'>
+        ...
+       <model type='virtio'/>
+       <driver iommu='on'/>
+       <rom enabled='no'/>
+     </interface>
+     ...
+   <domain>
+
+
 Checking SEV from within the guest
 ==================================
 
@@ -350,16 +374,15 @@ running:
 Limitations
 ===========
 
-Currently, the boot disk cannot be of type virtio-blk, instead,
-virtio-scsi needs to be used if virtio is desired. This limitation is
-expected to be lifted with future releases of kernel (the kernel used at
-the time of writing the article is 5.0.14). If you still cannot start an
-SEV VM, it could be because of wrong SELinux label on the ``/dev/sev``
-device with selinux-policy <3.14.2.40 which prevents QEMU from touching
-the device. This can be resolved by upgrading the package, tuning the
-selinux policy rules manually to allow svirt_t to access the device (see
-``audit2allow`` on how to do that) or putting SELinux into permissive
-mode (discouraged).
+With older kernels (kernel <5.1) the boot disk cannot not be of type
+virtio-blk, instead, virtio-scsi needs to be used if virtio is desired.
+
+If you still cannot start an SEV VM, it could be because of wrong SELinux label
+on the ``/dev/sev`` device with selinux-policy <3.14.2.40 which prevents QEMU
+from touching the device. This can be resolved by upgrading the package, tuning
+the selinux policy rules manually to allow svirt_t to access the device (see
+``audit2allow`` on how to do that) or putting SELinux into permissive mode
+(discouraged).
 
 Full domain XML examples
 ========================
@@ -421,6 +444,7 @@ Q35 machine
          <source network='default'/>
          <model type='virtio'/>
          <driver iommu='on'/>
+         <rom enabled='no'/>
        </interface>
        <graphics type='spice' autoport='yes'>
          <listen type='address'/>
@@ -493,6 +517,8 @@ PC-i440fx machine
          <mac address='52:54:00:d8:96:c8'/>
          <source network='default'/>
          <model type='virtio-non-transitional'/>
+         <driver iommu='on'/>
+         <rom enabled='no'/>
        </interface>
        <serial type='pty'>
          <target type='isa-serial' port='0'>

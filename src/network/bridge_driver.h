@@ -27,15 +27,6 @@
 #include "virdnsmasq.h"
 #include "virnetworkobj.h"
 
-extern virXMLNamespace networkDnsmasqXMLNamespace;
-
-typedef struct _networkDnsmasqXmlNsDef networkDnsmasqXmlNsDef;
-typedef networkDnsmasqXmlNsDef *networkDnsmasqXmlNsDefPtr;
-struct _networkDnsmasqXmlNsDef {
-    size_t noptions;
-    char **options;
-};
-
 virNetworkXMLOptionPtr
 networkDnsmasqCreateXMLConf(void);
 
@@ -46,5 +37,6 @@ int
 networkDnsmasqConfContents(virNetworkObjPtr obj,
                            const char *pidfile,
                            char **configstr,
+                           char **hostsfilestr,
                            dnsmasqContext *dctx,
                            dnsmasqCapsPtr caps);

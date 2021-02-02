@@ -33,15 +33,14 @@ virQEMUCapsNewForBinaryInternal(virArch hostArch,
                                 const char *libDir,
                                 uid_t runUid,
                                 gid_t runGid,
+                                const char *hostCPUSignature,
                                 unsigned int microcodeVersion,
                                 const char *kernelVersion);
 
-void virQEMUCapsSetInvalidation(virQEMUCapsPtr qemuCaps,
-                                bool enabled);
-
 int virQEMUCapsLoadCache(virArch hostArch,
                          virQEMUCapsPtr qemuCaps,
-                         const char *filename);
+                         const char *filename,
+                         bool skipInvalidation);
 char *virQEMUCapsFormatCache(virQEMUCapsPtr qemuCaps);
 
 int
@@ -119,4 +118,6 @@ virQEMUCapsAddMachine(virQEMUCapsPtr qemuCaps,
                       const char *defaultCPU,
                       int maxCpus,
                       bool hotplugCpus,
-                      bool isDefault);
+                      bool isDefault,
+                      bool numaMemSupported,
+                      const char *defaultRAMid);

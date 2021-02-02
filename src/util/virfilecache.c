@@ -47,7 +47,7 @@ VIR_LOG_INIT("util.filecache");
 struct _virFileCache {
     virObjectLockable parent;
 
-    virHashTablePtr table;
+    GHashTable *table;
 
     char *dir;
     char *suffix;
@@ -101,7 +101,7 @@ virFileCacheGetFileName(virFileCachePtr cache,
                         const char *name)
 {
     g_autofree char *namehash = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     if (virCryptoHashString(VIR_CRYPTO_HASH_SHA256, name, &namehash) < 0)
         return NULL;
@@ -130,6 +130,7 @@ virFileCacheLoad(virFileCachePtr cache,
     g_autofree char *file = NULL;
     int ret = -1;
     void *loadData = NULL;
+    bool outdated = false;
 
     *data = NULL;
 
@@ -148,10 +149,12 @@ virFileCacheLoad(virFileCachePtr cache,
         goto cleanup;
     }
 
-    if (!(loadData = cache->handlers.loadFile(file, name, cache->priv))) {
-        VIR_WARN("Failed to load cached data from '%s' for '%s': %s",
-                 file, name, virGetLastErrorMessage());
-        virResetLastError();
+    if (!(loadData = cache->handlers.loadFile(file, name, cache->priv, &outdated))) {
+        if (!outdated) {
+            VIR_WARN("Failed to load cached data from '%s' for '%s': %s",
+                     file, name, virGetLastErrorMessage());
+            virResetLastError();
+        }
         ret = 0;
         goto cleanup;
     }
@@ -239,7 +242,7 @@ virFileCacheNew(const char *dir,
     if (!(cache = virObjectNew(virFileCacheClass)))
         return NULL;
 
-    if (!(cache->table = virHashCreate(10, virObjectFreeHashData)))
+    if (!(cache->table = virHashNew(virObjectFreeHashData)))
         goto cleanup;
 
     cache->dir = g_strdup(dir);
@@ -334,7 +337,7 @@ virFileCacheLookupByFunc(virFileCachePtr cache,
 
     virObjectLock(cache);
 
-    data = virHashSearch(cache->table, iter, iterData, (void **)&name);
+    data = virHashSearch(cache->table, iter, iterData, &name);
     virFileCacheValidate(cache, name, &data);
 
     virObjectRef(data);

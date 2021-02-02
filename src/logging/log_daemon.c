@@ -56,7 +56,7 @@
 VIR_LOG_INIT("logging.log_daemon");
 
 struct _virLogDaemon {
-    virMutex lock;
+    GMutex lock;
     virNetDaemonPtr dmn;
     virLogHandlerPtr handler;
 };
@@ -86,7 +86,7 @@ virLogDaemonFree(virLogDaemonPtr logd)
         return;
 
     virObjectUnref(logd->handler);
-    virMutexDestroy(&logd->lock);
+    g_mutex_clear(&logd->lock);
     virObjectUnref(logd->dmn);
 
     VIR_FREE(logd);
@@ -116,15 +116,9 @@ virLogDaemonNew(virLogDaemonConfigPtr config, bool privileged)
     virLogDaemonPtr logd;
     virNetServerPtr srv = NULL;
 
-    if (VIR_ALLOC(logd) < 0)
-        return NULL;
+    logd = g_new0(virLogDaemon, 1);
 
-    if (virMutexInit(&logd->lock) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Unable to initialize mutex"));
-        VIR_FREE(logd);
-        return NULL;
-    }
+    g_mutex_init(&logd->lock);
 
     if (!(logd->dmn = virNetDaemonNew()))
         goto error;
@@ -219,15 +213,9 @@ virLogDaemonNewPostExecRestart(virJSONValuePtr object, bool privileged,
     virJSONValuePtr child;
     const char *serverNames[] = { "virtlogd" };
 
-    if (VIR_ALLOC(logd) < 0)
-        return NULL;
+    logd = g_new0(virLogDaemon, 1);
 
-    if (virMutexInit(&logd->lock) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Unable to initialize mutex"));
-        VIR_FREE(logd);
-        return NULL;
-    }
+    g_mutex_init(&logd->lock);
 
     if (!(child = virJSONValueObjectGet(object, "daemon"))) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -325,7 +313,7 @@ virLogDaemonClientFree(void *opaque)
               priv,
               (unsigned long long)priv->clientPid);
 
-    virMutexDestroy(&priv->lock);
+    g_mutex_clear(&priv->lock);
     VIR_FREE(priv);
 }
 
@@ -340,14 +328,9 @@ virLogDaemonClientNew(virNetServerClientPtr client,
     unsigned long long timestamp;
     bool privileged = opaque != NULL;
 
-    if (VIR_ALLOC(priv) < 0)
-        return NULL;
+    priv = g_new0(virLogDaemonClient, 1);
 
-    if (virMutexInit(&priv->lock) < 0) {
-        VIR_FREE(priv);
-        virReportSystemError(errno, "%s", _("unable to init mutex"));
-        return NULL;
-    }
+    g_mutex_init(&priv->lock);
 
     if (virNetServerClientGetUNIXIdentity(client,
                                           &clientuid,
@@ -524,10 +507,8 @@ virLogDaemonPreExecRestart(const char *state_file,
 {
     virJSONValuePtr child;
     char *state = NULL;
-    int ret = -1;
     virJSONValuePtr object = virJSONValueNewObject();
-    char *magic;
-    virHashKeyValuePairPtr pairs = NULL;
+    char *magic = NULL;
 
     VIR_DEBUG("Running pre-restart exec");
 
@@ -542,10 +523,8 @@ virLogDaemonPreExecRestart(const char *state_file,
     if (!(magic = virLogDaemonGetExecRestartMagic()))
         goto cleanup;
 
-    if (virJSONValueObjectAppendString(object, "magic", magic) < 0) {
-        VIR_FREE(magic);
+    if (virJSONValueObjectAppendString(object, "magic", magic) < 0)
         goto cleanup;
-    }
 
     if (!(child = virLogHandlerPreExecRestart(logDaemon->handler)))
         goto cleanup;
@@ -578,10 +557,10 @@ virLogDaemonPreExecRestart(const char *state_file,
     abort(); /* This should be impossible to reach */
 
  cleanup:
-    VIR_FREE(pairs);
+    VIR_FREE(magic);
     VIR_FREE(state);
     virJSONValueFree(object);
-    return ret;
+    return -1;
 }
 
 

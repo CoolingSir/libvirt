@@ -25,11 +25,11 @@
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
-#ifdef HAVE_IFADDRS_H
+#ifdef WITH_IFADDRS_H
 # include <ifaddrs.h>
 #endif
 
-#ifdef HAVE_SYS_UCRED_H
+#ifdef WITH_SYS_UCRED_H
 # include <sys/ucred.h>
 #endif
 
@@ -141,16 +141,49 @@ static int virNetSocketForkDaemon(const char *binary)
 }
 #endif
 
-int virNetSocketCheckProtocols(bool *hasIPv4,
-                               bool *hasIPv6)
+
+static int G_GNUC_UNUSED
+virNetSocketCheckProtocolByLookup(const char *address,
+                                  int family,
+                                  bool *hasFamily)
 {
-#ifdef HAVE_IFADDRS_H
-    struct ifaddrs *ifaddr = NULL, *ifa;
     struct addrinfo hints;
     struct addrinfo *ai = NULL;
     int gaierr;
 
     memset(&hints, 0, sizeof(hints));
+    hints.ai_family = family;
+    hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((gaierr = getaddrinfo(address, NULL, &hints, &ai)) != 0) {
+        *hasFamily = false;
+
+        if (gaierr == EAI_FAMILY ||
+#ifdef EAI_ADDRFAMILY
+            gaierr == EAI_ADDRFAMILY ||
+#endif
+            gaierr == EAI_NONAME) {
+        } else {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Cannot resolve %s address: %s"),
+                           address,
+                           gai_strerror(gaierr));
+            return -1;
+        }
+    } else {
+        *hasFamily = true;
+    }
+
+    freeaddrinfo(ai);
+    return 0;
+}
+
+int virNetSocketCheckProtocols(bool *hasIPv4,
+                               bool *hasIPv6)
+{
+#ifdef WITH_IFADDRS_H
+    struct ifaddrs *ifaddr = NULL, *ifa;
 
     *hasIPv4 = *hasIPv6 = false;
 
@@ -172,26 +205,13 @@ int virNetSocketCheckProtocols(bool *hasIPv4,
 
     freeifaddrs(ifaddr);
 
-    hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
-    hints.ai_family = AF_INET6;
-    hints.ai_socktype = SOCK_STREAM;
+    if (*hasIPv4 &&
+        virNetSocketCheckProtocolByLookup("127.0.0.1", AF_INET, hasIPv4) < 0)
+        return -1;
 
-    if ((gaierr = getaddrinfo("::1", NULL, &hints, &ai)) != 0) {
-        if (gaierr == EAI_FAMILY ||
-# ifdef EAI_ADDRFAMILY
-            gaierr == EAI_ADDRFAMILY ||
-# endif
-            gaierr == EAI_NONAME) {
-            *hasIPv6 = false;
-        } else {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("Cannot resolve ::1 address: %s"),
-                           gai_strerror(gaierr));
-            return -1;
-        }
-    }
-
-    freeaddrinfo(ai);
+    if (*hasIPv6 &&
+        virNetSocketCheckProtocolByLookup("::1", AF_INET6, hasIPv6) < 0)
+        return -1;
 
     VIR_DEBUG("Protocols: v4 %d v6 %d", *hasIPv4, *hasIPv6);
 
@@ -305,6 +325,8 @@ int virNetSocketNewListenTCP(const char *nodename,
     int bindErrno = 0;
     virSocketAddr tmp_addr;
     int port = 0;
+    int e;
+    struct addrinfo *runp;
 
     *retsocks = NULL;
     *nretsocks = 0;
@@ -326,7 +348,7 @@ int virNetSocketNewListenTCP(const char *nodename,
           virSocketAddrIsWildcard(&tmp_addr)))
         hints.ai_flags |= AI_ADDRCONFIG;
 
-    int e = getaddrinfo(nodename, service, &hints, &ai);
+    e = getaddrinfo(nodename, service, &hints, &ai);
     if (e != 0) {
         virReportError(VIR_ERR_SYSTEM_ERROR,
                        _("Unable to resolve address '%s' service '%s': %s"),
@@ -334,7 +356,7 @@ int virNetSocketNewListenTCP(const char *nodename,
         return -1;
     }
 
-    struct addrinfo *runp = ai;
+    runp = ai;
     while (runp) {
         virSocketAddr addr;
 
@@ -567,6 +589,7 @@ int virNetSocketNewConnectTCP(const char *nodename,
     virSocketAddr remoteAddr;
     struct addrinfo *runp;
     int savedErrno = ENOENT;
+    int e;
 
     *retsock = NULL;
 
@@ -578,7 +601,7 @@ int virNetSocketNewConnectTCP(const char *nodename,
     hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG | AI_V4MAPPED;
     hints.ai_socktype = SOCK_STREAM;
 
-    int e = getaddrinfo(nodename, service, &hints, &ai);
+    e = getaddrinfo(nodename, service, &hints, &ai);
     if (e != 0) {
         virReportError(VIR_ERR_SYSTEM_ERROR,
                        _("Unable to resolve address '%s' service '%s': %s"),
@@ -667,7 +690,7 @@ int virNetSocketNewConnectUNIX(const char *path,
     if (spawnDaemon) {
         g_autofree char *binname = NULL;
 
-        if (spawnDaemon && !binary) {
+        if (!binary) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("Auto-spawn of daemon requested, "
                              "but no binary specified"));
@@ -842,14 +865,11 @@ int virNetSocketNewConnectSSH(const char *nodename,
                               const char *username,
                               bool noTTY,
                               bool noVerify,
-                              const char *netcat,
                               const char *keyfile,
-                              const char *path,
+                              const char *command,
                               virNetSocketPtr *retsock)
 {
-    char *quoted;
     virCommandPtr cmd;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
 
     *retsock = NULL;
 
@@ -874,38 +894,8 @@ int virNetSocketNewConnectSSH(const char *nodename,
     if (noVerify)
         virCommandAddArgList(cmd, "-o", "StrictHostKeyChecking=no", NULL);
 
-    if (!netcat)
-        netcat = "nc";
+    virCommandAddArgList(cmd, "--", nodename, command, NULL);
 
-    virCommandAddArgList(cmd, "--", nodename, "sh", "-c", NULL);
-
-    virBufferEscapeShell(&buf, netcat);
-    quoted = virBufferContentAndReset(&buf);
-
-    virBufferEscapeShell(&buf, quoted);
-    VIR_FREE(quoted);
-    quoted = virBufferContentAndReset(&buf);
-
-    /*
-     * This ugly thing is a shell script to detect availability of
-     * the -q option for 'nc': debian and suse based distros need this
-     * flag to ensure the remote nc will exit on EOF, so it will go away
-     * when we close the connection tunnel. If it doesn't go away, subsequent
-     * connection attempts will hang.
-     *
-     * Fedora's 'nc' doesn't have this option, and defaults to the desired
-     * behavior.
-     */
-    virCommandAddArgFormat(cmd,
-         "'if '%s' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
-             "ARG=-q0;"
-         "else "
-             "ARG=;"
-         "fi;"
-         "'%s' $ARG -U %s'",
-         quoted, quoted, path);
-
-    VIR_FREE(quoted);
     return virNetSocketNewConnectCommand(cmd, retsock);
 }
 
@@ -930,7 +920,7 @@ virNetSocketNewConnectLibSSH2(const char *host,
     int ret = -1;
     int portN;
 
-    VIR_AUTOSTRINGLIST authMethodList = NULL;
+    g_auto(GStrv) authMethodList = NULL;
     char **authMethodNext;
 
     /* port number will be verified while opening the socket */
@@ -969,8 +959,7 @@ virNetSocketNewConnectLibSSH2(const char *host,
                                                VIR_NET_SSH_HOSTKEY_FILE_CREATE) != 0)
         goto error;
 
-    if (virNetSSHSessionSetChannelCommand(sess, command) != 0)
-        goto error;
+    virNetSSHSessionSetChannelCommand(sess, command);
 
     if (!(authMethodList = virStringSplit(authMethods, ",", 0)))
         goto error;
@@ -1063,7 +1052,7 @@ virNetSocketNewConnectLibssh(const char *host,
     int ret = -1;
     int portN;
 
-    VIR_AUTOSTRINGLIST authMethodList = NULL;
+    g_auto(GStrv) authMethodList = NULL;
     char **authMethodNext;
 
     /* port number will be verified while opening the socket */
@@ -1101,8 +1090,7 @@ virNetSocketNewConnectLibssh(const char *host,
                                                   verify) != 0)
         goto error;
 
-    if (virNetLibsshSessionSetChannelCommand(sess, command) != 0)
-        goto error;
+    virNetLibsshSessionSetChannelCommand(sess, command);
 
     if (!(authMethodList = virStringSplit(authMethods, ",", 0)))
         goto error;
@@ -1400,7 +1388,7 @@ int virNetSocketDupFD(virNetSocketPtr sock, bool cloexec)
     }
 #ifndef F_DUPFD_CLOEXEC
     if (cloexec &&
-        virSetCloseExec(fd < 0)) {
+        virSetCloseExec(fd) < 0) {
         int saveerr = errno;
         closesocket(fd);
         errno = saveerr;
@@ -1459,7 +1447,7 @@ int virNetSocketGetUNIXIdentity(virNetSocketPtr sock,
                                 pid_t *pid,
                                 unsigned long long *timestamp)
 {
-# if defined(HAVE_STRUCT_SOCKPEERCRED)
+# if defined(WITH_STRUCT_SOCKPEERCRED)
     struct sockpeercred cr;
 # else
     struct ucred cr;
@@ -1595,7 +1583,7 @@ int virNetSocketGetUNIXIdentity(virNetSocketPtr sock G_GNUC_UNUSED,
 int virNetSocketGetSELinuxContext(virNetSocketPtr sock,
                                   char **context)
 {
-    security_context_t seccon = NULL;
+    char *seccon = NULL;
     int ret = -1;
 
     *context = NULL;
@@ -1888,8 +1876,7 @@ static ssize_t virNetSocketReadSASL(virNetSocketPtr sock, char *buf, size_t len)
     if (sock->saslDecoded == NULL) {
         ssize_t encodedLen = virNetSASLSessionGetMaxBufSize(sock->saslSession);
         char *encoded;
-        if (VIR_ALLOC_N(encoded, encodedLen) < 0)
-            return -1;
+        encoded = g_new0(char, encodedLen);
         encodedLen = virNetSocketReadWire(sock, encoded, encodedLen);
 
         if (encodedLen <= 0) {

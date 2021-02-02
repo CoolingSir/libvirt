@@ -31,10 +31,9 @@ testCompareXMLToXMLFiles(const char *inxml,
                          const char *uuid,
                          unsigned int flags)
 {
-    char *inXmlData = NULL;
-    char *outXmlData = NULL;
-    char *actual = NULL;
-    int ret = -1;
+    g_autofree char *inXmlData = NULL;
+    g_autofree char *outXmlData = NULL;
+    g_autofree char *actual = NULL;
     unsigned int parseflags = VIR_DOMAIN_SNAPSHOT_PARSE_DISKS;
     unsigned int formatflags = VIR_DOMAIN_SNAPSHOT_FORMAT_SECURE;
     bool cur = false;
@@ -49,43 +48,37 @@ testCompareXMLToXMLFiles(const char *inxml,
         parseflags |= VIR_DOMAIN_SNAPSHOT_PARSE_REDEFINE;
 
     if (virTestLoadFile(inxml, &inXmlData) < 0)
-        goto cleanup;
+        return -1;
 
     if (virTestLoadFile(outxml, &outXmlData) < 0)
-        goto cleanup;
+        return -1;
 
     if (!(def = virDomainSnapshotDefParseString(inXmlData,
                                                 driver.xmlopt, NULL, &cur,
                                                 parseflags)))
-        goto cleanup;
+        return -1;
     if (cur) {
         if (!(flags & TEST_INTERNAL))
-            goto cleanup;
+            return -1;
         formatflags |= VIR_DOMAIN_SNAPSHOT_FORMAT_CURRENT;
     }
     if (flags & TEST_RUNNING) {
         if (def->state)
-            goto cleanup;
+            return -1;
         def->state = VIR_DOMAIN_RUNNING;
     }
 
     if (!(actual = virDomainSnapshotDefFormat(uuid, def,
                                               driver.xmlopt,
                                               formatflags)))
-        goto cleanup;
+        return -1;
 
     if (STRNEQ(outXmlData, actual)) {
         virTestDifferenceFull(stderr, outXmlData, outxml, actual, inxml);
-        goto cleanup;
+        return -1;
     }
 
-    ret = 0;
-
- cleanup:
-    VIR_FREE(inXmlData);
-    VIR_FREE(outXmlData);
-    VIR_FREE(actual);
-    return ret;
+    return 0;
 }
 
 struct testInfo {
@@ -187,6 +180,9 @@ mymain(void)
     DO_TEST_IN("name_and_description", NULL);
     DO_TEST_IN("description_only", NULL);
     DO_TEST_IN("name_only", NULL);
+
+    DO_TEST_INOUT("qcow2-metadata-cache", "9d37b878-a7cc-9f9a-b78f-49b3abad25a8",
+                  1386166249, 0);
 
     qemuTestDriverFree(&driver);
 

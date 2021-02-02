@@ -28,7 +28,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#if HAVE_NET_ETHERNET_H
+#if WITH_NET_ETHERNET_H
 # include <net/ethernet.h>
 #endif
 #include <unistd.h>
@@ -309,12 +309,12 @@ virNWFilterRuleDefFree(virNWFilterRuleDefPtr def)
         virNWFilterVarAccessFree(def->varAccess[i]);
 
     for (i = 0; i < def->nstrings; i++)
-        VIR_FREE(def->strings[i]);
+        g_free(def->strings[i]);
 
-    VIR_FREE(def->varAccess);
-    VIR_FREE(def->strings);
+    g_free(def->varAccess);
+    g_free(def->strings);
 
-    VIR_FREE(def);
+    g_free(def);
 }
 
 
@@ -324,8 +324,8 @@ virNWFilterIncludeDefFree(virNWFilterIncludeDefPtr inc)
     if (!inc)
         return;
     virHashFree(inc->params);
-    VIR_FREE(inc->filterref);
-    VIR_FREE(inc);
+    g_free(inc->filterref);
+    g_free(inc);
 }
 
 
@@ -337,7 +337,7 @@ virNWFilterEntryFree(virNWFilterEntryPtr entry)
 
     virNWFilterRuleDefFree(entry->rule);
     virNWFilterIncludeDefFree(entry->include);
-    VIR_FREE(entry);
+    g_free(entry);
 }
 
 
@@ -348,15 +348,15 @@ virNWFilterDefFree(virNWFilterDefPtr def)
     if (!def)
         return;
 
-    VIR_FREE(def->name);
+    g_free(def->name);
 
     for (i = 0; i < def->nentries; i++)
         virNWFilterEntryFree(def->filterEntries[i]);
 
-    VIR_FREE(def->filterEntries);
-    VIR_FREE(def->chainsuffix);
+    g_free(def->filterEntries);
+    g_free(def->chainsuffix);
 
-    VIR_FREE(def);
+    g_free(def);
 }
 
 
@@ -948,7 +948,7 @@ printTCPFlags(virBufferPtr buf,
 char *
 virNWFilterPrintTCPFlags(uint8_t flags)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     printTCPFlags(&buf, flags);
     return virBufferContentAndReset(&buf);
 }
@@ -1848,7 +1848,7 @@ virNWFilterRuleDetailsParse(xmlNodePtr node,
 
             att_datatypes = att[idx].datatype;
 
-            while (datatype <= DATATYPE_LAST && found == 0 && rc == 0) {
+            while (datatype <= DATATYPE_LAST && !found && rc == 0) {
                 if ((att_datatypes & datatype)) {
 
                     att_datatypes ^= datatype;
@@ -2069,8 +2069,7 @@ virNWFilterIncludeParse(xmlNodePtr cur)
 {
     virNWFilterIncludeDefPtr ret;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virNWFilterIncludeDef, 1);
 
     ret->filterref = virXMLPropString(cur, "filter");
     if (!ret->filterref) {
@@ -2423,8 +2422,7 @@ virNWFilterRuleParse(xmlNodePtr node)
     xmlNodePtr cur;
     virNWFilterRuleDefPtr ret;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virNWFilterRuleDef, 1);
 
     action     = virXMLPropString(node, "action");
     direction  = virXMLPropString(node, "direction");
@@ -2561,7 +2559,7 @@ virNWFilterIsAllowedChain(const char *chainname)
     virNWFilterChainSuffixType i;
     const char *name;
     char *msg;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     bool printed = false;
 
     if (!virNWFilterIsValidChainName(chainname))
@@ -2616,8 +2614,7 @@ virNWFilterDefParseXML(xmlXPathContextPtr ctxt)
     int chain_priority;
     const char *name_prefix;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virNWFilterDef, 1);
 
     ret->name = virXPathString("string(./@name)", ctxt);
     if (!ret->name) {
@@ -2689,8 +2686,7 @@ virNWFilterDefParseXML(xmlXPathContextPtr ctxt)
 
     while (curr != NULL) {
         if (curr->type == XML_ELEMENT_NODE) {
-            if (VIR_ALLOC(entry) < 0)
-                goto cleanup;
+            entry = g_new0(virNWFilterEntry, 1);
 
             if (virXMLNodeNameEqual(curr, "rule")) {
                 if (!(entry->rule = virNWFilterRuleParse(curr))) {
@@ -2864,10 +2860,13 @@ virNWFilterRuleDefDetailsFormat(virBufferPtr buf,
     nwItemDesc *item;
 
     while (att[i].name) {
+        virNWFilterEntryItemFlags flags;
+
         VIR_WARNINGS_NO_CAST_ALIGN
         item = (nwItemDesc *)((char *)def + att[i].dataIdx);
         VIR_WARNINGS_RESET
-        virNWFilterEntryItemFlags flags = item->flags;
+
+        flags = item->flags;
         if ((flags & NWFILTER_ENTRY_ITEM_FLAG_EXISTS)) {
             if (!typeShown) {
                 virBufferAsprintf(buf, "<%s", type);
@@ -2881,14 +2880,14 @@ virNWFilterRuleDefDetailsFormat(virBufferPtr buf,
                     matchShown = MATCH_NO;
                 } else if (matchShown == MATCH_YES) {
                     virBufferAddLit(buf, "/>\n");
-                    typeShown = 0;
+                    typeShown = false;
                     matchShown = MATCH_NONE;
                     continue;
                 }
             } else {
                 if (matchShown == MATCH_NO) {
                     virBufferAddLit(buf, "/>\n");
-                    typeShown = 0;
+                    typeShown = false;
                     matchShown = MATCH_NONE;
                     continue;
                 }
@@ -3044,7 +3043,7 @@ virNWFilterEntryFormat(virBufferPtr buf,
 char *
 virNWFilterDefFormat(const virNWFilterDef *def)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char uuid[VIR_UUID_STRING_BUFLEN];
     size_t i;
 
@@ -3062,17 +3061,13 @@ virNWFilterDefFormat(const virNWFilterDef *def)
 
     for (i = 0; i < def->nentries; i++) {
         if (virNWFilterEntryFormat(&buf, def->filterEntries[i]) < 0)
-            goto err_exit;
+            return NULL;
     }
 
     virBufferAdjustIndent(&buf, -2);
     virBufferAddLit(&buf, "</filter>\n");
 
     return virBufferContentAndReset(&buf);
-
- err_exit:
-    virBufferFreeAndReset(&buf);
-    return NULL;
 }
 
 static virNWFilterTriggerRebuildCallback rebuildCallback;

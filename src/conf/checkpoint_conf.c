@@ -30,7 +30,7 @@
 #include "virlog.h"
 #include "viralloc.h"
 #include "checkpoint_conf.h"
-#include "virstoragefile.h"
+#include "storage_source_conf.h"
 #include "viruuid.h"
 #include "virfile.h"
 #include "virerror.h"
@@ -96,7 +96,7 @@ virDomainCheckpointDiskDefParseXML(xmlNodePtr node,
                                    virDomainCheckpointDiskDefPtr def)
 {
     g_autofree char *checkpoint = NULL;
-    VIR_XPATH_NODE_AUTORESTORE(ctxt);
+    VIR_XPATH_NODE_AUTORESTORE(ctxt)
 
     ctxt->node = node;
 
@@ -126,7 +126,6 @@ virDomainCheckpointDefParse(xmlXPathContextPtr ctxt,
     virDomainCheckpointDefPtr ret = NULL;
     size_t i;
     int n;
-    char *tmp;
     g_autofree xmlNodePtr *nodes = NULL;
     g_autoptr(virDomainCheckpointDef) def = NULL;
 
@@ -146,6 +145,8 @@ virDomainCheckpointDefParse(xmlXPathContextPtr ctxt,
     def->parent.description = virXPathString("string(./description)", ctxt);
 
     if (flags & VIR_DOMAIN_CHECKPOINT_PARSE_REDEFINE) {
+        xmlNodePtr domainNode;
+
         if (virXPathLongLong("string(./creationTime)", ctxt,
                              &def->parent.creationTime) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -155,26 +156,15 @@ virDomainCheckpointDefParse(xmlXPathContextPtr ctxt,
 
         def->parent.parent_name = virXPathString("string(./parent/name)", ctxt);
 
-        if ((tmp = virXPathString("string(./domain/@type)", ctxt))) {
-            int domainflags = VIR_DOMAIN_DEF_PARSE_INACTIVE |
-                              VIR_DOMAIN_DEF_PARSE_SKIP_VALIDATE;
-            xmlNodePtr domainNode = virXPathNode("./domain", ctxt);
+        if ((domainNode = virXPathNode("./domain", ctxt))) {
+            unsigned int domainParseFlags = VIR_DOMAIN_DEF_PARSE_INACTIVE |
+                                            VIR_DOMAIN_DEF_PARSE_SKIP_VALIDATE;
 
-            VIR_FREE(tmp);
-            if (!domainNode) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("missing domain in checkpoint"));
-                return NULL;
-            }
             def->parent.dom = virDomainDefParseNode(ctxt->node->doc, domainNode,
                                                     xmlopt, parseOpaque,
-                                                    domainflags);
+                                                    domainParseFlags);
             if (!def->parent.dom)
                 return NULL;
-        } else {
-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                           _("missing domain in checkpoint redefine"));
-            return NULL;
         }
     } else if (virDomainXMLOptionRunMomentPostParse(xmlopt, &def->parent) < 0) {
         return NULL;
@@ -182,8 +172,8 @@ virDomainCheckpointDefParse(xmlXPathContextPtr ctxt,
 
     if ((n = virXPathNodeSet("./disks/*", ctxt, &nodes)) < 0)
         return NULL;
-    if (n && VIR_ALLOC_N(def->disks, n) < 0)
-        return NULL;
+    if (n)
+        def->disks = g_new0(virDomainCheckpointDiskDef, n);
     def->ndisks = n;
     for (i = 0; i < def->ndisks; i++) {
         if (virDomainCheckpointDiskDefParseXML(nodes[i], ctxt,
@@ -274,127 +264,111 @@ virDomainCheckpointDefAssignBitmapNames(virDomainCheckpointDefPtr def)
 }
 
 
-static int
-virDomainCheckpointCompareDiskIndex(const void *a, const void *b)
-{
-    const virDomainCheckpointDiskDef *diska = a;
-    const virDomainCheckpointDiskDef *diskb = b;
-
-    /* Integer overflow shouldn't be a problem here.  */
-    return diska->idx - diskb->idx;
-}
-
 /* Align def->disks to def->domain.  Sort the list of def->disks,
  * filling in any missing disks with appropriate default.  Convert
  * paths to disk targets for uniformity.  Issue an error and return -1
  * if any def->disks[n]->name appears more than once or does not map
  * to dom->disks. */
 int
-virDomainCheckpointAlignDisks(virDomainCheckpointDefPtr def)
+virDomainCheckpointAlignDisks(virDomainCheckpointDefPtr chkdef)
 {
-    int ret = -1;
-    virBitmapPtr map = NULL;
+    virDomainDefPtr domdef = chkdef->parent.dom;
+    g_autoptr(GHashTable) map = virHashNew(NULL);
+    g_autofree virDomainCheckpointDiskDefPtr olddisks = NULL;
     size_t i;
-    int ndisks;
     int checkpoint_default = VIR_DOMAIN_CHECKPOINT_TYPE_NONE;
 
-    if (!def->parent.dom) {
+    if (!domdef) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("missing domain in checkpoint"));
-        goto cleanup;
+        return -1;
     }
 
-    if (def->ndisks > def->parent.dom->ndisks) {
+    if (chkdef->ndisks > domdef->ndisks) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                        _("too many disk checkpoint requests for domain"));
-        goto cleanup;
+        return -1;
     }
 
     /* Unlikely to have a guest without disks but technically possible.  */
-    if (!def->parent.dom->ndisks) {
+    if (!domdef->ndisks) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("domain must have at least one disk to perform "
-                         "checkpoints"));
-        goto cleanup;
+                       _("domain must have at least one disk to perform checkpoints"));
+        return -1;
     }
 
     /* If <disks> omitted, do bitmap on all writeable disks;
      * otherwise, do nothing for omitted disks */
-    if (!def->ndisks)
+    if (!chkdef->ndisks)
         checkpoint_default = VIR_DOMAIN_CHECKPOINT_TYPE_BITMAP;
 
-    if (!(map = virBitmapNew(def->parent.dom->ndisks)))
-        goto cleanup;
-
     /* Double check requested disks.  */
-    for (i = 0; i < def->ndisks; i++) {
-        virDomainCheckpointDiskDefPtr disk = &def->disks[i];
-        int idx = virDomainDiskIndexByName(def->parent.dom, disk->name, false);
+    for (i = 0; i < chkdef->ndisks; i++) {
+        virDomainCheckpointDiskDefPtr chkdisk = &chkdef->disks[i];
+        virDomainDiskDefPtr domdisk = virDomainDiskByName(domdef, chkdisk->name, false);
 
-        if (idx < 0) {
+        if (!domdisk) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                           _("no disk named '%s'"), disk->name);
-            goto cleanup;
+                           _("no disk named '%s'"), chkdisk->name);
+            return -1;
         }
 
-        if (virBitmapIsBitSet(map, idx)) {
+        if (virHashHasEntry(map, domdisk->dst)) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("disk '%s' specified twice"),
-                           disk->name);
-            goto cleanup;
+                           chkdisk->name);
+            return -1;
         }
-        if ((virStorageSourceIsEmpty(def->parent.dom->disks[idx]->src) ||
-             def->parent.dom->disks[idx]->src->readonly) &&
-            disk->type != VIR_DOMAIN_CHECKPOINT_TYPE_NONE) {
+
+        if (virHashAddEntry(map, domdisk->dst, chkdisk) < 0)
+            return -1;
+
+        if ((virStorageSourceIsEmpty(domdisk->src) ||
+             domdisk->src->readonly) &&
+            chkdisk->type != VIR_DOMAIN_CHECKPOINT_TYPE_NONE) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("disk '%s' is empty or readonly"),
-                           disk->name);
-            goto cleanup;
+                           chkdisk->name);
+            return -1;
         }
-        ignore_value(virBitmapSetBit(map, idx));
-        disk->idx = idx;
 
-        if (STRNEQ(disk->name, def->parent.dom->disks[idx]->dst)) {
-            VIR_FREE(disk->name);
-            disk->name = g_strdup(def->parent.dom->disks[idx]->dst);
+        if (STRNEQ(chkdisk->name, domdisk->dst)) {
+            VIR_FREE(chkdisk->name);
+            chkdisk->name = g_strdup(domdisk->dst);
         }
     }
 
-    /* Provide defaults for all remaining disks.  */
-    ndisks = def->ndisks;
-    if (VIR_EXPAND_N(def->disks, def->ndisks,
-                     def->parent.dom->ndisks - def->ndisks) < 0)
-        goto cleanup;
+    olddisks = g_steal_pointer(&chkdef->disks);
+    chkdef->disks = g_new0(virDomainCheckpointDiskDef, domdef->ndisks);
+    chkdef->ndisks = domdef->ndisks;
 
-    for (i = 0; i < def->parent.dom->ndisks; i++) {
-        virDomainCheckpointDiskDefPtr disk;
+    for (i = 0; i < domdef->ndisks; i++) {
+        virDomainDiskDefPtr domdisk = domdef->disks[i];
+        virDomainCheckpointDiskDefPtr chkdisk = chkdef->disks + i;
+        virDomainCheckpointDiskDefPtr existing;
 
-        if (virBitmapIsBitSet(map, i))
+        /* copy existing disks */
+        if ((existing = virHashLookup(map, domdisk->dst))) {
+            memcpy(chkdisk, existing, sizeof(*chkdisk));
             continue;
-        disk = &def->disks[ndisks++];
-        disk->name = g_strdup(def->parent.dom->disks[i]->dst);
-        disk->idx = i;
+        }
+
+        /* Provide defaults for all remaining disks. */
+        chkdisk->name = g_strdup(domdisk->dst);
 
         /* Don't checkpoint empty or readonly drives */
-        if (virStorageSourceIsEmpty(def->parent.dom->disks[i]->src) ||
-            def->parent.dom->disks[i]->src->readonly)
-            disk->type = VIR_DOMAIN_CHECKPOINT_TYPE_NONE;
+        if (virStorageSourceIsEmpty(domdisk->src) ||
+            domdisk->src->readonly)
+            chkdisk->type = VIR_DOMAIN_CHECKPOINT_TYPE_NONE;
         else
-            disk->type = checkpoint_default;
+            chkdisk->type = checkpoint_default;
     }
 
-    qsort(&def->disks[0], def->ndisks, sizeof(def->disks[0]),
-          virDomainCheckpointCompareDiskIndex);
-
     /* Generate default bitmap names for checkpoint */
-    if (virDomainCheckpointDefAssignBitmapNames(def) < 0)
-        goto cleanup;
+    if (virDomainCheckpointDefAssignBitmapNames(chkdef) < 0)
+        return -1;
 
-    ret = 0;
-
- cleanup:
-    virBitmapFree(map);
-    return ret;
+    return 0;
 }
 
 
@@ -430,7 +404,7 @@ virDomainCheckpointDiskDefFormat(virBufferPtr buf,
                           virDomainCheckpointTypeToString(disk->type));
     if (disk->bitmap) {
         virBufferEscapeString(buf, " bitmap='%s'", disk->bitmap);
-        if (flags & VIR_DOMAIN_CHECKPOINT_FORMAT_SIZE)
+        if (flags & VIR_DOMAIN_CHECKPOINT_FORMAT_SIZE && disk->sizeValid)
             virBufferAsprintf(buf, " size='%llu'", disk->size);
     }
     virBufferAddLit(buf, "/>\n");
@@ -476,33 +450,30 @@ virDomainCheckpointDefFormatInternal(virBufferPtr buf,
         for (i = 0; i < def->ndisks; i++) {
             if (virDomainCheckpointDiskDefFormat(buf, &def->disks[i],
                                                  flags) < 0)
-                goto error;
+                return -1;
         }
         virBufferAdjustIndent(buf, -2);
         virBufferAddLit(buf, "</disks>\n");
     }
 
-    if (!(flags & VIR_DOMAIN_CHECKPOINT_FORMAT_NO_DOMAIN) &&
-        virDomainDefFormatInternal(def->parent.dom, xmlopt,
-                                   buf, domainflags) < 0)
-        goto error;
+    if (def->parent.dom && !(flags & VIR_DOMAIN_CHECKPOINT_FORMAT_NO_DOMAIN)) {
+        if (virDomainDefFormatInternal(def->parent.dom, xmlopt, buf, domainflags) < 0)
+            return -1;
+    }
 
     virBufferAdjustIndent(buf, -2);
     virBufferAddLit(buf, "</domaincheckpoint>\n");
 
     return 0;
-
- error:
-    virBufferFreeAndReset(buf);
-    return -1;
 }
+
 
 char *
 virDomainCheckpointDefFormat(virDomainCheckpointDefPtr def,
                              virDomainXMLOptionPtr xmlopt,
                              unsigned int flags)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     virCheckFlags(VIR_DOMAIN_CHECKPOINT_FORMAT_SECURE |
                   VIR_DOMAIN_CHECKPOINT_FORMAT_NO_DOMAIN |
@@ -517,31 +488,27 @@ virDomainCheckpointDefFormat(virDomainCheckpointDefPtr def,
 
 int
 virDomainCheckpointRedefinePrep(virDomainObjPtr vm,
-                                virDomainCheckpointDefPtr *defptr,
-                                virDomainMomentObjPtr *chk,
-                                virDomainXMLOptionPtr xmlopt,
+                                virDomainCheckpointDefPtr def,
                                 bool *update_current)
 {
-    virDomainCheckpointDefPtr def = *defptr;
-    char uuidstr[VIR_UUID_STRING_BUFLEN];
     virDomainMomentObjPtr parent = NULL;
-    virDomainMomentObjPtr other = NULL;
-    virDomainCheckpointDefPtr otherdef = NULL;
-
-    virUUIDFormat(vm->def->uuid, uuidstr);
 
     if (virDomainCheckpointCheckCycles(vm->checkpoints, def, vm->def->name) < 0)
         return -1;
 
-    if (!def->parent.dom ||
-        memcmp(def->parent.dom->uuid, vm->def->uuid, VIR_UUID_BUFLEN)) {
-        virReportError(VIR_ERR_INVALID_ARG,
-                       _("definition for checkpoint %s must use uuid %s"),
-                       def->parent.name, uuidstr);
-        return -1;
+    if (def->parent.dom) {
+        if (memcmp(def->parent.dom->uuid, vm->def->uuid, VIR_UUID_BUFLEN)) {
+            char uuidstr[VIR_UUID_STRING_BUFLEN];
+            virUUIDFormat(vm->def->uuid, uuidstr);
+            virReportError(VIR_ERR_INVALID_ARG,
+                           _("definition for checkpoint %s must use uuid %s"),
+                           def->parent.name, uuidstr);
+            return -1;
+        }
+
+        if (virDomainCheckpointAlignDisks(def) < 0)
+            return -1;
     }
-    if (virDomainCheckpointAlignDisks(def) < 0)
-        return -1;
 
     if (def->parent.parent_name &&
          (parent = virDomainCheckpointFindByName(vm->checkpoints,
@@ -554,21 +521,33 @@ virDomainCheckpointRedefinePrep(virDomainObjPtr vm,
     if (virDomainCheckpointGetCurrent(vm->checkpoints) == NULL)
         *update_current = true;
 
+    return 0;
+}
+
+
+virDomainMomentObjPtr
+virDomainCheckpointRedefineCommit(virDomainObjPtr vm,
+                                  virDomainCheckpointDefPtr *defptr)
+{
+    virDomainCheckpointDefPtr def = *defptr;
+    virDomainMomentObjPtr other = NULL;
+    virDomainCheckpointDefPtr otherdef = NULL;
+    virDomainMomentObjPtr chk = NULL;
+
     other = virDomainCheckpointFindByName(vm->checkpoints, def->parent.name);
     if (other) {
         otherdef = virDomainCheckpointObjGetDef(other);
-        if (!virDomainDefCheckABIStability(otherdef->parent.dom,
-                                           def->parent.dom, xmlopt))
-            return -1;
-
         /* Drop and rebuild the parent relationship, but keep all
          * child relations by reusing chk.  */
         virDomainMomentDropParent(other);
         virObjectUnref(otherdef);
         other->def = &(*defptr)->parent;
         *defptr = NULL;
-        *chk = other;
+        chk = other;
+    } else {
+        chk = virDomainCheckpointAssignDef(vm->checkpoints, def);
+        *defptr = NULL;
     }
 
-    return 0;
+    return chk;
 }

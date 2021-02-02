@@ -141,6 +141,7 @@ struct _virCPUDef {
     virCPUFeatureDefPtr features;
     virCPUCacheDefPtr cache;
     virHostCPUTscInfoPtr tsc;
+    virTristateSwitch migratable; /* for host-passthrough mode */
 };
 
 virCPUDefPtr virCPUDefNew(void);
@@ -191,13 +192,15 @@ virCPUDefCopyWithoutModel(const virCPUDef *cpu);
 int
 virCPUDefParseXMLString(const char *xml,
                         virCPUType type,
-                        virCPUDefPtr *cpu);
+                        virCPUDefPtr *cpu,
+                        bool validateXML);
 
 int
 virCPUDefParseXML(xmlXPathContextPtr ctxt,
                   const char *xpath,
                   virCPUType mode,
-                  virCPUDefPtr *cpu);
+                  virCPUDefPtr *cpu,
+                  bool validateXML);
 
 bool
 virCPUDefIsEqual(virCPUDefPtr src,
@@ -225,6 +228,11 @@ int
 virCPUDefUpdateFeature(virCPUDefPtr cpu,
                        const char *name,
                        int policy);
+
+int
+virCPUDefAddFeatureIfMissing(virCPUDefPtr def,
+                             const char *name,
+                             int policy);
 
 virCPUFeatureDefPtr
 virCPUDefFindFeature(virCPUDefPtr def,

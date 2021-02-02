@@ -55,7 +55,7 @@ virshAllocpagesPagesizeCompleter(vshControl *ctl,
 {
     g_autoptr(xmlXPathContext) ctxt = NULL;
     virshControlPtr priv = ctl->privData;
-    unsigned int npages = 0;
+    int npages = 0;
     g_autofree xmlNodePtr *pages = NULL;
     g_autoptr(xmlDoc) doc = NULL;
     size_t i = 0;
@@ -63,7 +63,7 @@ virshAllocpagesPagesizeCompleter(vshControl *ctl,
     bool cellno = vshCommandOptBool(cmd, "cellno");
     g_autofree char *path = NULL;
     g_autofree char *cap_xml = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -87,8 +87,7 @@ virshAllocpagesPagesizeCompleter(vshControl *ctl,
     if (npages <= 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, npages + 1) < 0)
-        return NULL;
+    tmp = g_new0(char *, npages + 1);
 
     for (i = 0; i < npages; i++) {
         if (!(tmp[i] = virshPagesizeNodeToString(pages[i])))
@@ -106,12 +105,12 @@ virshCellnoCompleter(vshControl *ctl,
 {
     g_autoptr(xmlXPathContext) ctxt = NULL;
     virshControlPtr priv = ctl->privData;
-    unsigned int ncells = 0;
+    int ncells = 0;
     g_autofree xmlNodePtr *cells = NULL;
     g_autoptr(xmlDoc) doc = NULL;
     size_t i = 0;
     g_autofree char *cap_xml = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -128,12 +127,42 @@ virshCellnoCompleter(vshControl *ctl,
     if (ncells <= 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, ncells + 1))
-        return NULL;
+    tmp = g_new0(char *, ncells + 1);
 
     for (i = 0; i < ncells; i++) {
         if (!(tmp[i] = virXMLPropString(cells[i], "id")))
             return NULL;
+    }
+
+    return g_steal_pointer(&tmp);
+}
+
+
+char **
+virshNodeCpuCompleter(vshControl *ctl,
+                      const vshCmd *cmd G_GNUC_UNUSED,
+                      unsigned int flags)
+{
+    virshControlPtr priv = ctl->privData;
+    g_auto(GStrv) tmp = NULL;
+    size_t i;
+    int cpunum;
+    size_t offset = 0;
+    unsigned int online;
+    g_autofree unsigned char *cpumap = NULL;
+
+    virCheckFlags(0, NULL);
+
+    if ((cpunum = virNodeGetCPUMap(priv->conn, &cpumap, &online, 0)) < 0)
+        return NULL;
+
+    tmp = g_new0(char *, online + 1);
+
+    for (i = 0; i < cpunum; i++) {
+        if (VIR_CPU_USED(cpumap, i) == 0)
+            continue;
+
+        tmp[offset++] = g_strdup_printf("%zu", i);
     }
 
     return g_steal_pointer(&tmp);

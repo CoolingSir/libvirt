@@ -797,8 +797,7 @@ elsif ($mode eq "server") {
                     push(@free_list, "    VIR_FREE($1);");
                     push(@free_list_on_error, "VIR_FREE($1_p);");
                     push(@prepare_ret_list,
-                         "if (VIR_ALLOC($1_p) < 0)\n" .
-                         "        goto cleanup;\n" .
+                         "$1_p = g_new0(char *, 1);\n" .
                          "\n" .
                          "    *$1_p = g_strdup($1);\n");
 
@@ -1126,9 +1125,9 @@ elsif ($mode eq "server") {
 
             if ($single_ret_as_list) {
                 print "    /* Allocate return buffer. */\n";
-                print "    if (VIR_ALLOC_N(ret->$single_ret_list_name.${single_ret_list_name}_val," .
-                      " args->$single_ret_list_max_var) < 0)\n";
-                print "        goto cleanup;\n";
+                print "    ret->$single_ret_list_name.${single_ret_list_name}_val =\n";
+                print "        g_new0(typeof(*ret->$single_ret_list_name.${single_ret_list_name}_val), " .
+                                     "args->$single_ret_list_max_var);\n";
                 print "\n";
             }
 
@@ -1188,8 +1187,8 @@ elsif ($mode eq "server") {
             print "    }\n";
             print "\n";
             print "    if (result && nresults) {\n";
-            print "        if (VIR_ALLOC_N(ret->$single_ret_list_name.${single_ret_list_name}_val, nresults) < 0)\n";
-            print "            goto cleanup;\n";
+            print "        ret->$single_ret_list_name.${single_ret_list_name}_val =\n";
+            print "            g_new0(typeof(*ret->$single_ret_list_name.${single_ret_list_name}_val), nresults);\n";
             print "\n";
             print "        ret->$single_ret_list_name.${single_ret_list_name}_len = nresults;\n";
             if ($modern_ret_is_nested) {
@@ -1950,8 +1949,7 @@ elsif ($mode eq "client") {
                 $priv_src =~ s/->conn//;
             }
             print "    if (result) {\n";
-            print "        if (VIR_ALLOC_N(tmp_results, ret.$single_ret_list_name.${single_ret_list_name}_len + 1) < 0)\n";
-            print "            goto cleanup;\n";
+            print "        tmp_results = g_new0(typeof(*tmp_results), ret.$single_ret_list_name.${single_ret_list_name}_len + 1);\n";
             print "\n";
             print "        for (i = 0; i < ret.$single_ret_list_name.${single_ret_list_name}_len; i++) {\n";
             print "            tmp_results[i] = get_nonnull_$modern_ret_struct_name($priv_src, ret.$single_ret_list_name.${single_ret_list_name}_val[i]);\n";
@@ -2111,16 +2109,21 @@ elsif ($mode eq "client") {
             my @acl;
             foreach (@{$acl}) {
                 my @bits = split /:/;
-                push @acl, { object => $bits[0], perm => $bits[1], flags => $bits[2] }
+                push @acl, { object => $bits[0], perm => $bits[1], flags => $bits[2],
+                             param => $bits[3], value => $bits[4] }
             }
 
             my $checkflags = 0;
+            my $paramtocheck = undef;
             for (my $i = 1 ; $i <= $#acl ; $i++) {
                 if ($acl[$i]->{object} ne $acl[0]->{object}) {
                     die "acl for '$call->{ProcName}' cannot check different objects";
                 }
-                if (defined $acl[$i]->{flags}) {
+                if (defined $acl[$i]->{flags} && length $acl[$i]->{flags}) {
                     $checkflags = 1;
+                }
+                if (defined $acl[$i]->{param}) {
+                    $paramtocheck = $acl[$i]->{param};
                 }
             }
 
@@ -2156,6 +2159,9 @@ elsif ($mode eq "client") {
             }
             if ($checkflags) {
                 push @argdecls, "unsigned int flags";
+            }
+            if (defined $paramtocheck) {
+                push @argdecls, "unsigned int " . $paramtocheck;
             }
 
             my $ret;
@@ -2207,13 +2213,24 @@ elsif ($mode eq "client") {
                     my $method = "virAccessManagerCheck" . $object;
                     my $space = ' ' x length($method);
                     print "    if (";
-                    if (defined $acl->{flags}) {
+                    if (defined $acl->{flags} && length $acl->{flags}) {
                         my $flags = $acl->{flags};
                         if ($flags =~ /^\!/) {
                             $flags = substr $flags, 1;
                             print "((flags & ($flags)) == 0) &&\n";
                         } else {
                             print "((flags & ($flags)) == ($flags)) &&\n";
+                        }
+                        print "        ";
+                    }
+                    if (defined $acl->{param}) {
+                        my $param = $acl->{param};
+                        my $value = $acl->{value};
+                        if ($value =~ /^\!/) {
+                            $value = substr $value, 1;
+                            print "($param != ($value)) &&\n";
+                        } else {
+                            print "($param == ($value)) &&\n";
                         }
                         print "        ";
                     }

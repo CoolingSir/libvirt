@@ -40,7 +40,9 @@ VIR_ENUM_IMPL(virHostValidateCPUFlag,
               VIR_HOST_VALIDATE_CPU_FLAG_LAST,
               "vmx",
               "svm",
-              "sie");
+              "sie",
+              "158",
+              "sev");
 
 static bool quiet;
 
@@ -170,8 +172,9 @@ int virHostValidateNamespace(const char *hvname,
                              virHostValidateLevel level,
                              const char *hint)
 {
-    virHostMsgCheck(hvname, "for namespace %s", ns_name);
     char nspath[100];
+
+    virHostMsgCheck(hvname, "for namespace %s", ns_name);
 
     g_snprintf(nspath, sizeof(nspath), "/proc/self/ns/%s", ns_name);
 
@@ -193,8 +196,7 @@ virBitmapPtr virHostValidateGetCPUFlags(void)
     if (!(fp = fopen("/proc/cpuinfo", "r")))
         return NULL;
 
-    if (!(flags = virBitmapNewQuiet(VIR_HOST_VALIDATE_CPU_FLAG_LAST)))
-        goto cleanup;
+    flags = virBitmapNew(VIR_HOST_VALIDATE_CPU_FLAG_LAST);
 
     do {
         char line[1024];
@@ -210,7 +212,8 @@ virBitmapPtr virHostValidateGetCPUFlags(void)
          * on the architecture, so check possible prefixes */
         if (!STRPREFIX(line, "flags") &&
             !STRPREFIX(line, "Features") &&
-            !STRPREFIX(line, "features"))
+            !STRPREFIX(line, "features") &&
+            !STRPREFIX(line, "facilities"))
             continue;
 
         /* fgets() includes the trailing newline in the output buffer,
@@ -241,7 +244,6 @@ virBitmapPtr virHostValidateGetCPUFlags(void)
         virStringListFreeCount(tokens, ntokens);
     } while (1);
 
- cleanup:
     VIR_FORCE_FCLOSE(fp);
 
     return flags;
@@ -287,11 +289,11 @@ int virHostValidateCGroupControllers(const char *hvname,
                                      int controllers,
                                      virHostValidateLevel level)
 {
-    virCgroupPtr group = NULL;
+    g_autoptr(virCgroup) group = NULL;
     int ret = 0;
     size_t i;
 
-    if (virCgroupNewSelf(&group) < 0)
+    if (virCgroupNew("/", -1, &group) < 0)
         return -1;
 
     for (i = 0; i < VIR_CGROUP_CONTROLLER_LAST; i++) {
@@ -312,8 +314,6 @@ int virHostValidateCGroupControllers(const char *hvname,
             virHostMsgPass();
         }
     }
-
-    virCgroupFree(&group);
 
     return ret;
 }
@@ -336,7 +336,6 @@ int virHostValidateIOMMU(const char *hvname,
     bool isAMD = false, isIntel = false;
     virArch arch = virArchFromHost();
     struct dirent *dent;
-    DIR *dir;
     int rc;
 
     flags = virHostValidateGetCPUFlags();
@@ -375,6 +374,8 @@ int virHostValidateIOMMU(const char *hvname,
     } else if (ARCH_IS_PPC64(arch)) {
         /* Empty Block */
     } else if (ARCH_IS_S390(arch)) {
+        g_autoptr(DIR) dir = NULL;
+
         /* On s390x, we skip the IOMMU check if there are no PCI
          * devices (which is quite usual on s390x). If there are
          * no PCI devices the directory is still there but is
@@ -382,7 +383,6 @@ int virHostValidateIOMMU(const char *hvname,
         if (!virDirOpen(&dir, "/sys/bus/pci/devices"))
             return 0;
         rc = virDirRead(dir, &dent, NULL);
-        VIR_DIR_CLOSE(dir);
         if (rc <= 0)
             return 0;
     } else {
@@ -438,4 +438,89 @@ bool virHostKernelModuleIsLoaded(const char *module)
     VIR_FORCE_FCLOSE(fp);
 
     return ret;
+}
+
+
+int virHostValidateSecureGuests(const char *hvname,
+                                virHostValidateLevel level)
+{
+    virBitmapPtr flags;
+    bool hasFac158 = false;
+    bool hasAMDSev = false;
+    virArch arch = virArchFromHost();
+    g_autofree char *cmdline = NULL;
+    static const char *kIBMValues[] = {"y", "Y", "on", "ON", "oN", "On", "1"};
+    g_autofree char *mod_value = NULL;
+
+    flags = virHostValidateGetCPUFlags();
+
+    if (flags && virBitmapIsBitSet(flags, VIR_HOST_VALIDATE_CPU_FLAG_FACILITY_158))
+        hasFac158 = true;
+    else if (flags && virBitmapIsBitSet(flags, VIR_HOST_VALIDATE_CPU_FLAG_SEV))
+        hasAMDSev = true;
+
+    virBitmapFree(flags);
+
+    virHostMsgCheck(hvname, "%s", _("for secure guest support"));
+    if (ARCH_IS_S390(arch)) {
+        if (hasFac158) {
+            if (!virFileIsDir("/sys/firmware/uv")) {
+                virHostMsgFail(level, "IBM Secure Execution not supported by "
+                                      "the currently used kernel");
+                return 0;
+            }
+
+            if (virFileReadValueString(&cmdline, "/proc/cmdline") < 0)
+                return -1;
+
+            /* we're prefix matching rather than equality matching here, because
+             * kernel would treat even something like prot_virt='yFOO' as
+             * enabled
+             */
+            if (virKernelCmdlineMatchParam(cmdline, "prot_virt", kIBMValues,
+                                           G_N_ELEMENTS(kIBMValues),
+                                           VIR_KERNEL_CMDLINE_FLAGS_SEARCH_FIRST |
+                                           VIR_KERNEL_CMDLINE_FLAGS_CMP_PREFIX)) {
+                virHostMsgPass();
+                return 1;
+            } else {
+                virHostMsgFail(level,
+                               "IBM Secure Execution appears to be disabled "
+                               "in kernel. Add prot_virt=1 to kernel cmdline "
+                               "arguments");
+            }
+        } else {
+            virHostMsgFail(level, "Hardware or firmware does not provide "
+                                  "support for IBM Secure Execution");
+        }
+    } else if (hasAMDSev) {
+        if (virFileReadValueString(&mod_value, "/sys/module/kvm_amd/parameters/sev") < 0) {
+            virHostMsgFail(level, "AMD Secure Encrypted Virtualization not "
+                                  "supported by the currently used kernel");
+            return 0;
+        }
+
+        if (mod_value[0] != '1') {
+            virHostMsgFail(level,
+                           "AMD Secure Encrypted Virtualization appears to be "
+                           "disabled in kernel. Add kvm_amd.sev=1 "
+                           "to the kernel cmdline arguments");
+            return 0;
+        }
+
+        if (virFileExists("/dev/sev")) {
+            virHostMsgPass();
+            return 1;
+        } else {
+            virHostMsgFail(level,
+                           "AMD Secure Encrypted Virtualization appears to be "
+                           "disabled in firemare.");
+        }
+    } else {
+        virHostMsgFail(level,
+                       "Unknown if this platform has Secure Guest support");
+        return -1;
+    }
+
+    return 0;
 }

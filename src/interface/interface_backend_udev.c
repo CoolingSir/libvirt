@@ -86,8 +86,7 @@ udevGetMinimalDefForDevice(struct udev_device *dev)
     virInterfaceDef *def;
 
     /* Allocate our interface definition structure */
-    if (VIR_ALLOC(def) < 0)
-        return NULL;
+    def = g_new0(virInterfaceDef, 1);
 
     def->name = g_strdup(udev_device_get_sysname(dev));
     def->mac = g_strdup(udev_device_get_sysattr_value(dev, "address"));
@@ -205,7 +204,8 @@ udevListInterfacesByStatus(virConnectPtr conn,
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("failed to get list of %s interfaces on host"),
                        virUdevStatusString(status));
-        goto error;
+        udev_unref(udev);
+        return -1;
     }
 
     /* Do the scan to load up the enumeration */
@@ -240,16 +240,6 @@ udevListInterfacesByStatus(virConnectPtr conn,
     udev_unref(udev);
 
     return count;
-
- error:
-    if (enumerate)
-        udev_enumerate_unref(enumerate);
-    udev_unref(udev);
-
-    for (names_len = 0; names_len < count; names_len++)
-        VIR_FREE(names[names_len]);
-
-    return -1;
 }
 
 static int
@@ -310,10 +300,9 @@ udevConnectListAllInterfaces(virConnectPtr conn,
     struct udev_list_entry *dev_entry;
     virInterfacePtr *ifaces_list = NULL;
     virInterfacePtr iface_obj;
-    int tmp_count;
     int count = 0;
     int status = 0;
-    int ret;
+    int ret = -1;
 
     virCheckFlags(VIR_CONNECT_LIST_INTERFACES_FILTERS_ACTIVE, -1);
 
@@ -330,7 +319,6 @@ udevConnectListAllInterfaces(virConnectPtr conn,
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("failed to get list of %s interfaces on host"),
                        virUdevStatusString(status));
-        ret = -1;
         goto cleanup;
     }
 
@@ -352,10 +340,8 @@ udevConnectListAllInterfaces(virConnectPtr conn,
     }
 
     /* If we're asked for the ifaces then alloc up memory */
-    if (ifaces && VIR_ALLOC_N(ifaces_list, count + 1) < 0) {
-        ret = -1;
-        goto cleanup;
-    }
+    if (ifaces)
+        ifaces_list = g_new0(virInterfacePtr, count + 1);
 
     /* Get a list we can walk */
     devices = udev_enumerate_get_list_entry(enumerate);
@@ -418,14 +404,6 @@ udevConnectListAllInterfaces(virConnectPtr conn,
     if (enumerate)
         udev_enumerate_unref(enumerate);
     udev_unref(udev);
-
-    if (ifaces) {
-        for (tmp_count = 0; tmp_count < count; tmp_count++)
-            virObjectUnref(ifaces_list[tmp_count]);
-    }
-
-    VIR_FREE(ifaces_list);
-
     return ret;
 
 }
@@ -566,7 +544,7 @@ udevBridgeScanDirFilter(const struct dirent *entry)
      * vnet%d. Improvements to this check are welcome.
      */
     if (strlen(entry->d_name) >= 5) {
-        if (STRPREFIX(entry->d_name, VIR_NET_GENERATED_TAP_PREFIX) &&
+        if (STRPREFIX(entry->d_name, VIR_NET_GENERATED_VNET_PREFIX) &&
             g_ascii_isdigit(entry->d_name[4]))
             return 0;
     }
@@ -653,7 +631,7 @@ udevGetIfaceDefBond(struct udev *udev,
 
     /* bonding/mode is in the format: "balance-rr 0" so we find the
      * space and increment the pointer to get the number and convert
-     * it to an interger. libvirt uses 1 through 7 while the raw
+     * it to an integer. libvirt uses 1 through 7 while the raw
      * number is 0 through 6 so increment it by 1.
      */
     tmp_str = udev_device_get_sysattr_value(dev, "bonding/mode");
@@ -684,7 +662,7 @@ udevGetIfaceDefBond(struct udev *udev,
 
     /* bonding/arp_validate is in the format: "none 0" so we find the
      * space and increment the pointer to get the number and convert
-     * it to an interger.
+     * it to an integer.
      */
     tmp_str = udev_device_get_sysattr_value(dev, "bonding/arp_validate");
     if (!tmp_str) {
@@ -758,8 +736,8 @@ udevGetIfaceDefBond(struct udev *udev,
     }
 
     /* Allocate our list of slave devices */
-    if (VIR_ALLOC_N(ifacedef->data.bond.itf, slave_count) < 0)
-        goto error;
+    ifacedef->data.bond.itf = g_new0(struct _virInterfaceDef *,
+                                     slave_count);
     ifacedef->data.bond.nbItf = slave_count;
 
     for (i = 0; i < slave_count; i++) {
@@ -873,8 +851,7 @@ udevGetIfaceDefBridge(struct udev *udev,
     }
 
     /* Allocate our list of member devices */
-    if (VIR_ALLOC_N(ifacedef->data.bridge.itf, member_count) < 0)
-        goto error;
+    ifacedef->data.bridge.itf = g_new0(struct _virInterfaceDef *, member_count);
     ifacedef->data.bridge.nbItf = member_count;
 
     /* Get the interface definitions for each member of the bridge */
@@ -976,8 +953,7 @@ udevGetIfaceDef(struct udev *udev, const char *name)
     const char *devtype;
 
     /* Allocate our interface definition structure */
-    if (VIR_ALLOC(ifacedef) < 0)
-        return NULL;
+    ifacedef = g_new0(virInterfaceDef, 1);
 
     /* Clear our structure and set safe defaults */
     ifacedef->startmode = VIR_INTERFACE_START_UNSPECIFIED;
@@ -1158,8 +1134,7 @@ udevStateInitialize(bool privileged,
         return -1;
     }
 
-    if (VIR_ALLOC(driver) < 0)
-        goto cleanup;
+    driver = g_new0(struct udev_iface_driver, 1);
 
     driver->lockFD = -1;
 

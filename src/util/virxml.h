@@ -77,7 +77,6 @@ char *     virXMLPropStringLimit(xmlNodePtr node,
                                  const char *name,
                                  size_t maxlen);
 char *   virXMLNodeContentString(xmlNodePtr node);
-long     virXMLChildElementCount(xmlNodePtr node);
 
 /* Internal function; prefer the macros below.  */
 xmlDocPtr      virXMLParseHelper(int domcode,
@@ -212,8 +211,15 @@ virXMLValidatorValidate(virXMLValidatorPtr validator,
 int
 virXMLValidateAgainstSchema(const char *schemafile,
                             xmlDocPtr xml);
+
+int
+virXMLValidateNodeAgainstSchema(const char *schemafile,
+                                xmlDocPtr doc,
+                                xmlNodePtr node);
+
 void
 virXMLValidatorFree(virXMLValidatorPtr validator);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(virXMLValidator, virXMLValidatorFree);
 
 void
 virXMLFormatElement(virBufferPtr buf,
@@ -241,12 +247,14 @@ G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(virXPathContextNodeSave, virXPathContextNodeRes
  * node pointer is reset to the original value when this macro was used.
  */
 #define VIR_XPATH_NODE_AUTORESTORE(_ctxt) \
+    VIR_WARNINGS_NO_UNUSED_VARIABLE \
     g_auto(virXPathContextNodeSave) _ctxt ## CtxtSave = { .ctxt = _ctxt,\
                                                           .node = _ctxt->node}; \
-    ignore_value(&_ctxt ## CtxtSave)
+    VIR_WARNINGS_RESET
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(xmlDoc, xmlFreeDoc);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(xmlXPathContext, xmlXPathFreeContext);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(xmlBuffer, xmlBufferFree);
 
 typedef int (*virXMLNamespaceParse)(xmlXPathContextPtr ctxt, void **nsdata);
 typedef void (*virXMLNamespaceFree)(void *nsdata);
@@ -269,3 +277,11 @@ virXMLNamespaceFormatNS(virBufferPtr buf,
 int
 virXMLNamespaceRegister(xmlXPathContextPtr ctxt,
                         virXMLNamespace const *ns);
+
+int virParseScaledValue(const char *xpath,
+                        const char *units_xpath,
+                        xmlXPathContextPtr ctxt,
+                        unsigned long long *val,
+                        unsigned long long scale,
+                        unsigned long long max,
+                        bool required);

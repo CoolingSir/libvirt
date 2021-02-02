@@ -88,8 +88,7 @@ static int testIdentityGetSystem(const void *data)
 #if !WITH_SELINUX
     if (context) {
         VIR_DEBUG("libvirt not compiled with SELinux, skipping this test");
-        ret = EXIT_AM_SKIP;
-        return -1;
+        return EXIT_AM_SKIP;
     }
 #endif
 
@@ -120,7 +119,7 @@ static int testIdentityGetSystem(const void *data)
 static int testSetFakeSELinuxContext(const void *data G_GNUC_UNUSED)
 {
 #if WITH_SELINUX
-    return setcon_raw((security_context_t)data);
+    return setcon_raw(data);
 #else
     VIR_DEBUG("libvirt not compiled with SELinux, skipping this test");
     return EXIT_AM_SKIP;
@@ -158,7 +157,7 @@ mymain(void)
 }
 
 #if WITH_SELINUX
-VIR_TEST_MAIN_PRELOAD(mymain, abs_builddir "/.libs/libsecurityselinuxhelper.so")
+VIR_TEST_MAIN_PRELOAD(mymain, abs_builddir "/libsecurityselinuxhelper.so")
 #else
 VIR_TEST_MAIN(mymain)
 #endif

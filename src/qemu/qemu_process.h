@@ -96,12 +96,18 @@ int qemuProcessStart(virConnectPtr conn,
                      virNetDevVPortProfileOp vmop,
                      unsigned int flags);
 
-virCommandPtr qemuProcessCreatePretendCmd(virQEMUDriverPtr driver,
-                                          virDomainObjPtr vm,
-                                          const char *migrateURI,
-                                          bool enableFips,
-                                          bool standalone,
-                                          unsigned int flags);
+int qemuProcessCreatePretendCmdPrepare(virQEMUDriverPtr driver,
+                                       virDomainObjPtr vm,
+                                       const char *migrateURI,
+                                       bool standalone,
+                                       unsigned int flags);
+
+virCommandPtr qemuProcessCreatePretendCmdBuild(virQEMUDriverPtr driver,
+                                               virDomainObjPtr vm,
+                                               const char *migrateURI,
+                                               bool enableFips,
+                                               bool standalone,
+                                               bool jsonPropsValidation);
 
 int qemuProcessInit(virQEMUDriverPtr driver,
                     virDomainObjPtr vm,
@@ -115,6 +121,8 @@ int qemuProcessPrepareDomain(virQEMUDriverPtr driver,
                              unsigned int flags);
 
 int qemuProcessOpenVhostVsock(virDomainVsockDefPtr vsock);
+
+int qemuProcessPrepareHostHostdev(virDomainHostdevDefPtr hostdev);
 
 int qemuProcessPrepareHost(virQEMUDriverPtr driver,
                            virDomainObjPtr vm,
@@ -202,9 +210,9 @@ int qemuProcessRefreshDisks(virQEMUDriverPtr driver,
                             virDomainObjPtr vm,
                             qemuDomainAsyncJob asyncJob);
 
-int qemuProcessStartManagedPRDaemon(virDomainObjPtr vm);
+int qemuProcessStartManagedPRDaemon(virDomainObjPtr vm) G_GNUC_NO_INLINE;
 
-void qemuProcessKillManagedPRDaemon(virDomainObjPtr vm);
+void qemuProcessKillManagedPRDaemon(virDomainObjPtr vm) G_GNUC_NO_INLINE;
 
 typedef struct _qemuProcessQMP qemuProcessQMP;
 typedef qemuProcessQMP *qemuProcessQMPPtr;
@@ -233,5 +241,6 @@ qemuProcessQMPPtr qemuProcessQMPNew(const char *binary,
                                     bool forceTCG);
 
 void qemuProcessQMPFree(qemuProcessQMPPtr proc);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(qemuProcessQMP, qemuProcessQMPFree);
 
 int qemuProcessQMPStart(qemuProcessQMPPtr proc);

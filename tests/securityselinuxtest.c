@@ -71,11 +71,9 @@ testBuildDomainDef(bool dynamic,
         goto error;
 
     def->virtType = VIR_DOMAIN_VIRT_KVM;
-    if (VIR_ALLOC_N(def->seclabels, 1) < 0)
-        goto error;
+    def->seclabels = g_new0(virSecurityLabelDefPtr, 1);
 
-    if (VIR_ALLOC(secdef) < 0)
-        goto error;
+    secdef = g_new0(virSecurityLabelDef, 1);
 
     secdef->model = g_strdup("selinux");
 
@@ -217,7 +215,7 @@ testSELinuxGenLabel(const void *opaque)
     context_t con = NULL;
     context_t imgcon = NULL;
 
-    if (setcon_raw((security_context_t)data->pidcon) < 0) {
+    if (setcon_raw(data->pidcon) < 0) {
         perror("Cannot set process security context");
         return -1;
     }
@@ -339,4 +337,4 @@ mymain(void)
     return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIR_TEST_MAIN_PRELOAD(mymain, abs_builddir "/.libs/libsecurityselinuxhelper.so")
+VIR_TEST_MAIN_PRELOAD(mymain, abs_builddir "/libsecurityselinuxhelper.so")

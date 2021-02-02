@@ -38,7 +38,7 @@ virshStorageVolNameCompleter(vshControl *ctl,
     int nvols = 0;
     size_t i = 0;
     char **ret = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -52,8 +52,7 @@ virshStorageVolNameCompleter(vshControl *ctl,
         goto cleanup;
     nvols = rc;
 
-    if (VIR_ALLOC_N(tmp, nvols + 1) < 0)
-        goto cleanup;
+    tmp = g_new0(char *, nvols + 1);
 
     for (i = 0; i < nvols; i++) {
         const char *name = virStorageVolGetName(vols[i]);
@@ -67,6 +66,6 @@ virshStorageVolNameCompleter(vshControl *ctl,
     virStoragePoolFree(pool);
     for (i = 0; i < nvols; i++)
         virStorageVolFree(vols[i]);
-    VIR_FREE(vols);
+    g_free(vols);
     return ret;
 }

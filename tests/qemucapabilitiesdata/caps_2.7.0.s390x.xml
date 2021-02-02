@@ -31,6 +31,7 @@
   <flag name='drive-discard'/>
   <flag name='virtio-mmio'/>
   <flag name='boot-strict'/>
+  <flag name='enable-fips'/>
   <flag name='msg-timestamp'/>
   <flag name='active-commit'/>
   <flag name='change-backing-file'/>
@@ -91,19 +92,21 @@
   <flag name='sdl-gl'/>
   <flag name='zpci'/>
   <flag name='storage.werror'/>
+  <flag name='tcg'/>
+  <flag name='fw_cfg'/>
   <version>2007000</version>
   <kvmVersion>0</kvmVersion>
   <microcodeVersion>39100245</microcodeVersion>
   <package></package>
   <arch>s390x</arch>
   <cpu type='kvm' name='host'/>
-  <machine type='kvm' name='s390-ccw-virtio-2.7' alias='s390-ccw-virtio' maxCpus='248' default='yes'/>
-  <machine type='kvm' name='s390-ccw-virtio-2.5' maxCpus='248'/>
-  <machine type='kvm' name='s390-ccw-virtio-2.4' maxCpus='248'/>
-  <machine type='kvm' name='s390-ccw-virtio-2.6' maxCpus='248'/>
+  <machine type='kvm' name='s390-ccw-virtio-2.7' alias='s390-ccw-virtio' maxCpus='248' default='yes' numaMemSupported='yes'/>
+  <machine type='kvm' name='s390-ccw-virtio-2.5' maxCpus='248' numaMemSupported='yes'/>
+  <machine type='kvm' name='s390-ccw-virtio-2.4' maxCpus='248' numaMemSupported='yes'/>
+  <machine type='kvm' name='s390-ccw-virtio-2.6' maxCpus='248' numaMemSupported='yes'/>
   <cpu type='tcg' name='host'/>
-  <machine type='tcg' name='s390-ccw-virtio-2.7' alias='s390-ccw-virtio' maxCpus='248' default='yes'/>
-  <machine type='tcg' name='s390-ccw-virtio-2.5' maxCpus='248'/>
-  <machine type='tcg' name='s390-ccw-virtio-2.4' maxCpus='248'/>
-  <machine type='tcg' name='s390-ccw-virtio-2.6' maxCpus='248'/>
+  <machine type='tcg' name='s390-ccw-virtio-2.7' alias='s390-ccw-virtio' maxCpus='248' default='yes' numaMemSupported='yes'/>
+  <machine type='tcg' name='s390-ccw-virtio-2.5' maxCpus='248' numaMemSupported='yes'/>
+  <machine type='tcg' name='s390-ccw-virtio-2.4' maxCpus='248' numaMemSupported='yes'/>
+  <machine type='tcg' name='s390-ccw-virtio-2.6' maxCpus='248' numaMemSupported='yes'/>
 </qemuCaps>

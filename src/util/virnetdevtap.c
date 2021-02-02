@@ -36,7 +36,7 @@
 #ifndef WIN32
 # include <sys/ioctl.h>
 #endif
-#ifdef HAVE_NET_IF
+#ifdef WITH_NET_IF_H
 # include <net/if.h>
 #endif
 #include <fcntl.h>
@@ -46,7 +46,7 @@
 # include <net/if_mib.h>
 # include <sys/sysctl.h>
 #endif
-#if defined(HAVE_GETIFADDRS) && defined(AF_LINK)
+#if defined(WITH_GETIFADDRS) && defined(AF_LINK)
 # include <ifaddrs.h>
 #endif
 
@@ -125,8 +125,7 @@ virNetDevTapGetRealDeviceName(char *ifname G_GNUC_UNUSED)
         return NULL;
     }
 
-    if (VIR_ALLOC_N(ret, len) < 0)
-        return NULL;
+    ret = g_new0(char, len);
 
     if (sysctl(name, 6, ret, &len, 0, 0) < 0) {
         virReportSystemError(errno,
@@ -141,66 +140,6 @@ virNetDevTapGetRealDeviceName(char *ifname G_GNUC_UNUSED)
     return NULL;
 #endif
 }
-
-
-/**
- * virNetDevProbeVnetHdr:
- * @tapfd: a tun/tap file descriptor
- *
- * Check whether it is safe to enable the IFF_VNET_HDR flag on the
- * tap interface.
- *
- * Setting IFF_VNET_HDR enables QEMU's virtio_net driver to allow
- * guests to pass larger (GSO) packets, with partial checksums, to
- * the host. This greatly increases the achievable throughput.
- *
- * It is only useful to enable this when we're setting up a virtio
- * interface. And it is only *safe* to enable it when we know for
- * sure that a) qemu has support for IFF_VNET_HDR and b) the running
- * kernel implements the TUNGETIFF ioctl(), which qemu needs to query
- * the supplied tapfd.
- *
- * Returns 1 if VnetHdr is supported, 0 if not supported
- */
-#ifdef IFF_VNET_HDR
-static int
-virNetDevProbeVnetHdr(int tapfd)
-{
-# if defined(IFF_VNET_HDR) && defined(TUNGETFEATURES) && defined(TUNGETIFF)
-    unsigned int features;
-    struct ifreq dummy;
-
-    if (ioctl(tapfd, TUNGETFEATURES, &features) != 0) {
-        VIR_INFO("Not enabling IFF_VNET_HDR; "
-                 "TUNGETFEATURES ioctl() not implemented");
-        return 0;
-    }
-
-    if (!(features & IFF_VNET_HDR)) {
-        VIR_INFO("Not enabling IFF_VNET_HDR; "
-                 "TUNGETFEATURES ioctl() reports no IFF_VNET_HDR");
-        return 0;
-    }
-
-    /* The kernel will always return -1 at this point.
-     * If TUNGETIFF is not implemented then errno == EBADFD.
-     */
-    if (ioctl(tapfd, TUNGETIFF, &dummy) != -1 || errno != EBADFD) {
-        VIR_INFO("Not enabling IFF_VNET_HDR; "
-                 "TUNGETIFF ioctl() not implemented");
-        return 0;
-    }
-
-    VIR_INFO("Enabling IFF_VNET_HDR");
-
-    return 1;
-# else
-    (void) tapfd;
-    VIR_INFO("Not enabling IFF_VNET_HDR; disabled at build time");
-    return 0;
-# endif
-}
-#endif
 
 
 #ifdef TUNSETIFF
@@ -230,10 +169,19 @@ int virNetDevTapCreate(char **ifname,
                        size_t tapfdSize,
                        unsigned int flags)
 {
-    size_t i;
+    size_t i = 0;
     struct ifreq ifr;
     int ret = -1;
-    int fd;
+    int fd = -1;
+
+    /* if ifname is empty, then auto-generate a name for the new
+     * device (the kernel could do this for us, but has a bad habit of
+     * immediately re-using names that have just been released, which
+     * can lead to race conditions).  if ifname is just a
+     * user-provided name, virNetDevGenerateName leaves it
+     * unchanged. */
+    if (virNetDevGenerateName(ifname, VIR_NET_DEV_GEN_NAME_VNET) < 0)
+        return -1;
 
     if (!tunpath)
         tunpath = "/dev/net/tun";
@@ -251,21 +199,11 @@ int virNetDevTapCreate(char **ifname,
 
         ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
         /* If tapfdSize is greater than one, request multiqueue */
-        if (tapfdSize > 1) {
-# ifdef IFF_MULTI_QUEUE
+        if (tapfdSize > 1)
             ifr.ifr_flags |= IFF_MULTI_QUEUE;
-# else
-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                           _("Multiqueue devices are not supported on this system"));
-            goto cleanup;
-# endif
-        }
 
-# ifdef IFF_VNET_HDR
-        if ((flags &  VIR_NETDEV_TAP_CREATE_VNET_HDR) &&
-            virNetDevProbeVnetHdr(fd))
+        if (flags &  VIR_NETDEV_TAP_CREATE_VNET_HDR)
             ifr.ifr_flags |= IFF_VNET_HDR;
-# endif
 
         if (virStrcpyStatic(ifr.ifr_name, *ifname) < 0) {
             virReportSystemError(ERANGE,
@@ -299,6 +237,7 @@ int virNetDevTapCreate(char **ifname,
         tapfd[i] = fd;
     }
 
+    VIR_INFO("created device: '%s'", *ifname);
     ret = 0;
 
  cleanup:
@@ -351,6 +290,7 @@ int virNetDevTapDelete(const char *ifname,
         goto cleanup;
     }
 
+    VIR_INFO("delete device: '%s'", ifname);
     ret = 0;
 
  cleanup:
@@ -367,13 +307,18 @@ int virNetDevTapCreate(char **ifname,
     int s;
     struct ifreq ifr;
     int ret = -1;
-    char *newifname = NULL;
 
     if (tapfdSize > 1) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                        _("Multiqueue devices are not supported on this system"));
         goto cleanup;
     }
+
+    /* auto-generate an unused name for the new device (this
+     * is NOP if a name has been provided)
+     */
+    if (virNetDevGenerateName(ifname, VIR_NET_DEV_GEN_NAME_VNET) < 0)
+        return -1;
 
     /* As FreeBSD determines interface type by name,
      * we have to create 'tap' interface first and
@@ -386,34 +331,6 @@ int virNetDevTapCreate(char **ifname,
         virReportSystemError(errno, "%s",
                              _("Unable to create tap device"));
         goto cleanup;
-    }
-
-    /* In case we were given exact interface name (e.g. 'vnetN'),
-     * we just rename to it. If we have format string like
-     * 'vnet%d', we need to find the first available name that
-     * matches this pattern
-     */
-    if (strstr(*ifname, "%d") != NULL) {
-        size_t i;
-        for (i = 0; i <= IF_MAXUNIT; i++) {
-            g_autofree char *newname = NULL;
-
-            newname = g_strdup_printf(*ifname, i);
-
-            if (virNetDevExists(newname) == 0) {
-                newifname = g_steal_pointer(&newname);
-                break;
-            }
-        }
-        if (newifname) {
-            VIR_FREE(*ifname);
-            *ifname = newifname;
-        } else {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("Failed to generate new name for interface %s"),
-                           ifr.ifr_name);
-            goto cleanup;
-        }
     }
 
     if (tapfd) {
@@ -515,7 +432,7 @@ virNetDevTapAttachBridge(const char *tapname,
      * the bridge, or if it is smaller than the current MTU of the
      * bridge). If MTU isn't specified for the new device (i.e. 0),
      * we need to set the interface MTU to the current MTU of the
-     * bridge (to avoid inadvertantly changing the bridge's MTU).
+     * bridge (to avoid inadvertently changing the bridge's MTU).
      */
     if (mtu > 0) {
         if (virNetDevSetMTU(tapname, mtu) < 0)
@@ -831,7 +748,7 @@ virNetDevTapInterfaceStats(const char *ifname,
                    _("/proc/net/dev: Interface not found"));
     return -1;
 }
-#elif defined(HAVE_GETIFADDRS) && defined(AF_LINK)
+#elif defined(WITH_GETIFADDRS) && defined(AF_LINK)
 int
 virNetDevTapInterfaceStats(const char *ifname,
                            virDomainInterfaceStatsPtr stats,
@@ -870,7 +787,7 @@ virNetDevTapInterfaceStats(const char *ifname,
                 stats->rx_bytes = ifd->ifi_obytes;
                 stats->rx_packets = ifd->ifi_opackets;
                 stats->rx_errs = ifd->ifi_oerrors;
-# ifdef HAVE_STRUCT_IF_DATA_IFI_OQDROPS
+# ifndef __APPLE__
                 stats->rx_drop = ifd->ifi_oqdrops;
 # else
                 stats->rx_drop = 0;
@@ -879,7 +796,7 @@ virNetDevTapInterfaceStats(const char *ifname,
                 stats->tx_bytes = ifd->ifi_obytes;
                 stats->tx_packets = ifd->ifi_opackets;
                 stats->tx_errs = ifd->ifi_oerrors;
-# ifdef HAVE_STRUCT_IF_DATA_IFI_OQDROPS
+# ifndef __APPLE__
                 stats->tx_drop = ifd->ifi_oqdrops;
 # else
                 stats->tx_drop = 0;

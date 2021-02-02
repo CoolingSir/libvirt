@@ -19,16 +19,13 @@
  */
 
 #include <config.h>
-#include "virt-admin.h"
 
+#include <stdio.h>
+#include <unistd.h>
 #include <getopt.h>
 
-#if WITH_READLINE
-# include <readline/readline.h>
-# include <readline/history.h>
-#endif
-
 #include "internal.h"
+#include "virt-admin.h"
 #include "viralloc.h"
 #include "virerror.h"
 #include "virfile.h"
@@ -41,9 +38,6 @@
 #include "virenum.h"
 
 #define VIRT_ADMIN_PROMPT "virt-admin # "
-
-/* we don't need precision to milliseconds in this module */
-#define VIRT_ADMIN_TIME_BUFLEN VIR_TIME_STRING_BUFLEN - 3
 
 static char *progname;
 
@@ -315,9 +309,9 @@ cmdConnect(vshControl *ctl, const vshCmd *cmd)
 }
 
 
-/* ---------------
- * Command srv-list
- * ---------------
+/* -------------------
+ * Command server-list
+ * -------------------
  */
 
 static const vshCmdInfo info_srv_list[] = {
@@ -380,9 +374,9 @@ cmdSrvList(vshControl *ctl, const vshCmd *cmd G_GNUC_UNUSED)
 }
 
 
-/* ---------------------------
- * Command srv-threadpool-info
- * ---------------------------
+/* ------------------------------
+ * Command server-threadpool-info
+ * ------------------------------
  */
 
 static const vshCmdInfo info_srv_threadpool_info[] = {
@@ -441,9 +435,9 @@ cmdSrvThreadpoolInfo(vshControl *ctl, const vshCmd *cmd)
     return ret;
 }
 
-/* --------------------------
- * Command srv-threadpool-set
- * --------------------------
+/* -----------------------------
+ * Command server-threadpool-set
+ * -----------------------------
  */
 
 static const vshCmdInfo info_srv_threadpool_set[] = {
@@ -550,9 +544,9 @@ cmdSrvThreadpoolSet(vshControl *ctl, const vshCmd *cmd)
     goto cleanup;
 }
 
-/* ------------------------
- * Command srv-clients-list
- * ------------------------
+/* ---------------------------
+ * Command server-clients-list
+ * ---------------------------
  */
 
 static const vshCmdInfo info_srv_clients_list[] = {
@@ -793,9 +787,9 @@ cmdClientDisconnect(vshControl *ctl, const vshCmd *cmd)
     return ret;
 }
 
-/* ------------------------
- * Command srv-clients-info
- * ------------------------
+/* ---------------------------
+ * Command server-clients-info
+ * ---------------------------
  */
 
 static const vshCmdInfo info_srv_clients_info[] = {
@@ -852,9 +846,9 @@ cmdSrvClientsInfo(vshControl *ctl, const vshCmd *cmd)
     return ret;
 }
 
-/* -----------------------
- * Command srv-clients-set
- * -----------------------
+/* --------------------------
+ * Command server-clients-set
+ * --------------------------
  */
 
 static const vshCmdInfo info_srv_clients_set[] = {
@@ -957,9 +951,9 @@ cmdSrvClientsSet(vshControl *ctl, const vshCmd *cmd)
     goto cleanup;
 }
 
-/* ------------------------
- *  Command srv-update-tls
- * ------------------------
+/* --------------------------
+ *  Command server-update-tls
+ * --------------------------
  */
 static const vshCmdInfo info_srv_update_tls_file[] = {
     {.name = "help",
@@ -978,7 +972,7 @@ static const vshCmdOptDef opts_srv_update_tls_file[] = {
      .type = VSH_OT_DATA,
      .flags = VSH_OFLAG_REQ,
      .help = N_("Available servers on a daemon. "
-                "Currently only supports 'libvirtd'.")
+                "Currently only supports 'libvirtd' or 'virtproxyd'.")
     },
     {.name = NULL}
 };
@@ -1040,20 +1034,19 @@ static const vshCmdOptDef opts_daemon_log_filters[] = {
 static bool
 cmdDaemonLogFilters(vshControl *ctl, const vshCmd *cmd)
 {
-    int nfilters;
-    char *filters = NULL;
     vshAdmControlPtr priv = ctl->privData;
 
     if (vshCommandOptBool(cmd, "filters")) {
-        if ((vshCommandOptStringReq(ctl, cmd, "filters",
-                                    (const char **) &filters) < 0 ||
+        const char *filters = NULL;
+        if ((vshCommandOptStringReq(ctl, cmd, "filters", &filters) < 0 ||
              virAdmConnectSetLoggingFilters(priv->conn, filters, 0) < 0)) {
             vshError(ctl, _("Unable to change daemon logging settings"));
             return false;
         }
     } else {
-        if ((nfilters = virAdmConnectGetLoggingFilters(priv->conn,
-                                                       &filters, 0)) < 0) {
+        g_autofree char *filters = NULL;
+        if (virAdmConnectGetLoggingFilters(priv->conn,
+                                           &filters, 0) < 0) {
             vshError(ctl, _("Unable to get daemon logging filters information"));
             return false;
         }
@@ -1094,20 +1087,18 @@ static const vshCmdOptDef opts_daemon_log_outputs[] = {
 static bool
 cmdDaemonLogOutputs(vshControl *ctl, const vshCmd *cmd)
 {
-    int noutputs;
-    char *outputs = NULL;
     vshAdmControlPtr priv = ctl->privData;
 
     if (vshCommandOptBool(cmd, "outputs")) {
-        if ((vshCommandOptStringReq(ctl, cmd, "outputs",
-                                    (const char **) &outputs) < 0 ||
+        const char *outputs = NULL;
+        if ((vshCommandOptStringReq(ctl, cmd, "outputs", &outputs) < 0 ||
              virAdmConnectSetLoggingOutputs(priv->conn, outputs, 0) < 0)) {
             vshError(ctl, _("Unable to change daemon logging settings"));
             return false;
         }
     } else {
-        if ((noutputs = virAdmConnectGetLoggingOutputs(priv->conn,
-                                                       &outputs, 0)) < 0) {
+        g_autofree char *outputs = NULL;
+        if (virAdmConnectGetLoggingOutputs(priv->conn, &outputs, 0) < 0) {
             vshError(ctl, _("Unable to get daemon logging outputs information"));
             return false;
         }
@@ -1277,9 +1268,7 @@ vshAdmShowVersion(vshControl *ctl G_GNUC_UNUSED)
 #ifdef WITH_LIBVIRTD
     vshPrint(ctl, " Daemon");
 #endif
-#ifdef ENABLE_DEBUG
     vshPrint(ctl, " Debug");
-#endif
 #if WITH_READLINE
     vshPrint(ctl, " Readline");
 #endif
@@ -1375,7 +1364,7 @@ vshAdmParseArgv(vshControl *ctl, int argc, char **argv)
         ctl->imode = false;
         if (argc - optind == 1) {
             vshDebug(ctl, VSH_ERR_INFO, "commands: \"%s\"\n", argv[optind]);
-            return vshCommandStringParse(ctl, argv[optind], NULL);
+            return vshCommandStringParse(ctl, argv[optind], NULL, 0);
         } else {
             return vshCommandArgvParse(ctl, argc - optind, argv + optind);
         }
@@ -1603,10 +1592,9 @@ main(int argc, char **argv)
             if (ctl->cmdstr == NULL)
                 break;          /* EOF */
             if (*ctl->cmdstr) {
-#if WITH_READLINE
-                add_history(ctl->cmdstr);
-#endif
-                if (vshCommandStringParse(ctl, ctl->cmdstr, NULL))
+                vshReadlineHistoryAdd(ctl->cmdstr);
+
+                if (vshCommandStringParse(ctl, ctl->cmdstr, NULL, 0))
                     vshCommandRun(ctl, ctl->cmd);
             }
             VIR_FREE(ctl->cmdstr);

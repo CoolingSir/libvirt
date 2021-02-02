@@ -1,9 +1,12 @@
-.. image:: https://travis-ci.org/libvirt/libvirt.svg
-     :target: https://travis-ci.org/libvirt/libvirt
-     :alt: Travis CI Build Status
+.. image:: https://gitlab.com/libvirt/libvirt/badges/master/pipeline.svg
+     :target: https://gitlab.com/libvirt/libvirt/pipelines
+     :alt: GitLab CI Build Status
 .. image:: https://bestpractices.coreinfrastructure.org/projects/355/badge
      :target: https://bestpractices.coreinfrastructure.org/projects/355
      :alt: CII Best Practices
+.. image:: https://translate.fedoraproject.org/widgets/libvirt/-/libvirt/svg-badge.svg
+     :target: https://translate.fedoraproject.org/engage/libvirt/
+     :alt: Translation status
 
 ==============================
 Libvirt API for virtualization
@@ -42,31 +45,9 @@ and ``COPYING`` for full license terms & conditions.
 Installation
 ============
 
-Libvirt uses the GNU Autotools build system, so in general can be built
-and installed with the usual commands, however, we mandate to have the
-build directory different than the source directory. For example, to build
-in a manner that is suitable for installing as root, use:
+Instructions on building and installing libvirt can be found on the website:
 
-::
-
-  $ mkdir build && cd build
-  $ ../configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
-  $ make
-  $ sudo make install
-
-While to build & install as an unprivileged user
-
-::
-
-  $ mkdir build && cd build
-  $ ../configure --prefix=$HOME/usr
-  $ make
-  $ make install
-
-The libvirt code relies on a large number of 3rd party libraries. These will
-be detected during execution of the ``configure`` script and a summary printed
-which lists any missing (optional) dependencies.
-
+https://libvirt.org/compiling.html
 
 Contributing
 ============

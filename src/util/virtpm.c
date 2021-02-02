@@ -31,6 +31,7 @@
 #include "virbitmap.h"
 #include "virjson.h"
 #include "virlog.h"
+#include "virthread.h"
 
 #define VIR_FROM_THIS VIR_FROM_TPM
 
@@ -89,7 +90,7 @@ virTPMCreateCancelPath(const char *devpath)
 
 /*
  * executables for the swtpm; to be found on the host along with
- * capabilties bitmap
+ * capabilities bitmap
  */
 static virMutex swtpm_tools_lock = VIR_MUTEX_INITIALIZER;
 static char *swtpm_path;
@@ -183,7 +184,7 @@ virTPMExecGetCaps(virCommandPtr cmd,
     if (virCommandRun(cmd, &exitstatus) < 0)
         return NULL;
 
-    bitmap = virBitmapNewEmpty();
+    bitmap = virBitmapNew(0);
 
     /* older version does not support --print-capabilties -- that's fine */
     if (exitstatus != 0) {
@@ -290,7 +291,6 @@ virTPMEmulatorInit(void)
         g_autofree char *path = NULL;
         bool findit = *prgs[i].path == NULL;
         struct stat statbuf;
-        char *tmp;
 
         if (!findit) {
             /* has executables changed? */
@@ -303,9 +303,7 @@ virTPMEmulatorInit(void)
         }
 
         if (findit) {
-            tmp = *prgs[i].path;
-            VIR_FREE(tmp);
-            *prgs[i].path = NULL;
+            VIR_FREE(*prgs[i].path);
 
             path = virFindFileInPath(prgs[i].name);
             if (!path) {

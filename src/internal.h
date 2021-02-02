@@ -29,6 +29,10 @@
 #include <stdlib.h>
 #include "glibcompat.h"
 
+#if defined __clang_analyzer__ || defined __COVERITY__
+# define STATIC_ANALYSIS 1
+#endif
+
 #if STATIC_ANALYSIS
 # undef NDEBUG /* Don't let a prior NDEBUG definition cause trouble.  */
 # include <assert.h>
@@ -49,13 +53,13 @@
 /* The library itself needs to know enum sizes.  */
 #define VIR_ENUM_SENTINELS
 
-#ifdef HAVE_LIBINTL_H
+#ifdef WITH_LIBINTL_H
 # define DEFAULT_TEXT_DOMAIN PACKAGE
 # include <libintl.h>
 # define _(str) dgettext(PACKAGE, str)
-#else /* HAVE_LIBINTL_H */
+#else /* WITH_LIBINTL_H */
 # define _(str) str
-#endif /* HAVE_LIBINTL_H */
+#endif /* WITH_LIBINTL_H */
 #define N_(str) str
 
 #include "libvirt/libvirt.h"
@@ -128,7 +132,7 @@
  * whether a parameter is nonnull.  Make this attribute conditional
  * based on whether we are compiling for real or for analysis, while
  * still requiring correct gcc syntax when it is turned off.  See also
- * http://gcc.gnu.org/bugzilla/show_bug.cgi?id=17308 */
+ * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=17308 */
 #ifndef ATTRIBUTE_NONNULL
 # if STATIC_ANALYSIS
 #  define ATTRIBUTE_NONNULL(m) __attribute__((__nonnull__(m)))
@@ -165,7 +169,7 @@
     _Pragma ("GCC diagnostic push") \
     _Pragma ("GCC diagnostic ignored \"-Wpointer-sign\"")
 
-#if HAVE_SUGGEST_ATTRIBUTE_FORMAT
+#if WITH_SUGGEST_ATTRIBUTE_FORMAT
 # define VIR_WARNINGS_NO_PRINTF \
     _Pragma ("GCC diagnostic push") \
     _Pragma ("GCC diagnostic ignored \"-Wsuggest-attribute=format\"")
@@ -173,6 +177,10 @@
 # define VIR_WARNINGS_NO_PRINTF \
     _Pragma ("GCC diagnostic push")
 #endif
+
+#define VIR_WARNINGS_NO_UNUSED_FUNCTION \
+    _Pragma ("GCC diagnostic push") \
+    _Pragma ("GCC diagnostic ignored \"-Wunused-function\"")
 
 /* Workaround bogus GCC 6.0 for logical 'or' equal expression warnings.
  * (GCC bz 69602) */
@@ -184,6 +192,15 @@
 # define VIR_WARNINGS_NO_WLOGICALOP_EQUAL_EXPR \
      _Pragma ("GCC diagnostic push")
 #endif
+
+/* Where ignore_value cannot be used because it's a statement */
+#define VIR_WARNINGS_NO_UNUSED_VARIABLE \
+    _Pragma ("GCC diagnostic push") \
+    _Pragma ("GCC diagnostic ignored \"-Wunused-variable\"")
+
+#define VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT \
+    _Pragma ("GCC diagnostic push") \
+    _Pragma ("GCC diagnostic ignored \"-Wdeclaration-after-statement\"")
 
 #define VIR_WARNINGS_RESET \
     _Pragma ("GCC diagnostic pop")
@@ -219,6 +236,16 @@
         (b) = (a) ^ (b); \
         (a) = (a) ^ (b); \
     } while (0)
+
+
+/**
+ * VIR_IS_POW2:
+ *
+ * Returns true if given number is a power of two
+ */
+#define VIR_IS_POW2(x) \
+    ((x) && !((x) & ((x) - 1)))
+
 
 /**
  * virCheckFlags:
@@ -490,7 +517,7 @@ enum {
 #endif
 
 /* Ideally callers would use the g_*printf
- * functions directly but there are alot to
+ * functions directly but there are a lot to
  * convert, so until then...
  */
 #ifndef VIR_NO_GLIB_STDIO

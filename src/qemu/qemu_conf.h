@@ -64,13 +64,9 @@ typedef virQEMUDriverConfig *virQEMUDriverConfigPtr;
  * being released while they use it.
  *
  * eg
- *  qemuDriverLock(driver);
- *  virQEMUDriverConfigPtr cfg = virObjectRef(driver->config);
- *  qemuDriverUnlock(driver);
+ *  g_autoptr(virQEMUDriverConfig) cfg = virQEMUDriverGetConfig(driver);
  *
  *  ...do stuff with 'cfg'..
- *
- *  virObjectUnref(cfg);
  */
 struct _virQEMUDriverConfig {
     virObject parent;
@@ -112,6 +108,7 @@ struct _virQEMUDriverConfig {
     char *defaultTLSx509certdir;
     bool defaultTLSx509certdirPresent;
     bool defaultTLSx509verify;
+    bool defaultTLSx509verifyPresent;
     char *defaultTLSx509secretUUID;
 
     bool vncAutoUnixSocket;
@@ -143,6 +140,20 @@ struct _virQEMUDriverConfig {
     bool migrateTLSx509verify;
     bool migrateTLSx509verifyPresent;
     char *migrateTLSx509secretUUID;
+    bool migrateTLSForce;
+
+    char *backupTLSx509certdir;
+    bool backupTLSx509verify;
+    bool backupTLSx509verifyPresent;
+    char *backupTLSx509secretUUID;
+
+    bool vxhsTLS;
+    char *vxhsTLSx509certdir;
+    char *vxhsTLSx509secretUUID;
+
+    bool nbdTLS;
+    char *nbdTLSx509certdir;
+    char *nbdTLSx509secretUUID;
 
     unsigned int remotePortMin;
     unsigned int remotePortMax;
@@ -208,12 +219,6 @@ struct _virQEMUDriverConfig {
 
     char *memoryBackingDir;
 
-    bool vxhsTLS;
-    char *vxhsTLSx509certdir;
-
-    bool nbdTLS;
-    char *nbdTLSx509certdir;
-
     uid_t swtpm_user;
     gid_t swtpm_group;
 
@@ -268,11 +273,6 @@ struct _virQEMUDriver {
     /* Lazy initialized on first use, immutable thereafter.
      * Require lock to get the pointer & do optional initialization
      */
-    virCapsHostNUMAPtr hostnuma;
-
-    /* Lazy initialized on first use, immutable thereafter.
-     * Require lock to get the pointer & do optional initialization
-     */
     virCPUDefPtr hostcpu;
 
     /* Immutable value */
@@ -293,7 +293,7 @@ struct _virQEMUDriver {
     virHostdevManagerPtr hostdevMgr;
 
     /* Immutable pointer. Unsafe APIs. XXX */
-    virHashTablePtr sharedDevices;
+    GHashTable *sharedDevices;
 
     /* Immutable pointer, immutable object */
     virPortAllocatorRangePtr remotePorts;
@@ -332,7 +332,6 @@ virQEMUDriverConfigSetDefaults(virQEMUDriverConfigPtr cfg);
 
 virQEMUDriverConfigPtr virQEMUDriverGetConfig(virQEMUDriverPtr driver);
 
-virCapsHostNUMAPtr virQEMUDriverGetHostNUMACaps(virQEMUDriverPtr driver);
 virCPUDefPtr virQEMUDriverGetHostCPU(virQEMUDriverPtr driver);
 virCapsPtr virQEMUDriverCreateCapabilities(virQEMUDriverPtr driver);
 virCapsPtr virQEMUDriverGetCapabilities(virQEMUDriverPtr driver,

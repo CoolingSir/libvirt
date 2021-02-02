@@ -23,16 +23,14 @@
 
 #pragma once
 
+#include <wsman-api.h>
+
 #include "internal.h"
-#include "openwsman.h"
 
 #include "hyperv_wmi_classes.generated.typedef"
 
 #define ROOT_CIMV2 \
     "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/*"
-
-#define ROOT_VIRTUALIZATION \
-    "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/*"
 
 #define ROOT_VIRTUALIZATION_V2 \
     "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/*"
@@ -44,10 +42,10 @@
  */
 
 #define MSVM_COMPUTERSYSTEM_WQL_VIRTUAL \
-    "Description = \"Microsoft Virtual Machine\" "
+    "Name != __SERVER "
 
 #define MSVM_COMPUTERSYSTEM_WQL_PHYSICAL \
-    "Description = \"Microsoft Hosting Computer System\" "
+    "Name = __SERVER "
 
 #define MSVM_COMPUTERSYSTEM_WQL_ACTIVE \
     "(EnabledState != 0 and EnabledState != 3 and EnabledState != 32769) "
@@ -72,7 +70,10 @@ enum _Msvm_ComputerSystem_EnabledState {
 enum _Msvm_ComputerSystem_RequestedState {
     MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_ENABLED = 2,
     MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_DISABLED = 3,
+    MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_OFFLINE = 6,
+    MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_QUIESCE = 9,
     MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_REBOOT = 10,
+    MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_RESET = 11,
     MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_PAUSED = 32768,
     MSVM_COMPUTERSYSTEM_REQUESTEDSTATE_SUSPENDED = 32769,
 };
@@ -97,6 +98,26 @@ enum _Msvm_ConcreteJob_JobState {
 };
 
 
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * Msvm_ResourceAllocationSettingData
+ */
+
+/* https://docs.microsoft.com/en-us/windows/win32/hyperv_v2/msvm-resourceallocationsettingdata */
+enum _Msvm_ResourceAllocationSettingData_ResourceType {
+    MSVM_RASD_RESOURCETYPE_OTHER = 1,
+    MSVM_RASD_RESOURCETYPE_IDE_CONTROLLER = 5,
+    MSVM_RASD_RESOURCETYPE_PARALLEL_SCSI_HBA = 6,
+    MSVM_RASD_RESOURCETYPE_DISKETTE_DRIVE = 14,
+    MSVM_RASD_RESOURCETYPE_CD_DRIVE = 15,
+    MSVM_RASD_RESOURCETYPE_DVD_DRIVE = 16,
+    MSVM_RASD_RESOURCETYPE_DISK_DRIVE = 17,
+    MSVM_RASD_RESOURCETYPE_STORAGE_EXTENT = 19,
+    MSVM_RASD_RESOURCETYPE_LOGICAL_DISK = 31,
+};
+
+
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  * WMI
  */
@@ -117,8 +138,6 @@ typedef hypervWmiClassInfo *hypervWmiClassInfoPtr;
 struct _hypervWmiClassInfo {
     /* The WMI class name */
     const char *name;
-    /* The version of the WMI class as in "v1" or "v2" */
-    const char *version;
     /* The URI for wsman enumerate request */
     const char *rootUri;
     /* The namespace URI for XML serialization */
@@ -127,14 +146,6 @@ struct _hypervWmiClassInfo {
     XmlSerializerInfo *serializerInfo;
     /* Property type information */
     hypervCimTypePtr propertyInfo;
-};
-
-
-typedef struct _hypervWmiClassInfoList hypervWmiClassInfoList;
-typedef hypervWmiClassInfoList *hypervWmiClassInfoListPtr;
-struct _hypervWmiClassInfoList {
-    size_t count;
-    hypervWmiClassInfoPtr *objs;
 };
 
 #include "hyperv_wmi_classes.generated.h"

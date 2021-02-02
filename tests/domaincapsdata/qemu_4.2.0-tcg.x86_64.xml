@@ -34,6 +34,7 @@
       <vendor>AMD</vendor>
       <feature policy='require' name='acpi'/>
       <feature policy='require' name='ss'/>
+      <feature policy='require' name='monitor'/>
       <feature policy='require' name='hypervisor'/>
       <feature policy='require' name='erms'/>
       <feature policy='require' name='mpx'/>
@@ -43,6 +44,7 @@
       <feature policy='require' name='la57'/>
       <feature policy='require' name='3dnowext'/>
       <feature policy='require' name='3dnow'/>
+      <feature policy='require' name='npt'/>
       <feature policy='disable' name='vme'/>
       <feature policy='disable' name='fma'/>
       <feature policy='disable' name='avx'/>
@@ -57,6 +59,7 @@
       <feature policy='disable' name='osvw'/>
       <feature policy='disable' name='topoext'/>
       <feature policy='disable' name='ibpb'/>
+      <feature policy='disable' name='nrip-save'/>
     </mode>
     <mode name='custom' supported='yes'>
       <model usable='yes'>qemu64</model>
@@ -73,6 +76,7 @@
       <model usable='yes'>athlon</model>
       <model usable='no'>Westmere-IBRS</model>
       <model usable='no'>Westmere</model>
+      <model usable='no'>Snowridge</model>
       <model usable='no'>Skylake-Server-noTSX-IBRS</model>
       <model usable='no'>Skylake-Server-IBRS</model>
       <model usable='no'>Skylake-Server</model>
@@ -139,6 +143,7 @@
         <value>sdl</value>
         <value>vnc</value>
         <value>spice</value>
+        <value>egl-headless</value>
       </enum>
     </graphics>
     <video supported='yes'>

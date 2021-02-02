@@ -18,7 +18,7 @@ GRegex *testSnapshotXMLVariableLineRegex = NULL;
 static char *
 testFilterXML(char *xml)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char **xmlLines = NULL;
     char **xmlLine;
     char *ret = NULL;
@@ -39,8 +39,7 @@ testFilterXML(char *xml)
     ret = virBufferContentAndReset(&buf);
 
  cleanup:
-   virBufferFreeAndReset(&buf);
-   virStringListFree(xmlLines);
+   g_strfreev(xmlLines);
    return ret;
 }
 
@@ -136,7 +135,8 @@ mymain(void)
     DO_TEST("2disks-3snap-brother");
 
  cleanup:
-    g_regex_unref(testSnapshotXMLVariableLineRegex);
+    if (testSnapshotXMLVariableLineRegex)
+        g_regex_unref(testSnapshotXMLVariableLineRegex);
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

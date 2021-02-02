@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2014 Roman Bogorodskiy
  * Copyright (C) 2014 Semihalf
- * Copyright (C) 2016 Fabian Freyer
+ * Copyright (C) 2020 Fabian Freyer
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -134,7 +134,7 @@ virBhyveDomainCapsBuild(bhyveConnPtr conn,
 {
     virDomainCapsPtr caps = NULL;
     unsigned int bhyve_caps = 0;
-    DIR *dir;
+    g_autoptr(DIR) dir = NULL;
     struct dirent *entry;
     size_t firmwares_alloc = 0;
     virBhyveDriverConfigPtr cfg = virBhyveDriverGetConfig(conn);
@@ -150,8 +150,7 @@ virBhyveDomainCapsBuild(bhyveConnPtr conn,
         goto cleanup;
     }
 
-    if (VIR_ALLOC(firmwares) < 0)
-        goto cleanup;
+    firmwares = g_new0(virDomainCapsStringValues, 1);
 
     if (virDirOpenIfExists(&dir, firmware_dir) > 0) {
         while ((virDirRead(dir, &entry, firmware_dir)) > 0) {
@@ -172,7 +171,6 @@ virBhyveDomainCapsBuild(bhyveConnPtr conn,
 
  cleanup:
     VIR_FREE(firmwares);
-    VIR_DIR_CLOSE(dir);
     virObjectUnref(cfg);
     return caps;
 }
@@ -323,6 +321,39 @@ bhyveProbeCapsXHCIController(unsigned int *caps, char *binary)
 }
 
 
+static int
+bhyveProbeCapsSoundHda(unsigned int *caps, char *binary)
+{
+    return bhyveProbeCapsDeviceHelper(caps, binary,
+                                      "-s",
+                                      "0,hda",
+                                      "pci slot 0:0: unknown device \"hda\"",
+                                      BHYVE_CAP_SOUND_HDA);
+}
+
+
+static int
+bhyveProbeCapsVNCPassword(unsigned int *caps, char *binary)
+{
+    return bhyveProbeCapsDeviceHelper(caps, binary,
+                                      "-s",
+                                      "0,fbuf,password=",
+                                      "Invalid fbuf emulation \"password\"",
+                                      BHYVE_CAP_VNC_PASSWORD);
+}
+
+
+static int
+bhyveProbeCapsVirtio9p(unsigned int *caps, char *binary)
+{
+    return bhyveProbeCapsDeviceHelper(caps, binary,
+                                      "-s",
+                                      "0,virtio-9p",
+                                      "pci slot 0:0: unknown device \"hda\"",
+                                      BHYVE_CAP_VIRTIO_9P);
+}
+
+
 int
 virBhyveProbeCaps(unsigned int *caps)
 {
@@ -349,6 +380,15 @@ virBhyveProbeCaps(unsigned int *caps)
         goto out;
 
     if ((ret = bhyveProbeCapsXHCIController(caps, binary)))
+        goto out;
+
+    if ((ret = bhyveProbeCapsSoundHda(caps, binary)))
+        goto out;
+
+    if ((ret = bhyveProbeCapsVNCPassword(caps, binary)))
+        goto out;
+
+    if ((ret = bhyveProbeCapsVirtio9p(caps, binary)))
         goto out;
 
  out:

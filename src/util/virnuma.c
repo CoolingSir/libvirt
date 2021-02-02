@@ -53,7 +53,7 @@
 VIR_LOG_INIT("util.numa");
 
 
-#if HAVE_NUMAD
+#if WITH_NUMAD
 char *
 virNumaGetAutoPlacementAdvice(unsigned short vcpus,
                               unsigned long long balloon)
@@ -76,7 +76,7 @@ virNumaGetAutoPlacementAdvice(unsigned short vcpus,
 
     return output;
 }
-#else /* !HAVE_NUMAD */
+#else /* !WITH_NUMAD */
 char *
 virNumaGetAutoPlacementAdvice(unsigned short vcpus G_GNUC_UNUSED,
                               unsigned long long balloon G_GNUC_UNUSED)
@@ -85,7 +85,7 @@ virNumaGetAutoPlacementAdvice(unsigned short vcpus G_GNUC_UNUSED,
                    _("numad is not available on this host"));
     return NULL;
 }
-#endif /* !HAVE_NUMAD */
+#endif /* !WITH_NUMAD */
 
 #if WITH_NUMACTL
 int
@@ -256,33 +256,23 @@ virNumaGetNodeCPUs(int node,
     int mask_n_bytes = max_n_cpus / 8;
     size_t i;
     g_autofree unsigned long *mask = NULL;
-    g_autofree unsigned long *allonesmask = NULL;
     g_autoptr(virBitmap) cpumap = NULL;
 
     *cpus = NULL;
 
-    if (VIR_ALLOC_N(mask, mask_n_bytes / sizeof(*mask)) < 0)
-        return -1;
+    if (!virNumaNodeIsAvailable(node)) {
+        VIR_DEBUG("NUMA topology for cell %d is not available, ignoring", node);
+        return -2;
+    }
 
-    if (VIR_ALLOC_N(allonesmask, mask_n_bytes / sizeof(*mask)) < 0)
-        return -1;
+    mask = g_new0(unsigned long, mask_n_bytes / sizeof(*mask));
 
-    memset(allonesmask, 0xff, mask_n_bytes);
-
-    /* The first time this returns -1, ENOENT if node doesn't exist... */
     if (numa_node_to_cpus(node, mask, mask_n_bytes) < 0) {
         VIR_WARN("NUMA topology for cell %d is not available, ignoring", node);
         return -2;
     }
 
-    /* second, third... times it returns an all-1's mask */
-    if (memcmp(mask, allonesmask, mask_n_bytes) == 0) {
-        VIR_DEBUG("NUMA topology for cell %d is invalid, ignoring", node);
-        return -2;
-    }
-
-    if (!(cpumap = virBitmapNew(max_n_cpus)))
-        return -1;
+    cpumap = virBitmapNew(max_n_cpus);
 
     for (i = 0; i < max_n_cpus; i++) {
         if (MASK_CPU_ISSET(mask, i)) {
@@ -319,17 +309,26 @@ virNumaNodesetToCPUset(virBitmapPtr nodeset,
     if (!nodeset)
         return 0;
 
-    allNodesCPUs = virBitmapNewEmpty();
+    allNodesCPUs = virBitmapNew(0);
     nodesetSize = virBitmapSize(nodeset);
 
     for (i = 0; i < nodesetSize; i++) {
         g_autoptr(virBitmap) nodeCPUs = NULL;
+        int rc;
 
         if (!virBitmapIsBitSet(nodeset, i))
             continue;
 
-        if (virNumaGetNodeCPUs(i, &nodeCPUs) < 0)
+        rc = virNumaGetNodeCPUs(i, &nodeCPUs);
+        if (rc < 0) {
+            /* Error is reported for cases other than non-existent NUMA node. */
+            if (rc == -2) {
+                virReportError(VIR_ERR_OPERATION_FAILED,
+                               _("NUMA node %zu is not available"),
+                               i);
+            }
             return -1;
+        }
 
         if (virBitmapUnion(allNodesCPUs, nodeCPUs) < 0)
             return -1;
@@ -422,7 +421,7 @@ virNumaGetMaxCPUs(void)
 }
 
 
-#if WITH_NUMACTL && HAVE_NUMA_BITMASK_ISBITSET
+#if WITH_NUMACTL
 /**
  * virNumaNodeIsAvailable:
  * @node: node to check
@@ -477,9 +476,7 @@ virNumaGetDistances(int node,
     if ((max_node = virNumaGetMaxNode()) < 0)
         return -1;
 
-    if (VIR_ALLOC_N(*distances, max_node + 1) < 0)
-        return -1;
-
+    *distances = g_new0(int, max_node + 1);
     *ndistances = max_node + 1;
 
     for (i = 0; i <= max_node; i++) {
@@ -492,7 +489,7 @@ virNumaGetDistances(int node,
     return 0;
 }
 
-#else /* !(WITH_NUMACTL && HAVE_NUMA_BITMASK_ISBITSET) */
+#else /* !WITH_NUMACTL */
 
 bool
 virNumaNodeIsAvailable(int node)
@@ -517,7 +514,7 @@ virNumaGetDistances(int node G_GNUC_UNUSED,
     VIR_DEBUG("NUMA distance information isn't available on this host");
     return 0;
 }
-#endif /* !(WITH_NUMACTL && HAVE_NUMA_BITMASK_ISBITSET) */
+#endif /* !WITH_NUMACTL */
 
 
 /* currently all the huge page stuff below is linux only */
@@ -742,8 +739,7 @@ virNumaGetPages(int node,
                 unsigned long long **pages_free,
                 size_t *npages)
 {
-    int ret = -1;
-    DIR *dir = NULL;
+    g_autoptr(DIR) dir = NULL;
     int direrr = 0;
     struct dirent *entry;
     unsigned int ntmp = 0;
@@ -766,12 +762,12 @@ virNumaGetPages(int node,
      * slightly different information. So we take the total memory on a node
      * and subtract memory taken by the huge pages. */
     if (virNumaGetHugePageInfoDir(&path, node) < 0)
-        goto cleanup;
+        return -1;
 
     /* It's okay if the @path doesn't exist. Maybe we are running on
      * system without huge pages support where the path may not exist. */
     if (virDirOpenIfExists(&dir, path) < 0)
-        goto cleanup;
+        return -1;
 
     while (dir && (direrr = virDirRead(dir, &entry, path)) > 0) {
         const char *page_name = entry->d_name;
@@ -792,17 +788,17 @@ virNumaGetPages(int node,
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("unable to parse %s"),
                            entry->d_name);
-            goto cleanup;
+            return -1;
         }
 
         if (virNumaGetHugePageInfo(node, page_size,
                                    &page_avail, &page_free) < 0)
-            goto cleanup;
+            return -1;
 
         if (VIR_REALLOC_N(tmp_size, ntmp + 1) < 0 ||
             VIR_REALLOC_N(tmp_avail, ntmp + 1) < 0 ||
             VIR_REALLOC_N(tmp_free, ntmp + 1) < 0)
-            goto cleanup;
+            return -1;
 
         tmp_size[ntmp] = page_size;
         tmp_avail[ntmp] = page_avail;
@@ -815,17 +811,17 @@ virNumaGetPages(int node,
     }
 
     if (direrr < 0)
-        goto cleanup;
+        return -1;
 
     /* Now append the ordinary system pages */
     if (VIR_REALLOC_N(tmp_size, ntmp + 1) < 0 ||
         VIR_REALLOC_N(tmp_avail, ntmp + 1) < 0 ||
         VIR_REALLOC_N(tmp_free, ntmp + 1) < 0)
-        goto cleanup;
+        return -1;
 
     if (virNumaGetPageInfo(node, system_page_size, huge_page_sum,
                            &tmp_avail[ntmp], &tmp_free[ntmp]) < 0)
-        goto cleanup;
+        return -1;
     tmp_size[ntmp] = system_page_size;
     ntmp++;
 
@@ -855,10 +851,7 @@ virNumaGetPages(int node,
         tmp_free = NULL;
     }
     *npages = ntmp;
-    ret = 0;
- cleanup:
-    VIR_DIR_CLOSE(dir);
-    return ret;
+    return 0;
 }
 
 
@@ -1026,8 +1019,7 @@ virNumaGetHostMemoryNodeset(void)
     if (maxnode < 0)
         return NULL;
 
-    if (!(nodeset = virBitmapNew(maxnode + 1)))
-        return NULL;
+    nodeset = virBitmapNew(maxnode + 1);
 
     for (i = 0; i <= maxnode; i++) {
         if (!virNumaNodeIsAvailable(i))

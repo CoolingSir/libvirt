@@ -114,8 +114,7 @@ testSELinuxLoadFileList(const char *testname,
     if (!(fp = fopen(path, "r")))
         goto cleanup;
 
-    if (VIR_ALLOC_N(line, 1024) < 0)
-        goto cleanup;
+    line = g_new0(char, 1024);
 
     while (!feof(fp)) {
         char *file = NULL, *context = NULL, *tmp;
@@ -252,7 +251,7 @@ static int
 testSELinuxCheckLabels(testSELinuxFile *files, size_t nfiles)
 {
     size_t i;
-    security_context_t ctx;
+    char *ctx;
 
     for (i = 0; i < nfiles; i++) {
         ctx = NULL;
@@ -360,7 +359,7 @@ mymain(void)
     if (virTestRun("Labelling " # name, testSELinuxLabeling, name) < 0) \
         ret = -1;
 
-    setcon((security_context_t)"system_r:system_u:libvirtd_t:s0:c0.c1023");
+    setcon("system_r:system_u:libvirtd_t:s0:c0.c1023");
 
     DO_TEST_LABELING("disks");
     DO_TEST_LABELING("kernel");
@@ -374,4 +373,4 @@ mymain(void)
 
 VIR_TEST_MAIN_PRELOAD(mymain,
                       VIR_TEST_MOCK("domaincaps"),
-                      abs_builddir "/.libs/libsecurityselinuxhelper.so")
+                      abs_builddir "/libsecurityselinuxhelper.so")

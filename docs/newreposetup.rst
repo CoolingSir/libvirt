@@ -63,13 +63,41 @@ required under the **Settings** page:
 
   * **Protected branches**
 
-    * *Branch*: ``master``
+    * *Branch*: ``master`` and ``v*-maint``
 
     * *Allowed to merge*: Developers + Maintainers
 
     * *Allowed to push*: None (or Developers + Maintainers if MRs not used)
 
     * *Require approval from code owners*: disabled
+
+  * **Protected tags**
+
+    * *Tag*: ``v*`` and any project specific tag formats like ``LIBVIRT_*`` or ``CVE*``
+
+    * *Allowed to create*: Developers + Maintainers
+
+* **CI/CD**
+
+  * **Runners**
+
+    * *Shared runners*: Enable shared runners
+
+  * **Variables**
+
+    * *Key*: ``CIRRUS_GITHUB_REPO``
+
+      * *Value*: ``libvirt/$repo``
+
+      * *Protect variable*: enabled
+
+      * *Mask variable*: disabled
+
+    * *Key*: ``CIRRUS_API_TOKEN``
+
+      * No need to set this at the project level: it's already set for the
+        libvirt organization and will be inherited from there.
+
 
 GitHub configuration
 ====================

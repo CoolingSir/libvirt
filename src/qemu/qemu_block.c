@@ -24,7 +24,9 @@
 #include "qemu_alias.h"
 #include "qemu_security.h"
 
+#include "storage_source.h"
 #include "viralloc.h"
+#include "virstoragefile.h"
 #include "virstring.h"
 #include "virlog.h"
 
@@ -56,7 +58,7 @@ qemuBlockNamedNodesArrayToHash(size_t pos G_GNUC_UNUSED,
                                virJSONValuePtr item,
                                void *opaque)
 {
-    virHashTablePtr table = opaque;
+    GHashTable *table = opaque;
     const char *name;
 
     if (!(name = virJSONValueObjectGetString(item, "node-name")))
@@ -120,14 +122,14 @@ qemuBlockDriverMatch(const char *drvname,
 
 
 struct qemuBlockNodeNameGetBackingChainData {
-    virHashTablePtr nodenamestable;
-    virHashTablePtr disks;
+    GHashTable *nodenamestable;
+    GHashTable *disks;
 };
 
 
 static int
 qemuBlockNodeNameGetBackingChainBacking(virJSONValuePtr next,
-                                        virHashTablePtr nodenamestable,
+                                        GHashTable *nodenamestable,
                                         qemuBlockNodeNameBackingChainDataPtr *nodenamedata)
 {
     g_autoptr(qemuBlockNodeNameBackingChainData) data = NULL;
@@ -169,8 +171,7 @@ qemuBlockNodeNameGetBackingChainBacking(virJSONValuePtr next,
         }
     }
 
-    if (VIR_ALLOC(data) < 0)
-        return -1;
+    data = g_new0(qemuBlockNodeNameBackingChainData, 1);
 
     data->nodeformat = g_strdup(nodename);
     data->nodestorage = g_strdup(parentnodename);
@@ -225,17 +226,17 @@ qemuBlockNodeNameGetBackingChainDisk(size_t pos G_GNUC_UNUSED,
  *
  * Returns a hash table on success and NULL on failure.
  */
-virHashTablePtr
+GHashTable *
 qemuBlockNodeNameGetBackingChain(virJSONValuePtr namednodes,
                                  virJSONValuePtr blockstats)
 {
     struct qemuBlockNodeNameGetBackingChainData data;
-    g_autoptr(virHashTable) namednodestable = NULL;
-    g_autoptr(virHashTable) disks = NULL;
+    g_autoptr(GHashTable) namednodestable = NULL;
+    g_autoptr(GHashTable) disks = NULL;
 
     memset(&data, 0, sizeof(data));
 
-    if (!(namednodestable = virHashCreate(50, virJSONValueHashFree)))
+    if (!(namednodestable = virHashNew(virJSONValueHashFree)))
         return NULL;
 
     if (virJSONValueArrayForeachSteal(namednodes,
@@ -243,7 +244,7 @@ qemuBlockNodeNameGetBackingChain(virJSONValuePtr namednodes,
                                       namednodestable) < 0)
         return NULL;
 
-    if (!(disks = virHashCreate(50, qemuBlockNodeNameBackingChainDataHashEntryFree)))
+    if (!(disks = virHashNew(qemuBlockNodeNameBackingChainDataHashEntryFree)))
         return NULL;
 
     data.nodenamestable = namednodestable;
@@ -274,7 +275,7 @@ qemuBlockDiskClearDetectedNodes(virDomainDiskDefPtr disk)
 
 static int
 qemuBlockDiskDetectNodes(virDomainDiskDefPtr disk,
-                         virHashTablePtr disktable)
+                         GHashTable *disktable)
 {
     qemuBlockNodeNameBackingChainDataPtr entry = NULL;
     virStorageSourcePtr src = disk->src;
@@ -325,7 +326,7 @@ qemuBlockNodeNamesDetect(virQEMUDriverPtr driver,
                          qemuDomainAsyncJob asyncJob)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
-    g_autoptr(virHashTable) disktable = NULL;
+    g_autoptr(GHashTable) disktable = NULL;
     g_autoptr(virJSONValue) data = NULL;
     g_autoptr(virJSONValue) blockstats = NULL;
     virDomainDiskDefPtr disk;
@@ -364,14 +365,14 @@ qemuBlockNodeNamesDetect(virQEMUDriverPtr driver,
  * Returns a hash table organized by the node name of the JSON value objects of
  * data for given qemu block nodes.
  *
- * Returns a filled virHashTablePtr on success NULL on error.
+ * Returns a filled GHashTable *on success NULL on error.
  */
-virHashTablePtr
+GHashTable *
 qemuBlockGetNodeData(virJSONValuePtr data)
 {
-    g_autoptr(virHashTable) nodedata = NULL;
+    g_autoptr(GHashTable) nodedata = NULL;
 
-    if (!(nodedata = virHashCreate(50, virJSONValueHashFree)))
+    if (!(nodedata = virHashNew(virJSONValueHashFree)))
         return NULL;
 
     if (virJSONValueArrayForeachSteal(data,
@@ -415,8 +416,7 @@ qemuBlockStorageSourceGetURI(virStorageSourcePtr src)
         return NULL;
     }
 
-    if (VIR_ALLOC(uri) < 0)
-        return NULL;
+    uri = g_new0(virURI, 1);
 
     if (src->hosts->transport == VIR_STORAGE_NET_HOST_TRANS_TCP) {
         uri->port = src->hosts->port;
@@ -577,6 +577,29 @@ qemuBlockStorageSourceBuildJSONInetSocketAddress(virStorageNetHostDefPtr host)
 
 
 /**
+ * qemuBlockStorageSourceBuildJSONNFSServer(virStorageNetHostDefPtr host)
+ * @host: the virStorageNetHostDefPtr definition to build
+ *
+ * Formats @hosts into a json object conforming to the 'NFSServer' type
+ * in qemu.
+ *
+ * Returns a virJSONValuePtr for a single server.
+ */
+static virJSONValuePtr
+qemuBlockStorageSourceBuildJSONNFSServer(virStorageNetHostDefPtr host)
+{
+    virJSONValuePtr ret = NULL;
+
+    ignore_value(virJSONValueObjectCreate(&ret,
+                                          "s:host", host->name,
+                                          "s:type", "inet",
+                                          NULL));
+
+    return ret;
+}
+
+
+/**
  * qemuBlockStorageSourceBuildHostsJSONInetSocketAddress:
  * @src: disk storage source
  *
@@ -671,6 +694,39 @@ qemuBlockStorageSourceGetVxHSProps(virStorageSourcePtr src,
                                           "S:tls-creds", tlsAlias,
                                           "s:vdisk-id", src->path,
                                           "a:server", &server, NULL));
+
+    return ret;
+}
+
+
+static virJSONValuePtr
+qemuBlockStorageSourceGetNFSProps(virStorageSourcePtr src)
+{
+    g_autoptr(virJSONValue) server = NULL;
+    virJSONValuePtr ret = NULL;
+
+    if (!(server = qemuBlockStorageSourceBuildJSONNFSServer(&src->hosts[0])))
+        return NULL;
+
+    /* NFS disk specification example:
+     * { driver:"nfs",
+     *   user: "0",
+     *   group: "0",
+     *   path: "/foo/bar/baz",
+     *   server: {type:"tcp", host:"1.2.3.4"}}
+     */
+    if (virJSONValueObjectCreate(&ret,
+                                 "a:server", &server,
+                                 "S:path", src->path, NULL) < 0)
+        return NULL;
+
+    if (src->nfs_uid != -1 &&
+        virJSONValueObjectAdd(ret, "i:user", src->nfs_uid, NULL) < 0)
+        return NULL;
+
+    if (src->nfs_gid != -1 &&
+        virJSONValueObjectAdd(ret, "i:group", src->nfs_gid, NULL) < 0)
+        return NULL;
 
     return ret;
 }
@@ -1052,26 +1108,35 @@ qemuBlockStorageSourceGetBlockdevGetCacheProps(virStorageSourcePtr src,
 /**
  * qemuBlockStorageSourceGetBackendProps:
  * @src: disk source
- * @legacy: use legacy formatting of attributes (for -drive / old qemus)
- * @onlytarget: omit any data which does not identify the image itself
- * @autoreadonly: use the auto-read-only feature of qemu
+ * @flags: bitwise-or of qemuBlockStorageSourceBackendPropsFlags
+ *
+ * Flags:
+ *  QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_LEGACY:
+ *      use legacy formatting of attributes (for -drive / old qemus)
+ *  QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_TARGET_ONLY:
+ *      omit any data which does not identify the image itself
+ *  QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_AUTO_READONLY:
+ *      use the auto-read-only feature of qemu
+ *  QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_SKIP_UNMAP:
+ *      don't enable 'discard:unmap' option for passing through discards
+ *      (note that this is disabled also for _LEGACY and _TARGET_ONLY options)
  *
  * Creates a JSON object describing the underlying storage or protocol of a
  * storage source. Returns NULL on error and reports an appropriate error message.
  */
 virJSONValuePtr
 qemuBlockStorageSourceGetBackendProps(virStorageSourcePtr src,
-                                      bool legacy,
-                                      bool onlytarget,
-                                      bool autoreadonly)
+                                      unsigned int flags)
 {
     int actualType = virStorageSourceGetActualType(src);
     g_autoptr(virJSONValue) fileprops = NULL;
     const char *driver = NULL;
     virTristateBool aro = VIR_TRISTATE_BOOL_ABSENT;
     virTristateBool ro = VIR_TRISTATE_BOOL_ABSENT;
+    bool onlytarget = flags & QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_TARGET_ONLY;
+    bool legacy = flags & QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_LEGACY;
 
-    if (autoreadonly) {
+    if (flags & QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_AUTO_READONLY) {
         aro = VIR_TRISTATE_BOOL_YES;
     } else {
         if (src->readonly)
@@ -1173,6 +1238,12 @@ qemuBlockStorageSourceGetBackendProps(virStorageSourcePtr src,
                 return NULL;
             break;
 
+        case VIR_STORAGE_NET_PROTOCOL_NFS:
+            driver = "nfs";
+            if (!(fileprops = qemuBlockStorageSourceGetNFSProps(src)))
+                return NULL;
+            break;
+
         case VIR_STORAGE_NET_PROTOCOL_NONE:
         case VIR_STORAGE_NET_PROTOCOL_LAST:
             virReportEnumRangeError(virStorageNetProtocol, src->protocol);
@@ -1196,6 +1267,11 @@ qemuBlockStorageSourceGetBackendProps(virStorageSourcePtr src,
             if (virJSONValueObjectAdd(fileprops,
                                       "T:read-only", ro,
                                       "T:auto-read-only", aro,
+                                      NULL) < 0)
+                return NULL;
+
+            if (!(flags & QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_SKIP_UNMAP) &&
+                virJSONValueObjectAdd(fileprops,
                                       "s:discard", "unmap",
                                       NULL) < 0)
                 return NULL;
@@ -1330,6 +1406,17 @@ qemuBlockStorageSourceGetFormatQcow2Props(virStorageSourcePtr src,
 
     if (qemuBlockStorageSourceGetFormatQcowGenericProps(src, "qcow2", props) < 0)
         return -1;
+
+    /* 'cache-size' controls the maximum size of L2 and refcount caches.
+     * see: qemu.git/docs/qcow2-cache.txt
+     * https://git.qemu.org/?p=qemu.git;a=blob;f=docs/qcow2-cache.txt
+     */
+    if (src->metadataCacheMaxSize > 0) {
+        if (virJSONValueObjectAdd(props,
+                                  "U:cache-size", src->metadataCacheMaxSize,
+                                  NULL) < 0)
+            return -1;
+    }
 
     return 0;
 }
@@ -1542,7 +1629,9 @@ qemuBlockStorageSourceAttachDataFree(qemuBlockStorageSourceAttachDataPtr data)
     virJSONValueFree(data->httpcookiesecretProps);
     virJSONValueFree(data->encryptsecretProps);
     virJSONValueFree(data->tlsProps);
+    virJSONValueFree(data->tlsKeySecretProps);
     VIR_FREE(data->tlsAlias);
+    VIR_FREE(data->tlsKeySecretAlias);
     VIR_FREE(data->authsecretAlias);
     VIR_FREE(data->encryptsecretAlias);
     VIR_FREE(data->httpcookiesecretAlias);
@@ -1574,15 +1663,17 @@ qemuBlockStorageSourceAttachPrepareBlockdev(virStorageSourcePtr src,
                                             bool autoreadonly)
 {
     g_autoptr(qemuBlockStorageSourceAttachData) data = NULL;
+    unsigned int backendpropsflags = 0;
 
-    if (VIR_ALLOC(data) < 0)
-        return NULL;
+    if (autoreadonly)
+        backendpropsflags |= QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_AUTO_READONLY;
+
+    data = g_new0(qemuBlockStorageSourceAttachData, 1);
 
     if (!(data->formatProps = qemuBlockStorageSourceGetBlockdevProps(src,
                                                                      backingStore)) ||
-        !(data->storageProps = qemuBlockStorageSourceGetBackendProps(src, false,
-                                                                     false,
-                                                                     autoreadonly)))
+        !(data->storageProps = qemuBlockStorageSourceGetBackendProps(src,
+                                                                     backendpropsflags)))
         return NULL;
 
     data->storageNodeName = src->nodestorage;
@@ -1615,6 +1706,11 @@ qemuBlockStorageSourceAttachApplyStorageDeps(qemuMonitorPtr mon,
     if (data->httpcookiesecretProps &&
         qemuMonitorAddObject(mon, &data->httpcookiesecretProps,
                              &data->httpcookiesecretAlias) < 0)
+        return -1;
+
+    if (data->tlsKeySecretProps &&
+        qemuMonitorAddObject(mon, &data->tlsKeySecretProps,
+                             &data->tlsKeySecretAlias) < 0)
         return -1;
 
     if (data->tlsProps &&
@@ -1766,6 +1862,8 @@ qemuBlockStorageSourceAttachRollback(qemuMonitorPtr mon,
     if (data->tlsAlias)
         ignore_value(qemuMonitorDelObject(mon, data->tlsAlias, false));
 
+    if (data->tlsKeySecretAlias)
+        ignore_value(qemuMonitorDelObject(mon, data->tlsKeySecretAlias, false));
 
     virErrorRestore(&orig_err);
 }
@@ -1821,6 +1919,9 @@ qemuBlockStorageSourceDetachPrepare(virStorageSourcePtr src,
 
         if (srcpriv->httpcookie)
             data->httpcookiesecretAlias = g_strdup(srcpriv->httpcookie->s.aes.alias);
+
+        if (srcpriv->tlsKeySecret)
+            data->tlsKeySecretAlias = g_strdup(srcpriv->tlsKeySecret->s.aes.alias);
     }
 
     return g_steal_pointer(&data);
@@ -1857,8 +1958,7 @@ qemuBlockStorageSourceChainDetachPrepareBlockdev(virStorageSourcePtr src)
     g_autoptr(qemuBlockStorageSourceChainData) data = NULL;
     virStorageSourcePtr n;
 
-    if (VIR_ALLOC(data) < 0)
-        return NULL;
+    data = g_new0(qemuBlockStorageSourceChainData, 1);
 
     for (n = src; virStorageSourceIsBacking(n); n = n->backingStore) {
         if (!(backend = qemuBlockStorageSourceDetachPrepare(n, NULL)))
@@ -1887,8 +1987,7 @@ qemuBlockStorageSourceChainDetachPrepareDrive(virStorageSourcePtr src,
     g_autoptr(qemuBlockStorageSourceAttachData) backend = NULL;
     g_autoptr(qemuBlockStorageSourceChainData) data = NULL;
 
-    if (VIR_ALLOC(data) < 0)
-        return NULL;
+    data = g_new0(qemuBlockStorageSourceChainData, 1);
 
     if (!(backend = qemuBlockStorageSourceDetachPrepare(src, driveAlias)))
         return NULL;
@@ -2087,6 +2186,7 @@ qemuBlockGetBackingStoreString(virStorageSourcePtr src,
             case VIR_STORAGE_NET_PROTOCOL_SHEEPDOG:
             case VIR_STORAGE_NET_PROTOCOL_RBD:
             case VIR_STORAGE_NET_PROTOCOL_VXHS:
+            case VIR_STORAGE_NET_PROTOCOL_NFS:
             case VIR_STORAGE_NET_PROTOCOL_SSH:
             case VIR_STORAGE_NET_PROTOCOL_LAST:
             case VIR_STORAGE_NET_PROTOCOL_NONE:
@@ -2096,7 +2196,8 @@ qemuBlockGetBackingStoreString(virStorageSourcePtr src,
     }
 
     /* use json: pseudo protocol otherwise */
-    if (!(backingProps = qemuBlockStorageSourceGetBackendProps(src, false, true, false)))
+    if (!(backingProps = qemuBlockStorageSourceGetBackendProps(src,
+                                                               QEMU_BLOCK_STORAGE_SOURCE_BACKEND_PROPS_TARGET_ONLY)))
         return NULL;
 
     props = backingProps;
@@ -2284,6 +2385,7 @@ qemuBlockStorageSourceCreateGetFormatPropsQcow2(virStorageSourcePtr src,
                                  "s:file", src->nodestorage,
                                  "U:size", src->capacity,
                                  "S:version", qcow2version,
+                                 "P:cluster-size", src->clusterSize,
                                  NULL) < 0)
         return -1;
 
@@ -2469,6 +2571,12 @@ qemuBlockStorageSourceCreateGetStorageProps(virStorageSourcePtr src,
         case VIR_STORAGE_NET_PROTOCOL_SSH:
             driver = "ssh";
             if (!(location = qemuBlockStorageSourceGetSshProps(src)))
+                return -1;
+            break;
+
+        case VIR_STORAGE_NET_PROTOCOL_NFS:
+            driver = "nfs";
+            if (!(location = qemuBlockStorageSourceGetNFSProps(src)))
                 return -1;
             break;
 
@@ -2671,6 +2779,12 @@ qemuBlockStorageSourceCreate(virDomainObjPtr vm,
         return -1;
     }
 
+    /* grant write access to read-only images during formatting */
+    if (src->readonly &&
+        qemuDomainStorageSourceAccessAllow(priv->driver, vm, src, false,
+                                           false, true) < 0)
+        return -1;
+
     if (qemuDomainObjEnterMonitorAsync(priv->driver, vm, asyncJob) < 0)
         goto cleanup;
 
@@ -2695,6 +2809,12 @@ qemuBlockStorageSourceCreate(virDomainObjPtr vm,
 
     if (qemuBlockStorageSourceCreateFormat(vm, src, backingStore, chain,
                                            asyncJob) < 0)
+        goto cleanup;
+
+    /* revoke write access to read-only images during formatting */
+    if (src->readonly &&
+        qemuDomainStorageSourceAccessAllow(priv->driver, vm, src, true,
+                                           false, true) < 0)
         goto cleanup;
 
     if (qemuDomainObjEnterMonitorAsync(priv->driver, vm, asyncJob) < 0)
@@ -2732,7 +2852,7 @@ qemuBlockStorageSourceCreate(virDomainObjPtr vm,
  * to the detected sizes from @templ.
  */
 int
-qemuBlockStorageSourceCreateDetectSize(virHashTablePtr blockNamedNodeData,
+qemuBlockStorageSourceCreateDetectSize(GHashTable *blockNamedNodeData,
                                        virStorageSourcePtr src,
                                        virStorageSourcePtr templ)
 {
@@ -2744,6 +2864,12 @@ qemuBlockStorageSourceCreateDetectSize(virHashTablePtr blockNamedNodeData,
                        templ->nodeformat);
         return -1;
     }
+
+    /* propagate cluster size if the images are compatible */
+    if (templ->format == VIR_STORAGE_FILE_QCOW2 &&
+        src->format == VIR_STORAGE_FILE_QCOW2 &&
+        src->clusterSize == 0)
+        src->clusterSize = entry->clusterSize;
 
     if (src->format == VIR_STORAGE_FILE_RAW) {
         src->physical = entry->capacity;
@@ -2790,7 +2916,7 @@ qemuBlockRemoveImageMetadata(virQEMUDriverPtr driver,
  * Looks up a bitmap named @bitmap of the @src image.
  */
 qemuBlockNamedNodeDataBitmapPtr
-qemuBlockNamedNodeDataGetBitmapByName(virHashTablePtr blockNamedNodeData,
+qemuBlockNamedNodeDataGetBitmapByName(GHashTable *blockNamedNodeData,
                                       virStorageSourcePtr src,
                                       const char *bitmap)
 {
@@ -2813,13 +2939,13 @@ qemuBlockNamedNodeDataGetBitmapByName(virHashTablePtr blockNamedNodeData,
 }
 
 
-virHashTablePtr
+GHashTable *
 qemuBlockGetNamedNodeData(virDomainObjPtr vm,
                           qemuDomainAsyncJob asyncJob)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
     virQEMUDriverPtr driver = priv->driver;
-    g_autoptr(virHashTable) blockNamedNodeData = NULL;
+    g_autoptr(GHashTable) blockNamedNodeData = NULL;
     bool supports_flat = virQEMUCapsGet(priv->qemuCaps,
                                         QEMU_CAPS_QMP_QUERY_NAMED_BLOCK_NODES_FLAT);
 
@@ -2836,75 +2962,224 @@ qemuBlockGetNamedNodeData(virDomainObjPtr vm,
 
 
 /**
+ * qemuBlockGetBitmapMergeActionsGetBitmaps:
+ *
+ * Collect a list of bitmaps which need to be handled in
+ * qemuBlockGetBitmapMergeActions. The list contains only valid bitmaps in the
+ * sub-chain which is being processed.
+ *
+ * Note that the returned GSList contains bitmap names string pointers borrowed
+ * from @blockNamedNodeData so they must not be freed.
+ */
+static GSList *
+qemuBlockGetBitmapMergeActionsGetBitmaps(virStorageSourcePtr topsrc,
+                                         const char *bitmapname,
+                                         GHashTable *blockNamedNodeData)
+{
+    g_autoptr(GSList) ret = NULL;
+    qemuBlockNamedNodeDataPtr entry;
+    size_t i;
+
+    /* for now it doesn't make sense to consider bitmaps which are not present
+     * in @topsrc as we can't recreate a bitmap for a layer if it's missing */
+
+    if (!(entry = virHashLookup(blockNamedNodeData, topsrc->nodeformat)))
+        return NULL;
+
+    for (i = 0; i < entry->nbitmaps; i++) {
+        qemuBlockNamedNodeDataBitmapPtr bitmap = entry->bitmaps[i];
+
+        if (bitmapname &&
+            STRNEQ(bitmapname, bitmap->name))
+            continue;
+
+        if (!qemuBlockBitmapChainIsValid(topsrc, bitmap->name, blockNamedNodeData))
+            continue;
+
+        ret = g_slist_prepend(ret, bitmap->name);
+    }
+
+    return g_steal_pointer(&ret);
+}
+
+
+/**
+ * qemuBlockGetBitmapMergeActions:
+ * @topsrc: top of the chain to merge bitmaps in
+ * @basesrc: bottom of the chain to merge bitmaps in (NULL for full chain)
+ * @target: destination storage source of the merge (may be part of original chain)
+ * @bitmapname: name of bitmap to perform the merge (NULL for all bitmaps)
+ * @dstbitmapname: name of destination bitmap of the merge (see below for caveats)
+ * @writebitmapsrc: storage source corresponding to the node containing the write temporary bitmap
+ * @actions: returns actions for a 'transaction' QMP command for executing the merge
+ * @blockNamedNodeData: hash table filled with qemuBlockNamedNodeData
+ *
+ * Calculate handling of dirty block bitmaps between @topsrc and @basesrc. If
+ * @basesrc is NULL the end of the chain is considered. @target is the destination
+ * storage source definition of the merge and may or may not be part of the
+ * merged chain.
+ *
+ * Specifically the merging algorithm ensures that each considered bitmap is
+ * merged with the appropriate bitmaps so that it properly describes
+ * the state of dirty blocks when looked at from @topsrc based on the depth
+ * of the backing chain where the bitmap is placed.
+ *
+ * If @bitmapname is non-NULL only bitmaps with that name are handled, otherwise
+ * all bitmaps are considered.
+ *
+ * If @dstbitmap is non-NULL everything is merged into a bitmap with that name,
+ * otherwise each bitmap is merged into a bitmap with the same name into @target.
+ * Additionally if @dstbitmap is non-NULL the target bitmap is created as 'inactive'
+ * and 'transient' as a special case for the backup operation.
+ *
+ * If @writebitmapsrc is non-NULL, the 'libvirt-tmp-activewrite' bitmap from
+ * given node is merged along with others. This bitmap corresponds to the writes
+ * which occurred between an active layer job finished and the rest of the bitmap
+ * merging.
+ *
+ * If the bitmap is not valid somehow (see qemuBlockBitmapChainIsValid) given
+ * bitmap is silently skipped, so callers must ensure that given bitmap is valid
+ * if they care about it.
+ *
+ * The resulting 'transaction' QMP command actions are filled in and returned via
+ * @actions.
+ *
+ * Note that @actions may be NULL if no merging is required.
+ */
+int
+qemuBlockGetBitmapMergeActions(virStorageSourcePtr topsrc,
+                               virStorageSourcePtr basesrc,
+                               virStorageSourcePtr target,
+                               const char *bitmapname,
+                               const char *dstbitmapname,
+                               virStorageSourcePtr writebitmapsrc,
+                               virJSONValuePtr *actions,
+                               GHashTable *blockNamedNodeData)
+{
+    g_autoptr(virJSONValue) act = virJSONValueNewArray();
+    virStorageSourcePtr n;
+
+    g_autoptr(GSList) bitmaps = NULL;
+    GSList *next;
+
+    if (!(bitmaps = qemuBlockGetBitmapMergeActionsGetBitmaps(topsrc, bitmapname,
+                                                             blockNamedNodeData)))
+        goto done;
+
+    for (next = bitmaps; next; next = next->next) {
+        const char *curbitmap = next->data;
+        const char *mergebitmapname = dstbitmapname;
+        bool mergebitmappersistent = false;
+        bool mergebitmapdisabled = true;
+        g_autoptr(virJSONValue) merge = virJSONValueNewArray();
+        unsigned long long granularity = 0;
+        qemuBlockNamedNodeDataBitmapPtr bitmap;
+
+        /* explicitly named destinations mean that we want a temporary
+         * disabled bitmap only, so undo the default for non-explicit cases  */
+        if (!mergebitmapname) {
+            mergebitmapname = curbitmap;
+            mergebitmappersistent = true;
+            mergebitmapdisabled = false;
+        }
+
+        for (n = topsrc; virStorageSourceIsBacking(n) && n != basesrc; n = n->backingStore) {
+            if (!(bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
+                                                                 n, curbitmap)))
+                continue;
+
+            if (granularity == 0)
+                granularity = bitmap->granularity;
+
+            if (qemuMonitorTransactionBitmapMergeSourceAddBitmap(merge,
+                                                                 n->nodeformat,
+                                                                 bitmap->name) < 0)
+                return -1;
+        }
+
+        if (dstbitmapname ||
+            !(bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
+                                                             target, curbitmap))) {
+
+            if (qemuMonitorTransactionBitmapAdd(act,
+                                                target->nodeformat,
+                                                mergebitmapname,
+                                                mergebitmappersistent,
+                                                mergebitmapdisabled,
+                                                granularity) < 0)
+                return -1;
+        }
+
+        if (writebitmapsrc &&
+            qemuMonitorTransactionBitmapMergeSourceAddBitmap(merge,
+                                                             writebitmapsrc->nodeformat,
+                                                             "libvirt-tmp-activewrite") < 0)
+            return -1;
+
+        if (qemuMonitorTransactionBitmapMerge(act, target->nodeformat,
+                                              mergebitmapname, &merge) < 0)
+            return -1;
+    }
+
+ done:
+    if (writebitmapsrc &&
+        qemuMonitorTransactionBitmapRemove(act, writebitmapsrc->nodeformat,
+                                           "libvirt-tmp-activewrite") < 0)
+        return -1;
+
+    if (virJSONValueArraySize(act) > 0)
+        *actions = g_steal_pointer(&act);
+
+    return 0;
+}
+
+
+/**
  * qemuBlockBitmapChainIsValid:
  *
- * Validates that the backing chain of @src contains proper consistent bitmap
- * data for a chain of bitmaps named @bitmapname.
+ * Validates that the backing chain of @src contains bitmaps which libvirt will
+ * consider as properly corresponding to a checkpoint named @bitmapname.
  *
- * A valid chain:
- * 1) bitmaps of same name are in a consecutive subset of images without gap
- * 2) don't have any inconsistent bitmaps
+ * The bitmaps need to:
+ * 1) start from the top image @src
+ * 2) must be present in consecutive layers
+ * 3) all must be active, persistent and not inconsistent
  */
 bool
 qemuBlockBitmapChainIsValid(virStorageSourcePtr src,
                             const char *bitmapname,
-                            virHashTablePtr blockNamedNodeData)
+                            GHashTable *blockNamedNodeData)
 {
-    qemuBlockNamedNodeDataBitmapPtr bitmap;
     virStorageSourcePtr n;
-    bool chain_started = false;
+    bool found = false;
     bool chain_ended = false;
 
-    for (n = src; n; n = n->backingStore) {
-        if (!(bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData, n, bitmapname))) {
-            if (chain_started)
-                chain_ended = true;
+    for (n = src; virStorageSourceIsBacking(n); n = n->backingStore) {
+        qemuBlockNamedNodeDataBitmapPtr bitmap;
+
+        if (!(bitmap = qemuBlockNamedNodeDataGetBitmapByName(blockNamedNodeData,
+                                                             n, bitmapname))) {
+            /* rule 1, must start from top */
+            if (!found)
+                return false;
+
+            chain_ended = true;
 
             continue;
         }
 
+        /* rule 2, no-gaps */
         if (chain_ended)
             return false;
 
-        chain_started = true;
-
-        if (bitmap->inconsistent)
+        /* rule 3 */
+        if (bitmap->inconsistent || !bitmap->persistent || !bitmap->recording)
             return false;
+
+        found = true;
     }
 
-    return chain_started;
-}
-
-
-struct qemuBlockBitmapsHandleBlockcopyConcatData {
-    virHashTablePtr bitmaps_merge;
-    virJSONValuePtr actions;
-    const char *mirrornodeformat;
-    bool has_bitmaps;
-};
-
-
-static int
-qemuBlockBitmapsHandleBlockcopyConcatActions(void *payload,
-                                             const void *name,
-                                             void *opaque)
-{
-    struct qemuBlockBitmapsHandleBlockcopyConcatData *data = opaque;
-    virJSONValuePtr createactions = payload;
-    const char *bitmapname = name;
-    g_autoptr(virJSONValue) mergebitmaps = virHashSteal(data->bitmaps_merge, bitmapname);
-
-    data->has_bitmaps = true;
-
-    virJSONValueArrayConcat(data->actions, createactions);
-
-    if (qemuMonitorTransactionBitmapMerge(data->actions,
-                                          data->mirrornodeformat,
-                                          bitmapname,
-                                          &mergebitmaps) < 0)
-        return -1;
-
-    return 0;
+    return found;
 }
 
 
@@ -2926,199 +3201,17 @@ qemuBlockBitmapsHandleBlockcopyConcatActions(void *payload,
 int
 qemuBlockBitmapsHandleBlockcopy(virStorageSourcePtr src,
                                 virStorageSourcePtr mirror,
-                                virHashTablePtr blockNamedNodeData,
+                                GHashTable *blockNamedNodeData,
                                 bool shallow,
                                 virJSONValuePtr *actions)
 {
-    g_autoptr(virHashTable) bitmaps = virHashNew(virJSONValueHashFree);
-    g_autoptr(virHashTable) bitmaps_merge = virHashNew(virJSONValueHashFree);
-    g_autoptr(virHashTable) bitmaps_skip = virHashNew(NULL);
-    g_autoptr(virJSONValue) tmpactions = virJSONValueNewArray();
-    qemuBlockNamedNodeDataPtr entry;
-    virStorageSourcePtr n;
-    size_t i;
-    struct qemuBlockBitmapsHandleBlockcopyConcatData data = { .bitmaps_merge = bitmaps_merge,
-                                                              .actions = tmpactions,
-                                                              .mirrornodeformat = mirror->nodeformat,
-                                                              .has_bitmaps = false, };
+    virStorageSourcePtr base = NULL;
 
-    for (n = src; n; n = n->backingStore) {
-        if (!(entry = virHashLookup(blockNamedNodeData, n->nodeformat)))
-            continue;
+    if (shallow)
+        base = src->backingStore;
 
-        for (i = 0; i < entry->nbitmaps; i++) {
-            qemuBlockNamedNodeDataBitmapPtr bitmap = entry->bitmaps[i];
-            virJSONValuePtr bitmap_merge;
-
-            if (virHashHasEntry(bitmaps_skip, bitmap->name))
-                continue;
-
-            if (!(bitmap_merge = virHashLookup(bitmaps_merge, bitmap->name))) {
-                g_autoptr(virJSONValue) tmp = NULL;
-                bool disabled = !bitmap->recording;
-
-                /* disable any non top-layer bitmaps */
-                if (n != src)
-                    disabled = true;
-
-                if (!bitmap->persistent ||
-                    !(qemuBlockBitmapChainIsValid(n, bitmap->name,
-                                                  blockNamedNodeData))) {
-                    ignore_value(virHashAddEntry(bitmaps_skip, bitmap->name, NULL));
-                    continue;
-                }
-
-                /* prepare the data for adding the bitmap to the mirror */
-                tmp = virJSONValueNewArray();
-
-                if (qemuMonitorTransactionBitmapAdd(tmp,
-                                                    mirror->nodeformat,
-                                                    bitmap->name,
-                                                    true,
-                                                    disabled,
-                                                    bitmap->granularity) < 0)
-                    return -1;
-
-                if (virHashAddEntry(bitmaps, bitmap->name, tmp) < 0)
-                    return -1;
-
-                tmp = NULL;
-
-                /* prepare array for merging all the bitmaps from the original chain */
-                tmp = virJSONValueNewArray();
-
-                if (virHashAddEntry(bitmaps_merge, bitmap->name, tmp) < 0)
-                    return -1;
-
-                bitmap_merge = g_steal_pointer(&tmp);
-            }
-
-            if (qemuMonitorTransactionBitmapMergeSourceAddBitmap(bitmap_merge,
-                                                                 n->nodeformat,
-                                                                 bitmap->name) < 0)
-                return -1;
-        }
-
-        if (shallow)
-            break;
-    }
-
-    if (virHashForEach(bitmaps, qemuBlockBitmapsHandleBlockcopyConcatActions,
-                       &data) < 0)
-        return -1;
-
-    if (data.has_bitmaps)
-        *actions = g_steal_pointer(&tmpactions);
-
-    return 0;
-}
-
-
-/**
- * @topsrc: virStorageSource representing 'top' of the job
- * @basesrc: virStorageSource representing 'base' of the job
- * @blockNamedNodeData: hash table containing data about bitmaps
- * @actions: filled with arguments for a 'transaction' command
- * @disabledBitmapsBase: filled with a list of bitmap names which must be disabled
- *
- * Prepares data for correctly handling bitmaps during the start of a commit
- * job. The bitmaps in the 'base' image must be disabled, so that the writes
- * done by the blockjob don't dirty the enabled bitmaps.
- *
- * @actions and @disabledBitmapsBase are untouched if no bitmaps need
- * to be disabled.
- */
-int
-qemuBlockBitmapsHandleCommitStart(virStorageSourcePtr topsrc,
-                                  virStorageSourcePtr basesrc,
-                                  virHashTablePtr blockNamedNodeData,
-                                  virJSONValuePtr *actions,
-                                  char ***disabledBitmapsBase)
-{
-    g_autoptr(virJSONValue) act = virJSONValueNewArray();
-    VIR_AUTOSTRINGLIST bitmaplist = NULL;
-    size_t curbitmapstr = 0;
-    qemuBlockNamedNodeDataPtr entry;
-    bool disable_bitmaps = false;
-    size_t i;
-
-    if (!(entry = virHashLookup(blockNamedNodeData, basesrc->nodeformat)))
-        return 0;
-
-    bitmaplist = g_new0(char *, entry->nbitmaps + 1);
-
-    for (i = 0; i < entry->nbitmaps; i++) {
-        qemuBlockNamedNodeDataBitmapPtr bitmap = entry->bitmaps[i];
-
-        if (!bitmap->recording || bitmap->inconsistent ||
-            !qemuBlockBitmapChainIsValid(topsrc, bitmap->name, blockNamedNodeData))
-            continue;
-
-        disable_bitmaps = true;
-
-        if (qemuMonitorTransactionBitmapDisable(act, basesrc->nodeformat,
-                                                bitmap->name) < 0)
-            return -1;
-
-        bitmaplist[curbitmapstr++] = g_strdup(bitmap->name);
-    }
-
-    if (disable_bitmaps) {
-        *actions = g_steal_pointer(&act);
-        *disabledBitmapsBase = g_steal_pointer(&bitmaplist);
-    }
-
-    return 0;
-}
-
-
-struct qemuBlockBitmapsHandleCommitData {
-    bool skip;
-    bool create;
-    bool enable;
-    const char *basenode;
-    virJSONValuePtr merge;
-    unsigned long long granularity;
-    bool persistent;
-};
-
-
-static void
-qemuBlockBitmapsHandleCommitDataFree(void *opaque)
-{
-    struct qemuBlockBitmapsHandleCommitData *data = opaque;
-
-    virJSONValueFree(data->merge);
-    g_free(data);
-}
-
-
-static int
-qemuBlockBitmapsHandleCommitFinishIterate(void *payload,
-                                          const void *entryname,
-                                          void *opaque)
-{
-    struct qemuBlockBitmapsHandleCommitData *data = payload;
-    const char *bitmapname = entryname;
-    virJSONValuePtr actions = opaque;
-
-    if (data->skip)
-        return 0;
-
-    if (data->create) {
-        if (qemuMonitorTransactionBitmapAdd(actions, data->basenode, bitmapname,
-                                            data->persistent, !data->enable,
-                                            data->granularity) < 0)
-            return -1;
-    } else {
-        if (data->enable &&
-            qemuMonitorTransactionBitmapEnable(actions, data->basenode, bitmapname) < 0)
-            return -1;
-    }
-
-    if (data->merge &&
-        qemuMonitorTransactionBitmapMerge(actions, data->basenode, bitmapname,
-                                          &data->merge) < 0)
+    if (qemuBlockGetBitmapMergeActions(src, base, mirror, NULL, NULL, mirror, actions,
+                                       blockNamedNodeData) < 0)
         return -1;
 
     return 0;
@@ -3128,6 +3221,7 @@ qemuBlockBitmapsHandleCommitFinishIterate(void *payload,
 /**
  * @topsrc: virStorageSource representing 'top' of the job
  * @basesrc: virStorageSource representing 'base' of the job
+ * @active: commit job is an active layer block-commit
  * @blockNamedNodeData: hash table containing data about bitmaps
  * @actions: filled with arguments for a 'transaction' command
  * @disabledBitmapsBase: bitmap names which were disabled
@@ -3140,94 +3234,19 @@ qemuBlockBitmapsHandleCommitFinishIterate(void *payload,
 int
 qemuBlockBitmapsHandleCommitFinish(virStorageSourcePtr topsrc,
                                    virStorageSourcePtr basesrc,
-                                   virHashTablePtr blockNamedNodeData,
-                                   virJSONValuePtr *actions,
-                                   char **disabledBitmapsBase)
+                                   bool active,
+                                   GHashTable *blockNamedNodeData,
+                                   virJSONValuePtr *actions)
 {
-    g_autoptr(virJSONValue) act = virJSONValueNewArray();
-    virStorageSourcePtr n;
-    qemuBlockNamedNodeDataPtr entry;
-    g_autoptr(virHashTable) commitdata = NULL;
-    struct qemuBlockBitmapsHandleCommitData *bitmapdata;
-    size_t i;
+    virStorageSourcePtr writebitmapsrc = NULL;
 
-    commitdata = virHashNew(qemuBlockBitmapsHandleCommitDataFree);
+    if (active)
+        writebitmapsrc = basesrc;
 
-    for (n = topsrc; n != basesrc; n = n->backingStore) {
-        if (!(entry = virHashLookup(blockNamedNodeData, n->nodeformat)))
-            continue;
-
-        for (i = 0; i < entry->nbitmaps; i++) {
-            qemuBlockNamedNodeDataBitmapPtr bitmap = entry->bitmaps[i];
-
-            if (!(bitmapdata = virHashLookup(commitdata, bitmap->name))) {
-                bitmapdata = g_new0(struct qemuBlockBitmapsHandleCommitData, 1);
-
-                /* we must mirror the state of the topmost bitmap and merge
-                 * everything else */
-                bitmapdata->create = true;
-                bitmapdata->enable = bitmap->recording;
-                bitmapdata->basenode = basesrc->nodeformat;
-                bitmapdata->merge = virJSONValueNewArray();
-                bitmapdata->granularity = bitmap->granularity;
-                bitmapdata->persistent = bitmap->persistent;
-
-                if (virHashAddEntry(commitdata, bitmap->name, bitmapdata) < 0) {
-                    qemuBlockBitmapsHandleCommitDataFree(bitmapdata);
-                    return -1;
-                }
-            }
-
-            if (bitmap->inconsistent ||
-                !qemuBlockBitmapChainIsValid(topsrc, bitmap->name, blockNamedNodeData))
-                bitmapdata->skip = true;
-
-            if (qemuMonitorTransactionBitmapMergeSourceAddBitmap(bitmapdata->merge,
-                                                                 n->nodeformat,
-                                                                 bitmap->name) < 0)
-                return -1;
-        }
-    }
-
-    if ((entry = virHashLookup(blockNamedNodeData, basesrc->nodeformat))) {
-        /* note that all bitmaps in 'base' were disabled when commit was started */
-        for (i = 0; i < entry->nbitmaps; i++) {
-            qemuBlockNamedNodeDataBitmapPtr bitmap = entry->bitmaps[i];
-
-            if ((bitmapdata = virHashLookup(commitdata, bitmap->name))) {
-                bitmapdata->create = false;
-            } else {
-                if (disabledBitmapsBase) {
-                    char **disabledbitmaps;
-
-                    for (disabledbitmaps = disabledBitmapsBase; *disabledbitmaps; disabledbitmaps++) {
-                        if (STREQ(*disabledbitmaps, bitmap->name)) {
-                            bitmapdata = g_new0(struct qemuBlockBitmapsHandleCommitData, 1);
-
-                            bitmapdata->create = false;
-                            bitmapdata->enable = true;
-                            bitmapdata->basenode = basesrc->nodeformat;
-                            bitmapdata->granularity = bitmap->granularity;
-                            bitmapdata->persistent = bitmap->persistent;
-
-                            if (virHashAddEntry(commitdata, bitmap->name, bitmapdata) < 0) {
-                                qemuBlockBitmapsHandleCommitDataFree(bitmapdata);
-                                return -1;
-                            }
-
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (virHashForEach(commitdata, qemuBlockBitmapsHandleCommitFinishIterate, act) < 0)
+    if (qemuBlockGetBitmapMergeActions(topsrc, basesrc, basesrc, NULL, NULL,
+                                       writebitmapsrc, actions,
+                                       blockNamedNodeData) < 0)
         return -1;
-
-    if (virJSONValueArraySize(act) > 0)
-        *actions = g_steal_pointer(&act);
 
     return 0;
 }
@@ -3367,7 +3386,7 @@ qemuBlockStorageSourceNeedsStorageSliceLayer(const virStorageSource *src)
 char *
 qemuBlockStorageSourceGetCookieString(virStorageSourcePtr src)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
 
     for (i = 0; i < src->ncookies; i++) {
@@ -3401,27 +3420,109 @@ qemuBlockUpdateRelativeBacking(virDomainObjPtr vm,
     virStorageSourcePtr n;
 
     for (n = src; virStorageSourceHasBacking(n); n = n->backingStore) {
-        g_autofree char *backingStoreStr = NULL;
         int rc;
 
         if (n->backingStore->relPath)
             break;
 
-        if (!virStorageFileSupportsBackingChainTraversal(n))
+        if (!virStorageSourceSupportsBackingChainTraversal(n))
             continue;
 
         if (qemuDomainStorageFileInit(driver, vm, n, topsrc) < 0)
             return -1;
 
-        rc = virStorageFileGetBackingStoreStr(n, &backingStoreStr);
+        rc = virStorageSourceFetchRelativeBackingPath(n, &n->backingStore->relPath);
 
-        virStorageFileDeinit(n);
+        virStorageSourceDeinit(n);
 
         if (rc < 0)
             return rc;
+    }
 
-        if (backingStoreStr && virStorageIsRelative(backingStoreStr))
-            n->backingStore->relPath = g_steal_pointer(&backingStoreStr);
+    return 0;
+}
+
+
+virJSONValuePtr
+qemuBlockExportGetNBDProps(const char *nodename,
+                           const char *exportname,
+                           bool writable,
+                           const char **bitmaps)
+{
+    g_autofree char *exportid = NULL;
+    g_autoptr(virJSONValue) bitmapsarr = NULL;
+    virJSONValuePtr ret = NULL;
+
+    exportid = g_strdup_printf("libvirt-nbd-%s", nodename);
+
+    if (bitmaps && *bitmaps) {
+        bitmapsarr = virJSONValueNewArray();
+
+        while (*bitmaps) {
+            if (virJSONValueArrayAppendString(bitmapsarr, *(bitmaps++)) < 0)
+                return NULL;
+        }
+    }
+
+    if (virJSONValueObjectCreate(&ret,
+                                 "s:type", "nbd",
+                                 "s:id", exportid,
+                                 "s:node-name", nodename,
+                                 "b:writable", writable,
+                                 "s:name", exportname,
+                                 "A:bitmaps", &bitmapsarr,
+                                 NULL) < 0)
+        return NULL;
+
+    return ret;
+}
+
+
+/**
+ * qemuBlockExportAddNBD:
+ * @vm: domain object
+ * @drivealias: (optional) alias of -drive to export in pre-blockdev configurations
+ * @src: disk source to export
+ * @exportname: name for the export
+ * @writable: whether the NBD export allows writes
+ * @bitmap: (optional) block dirty bitmap to export along
+ *
+ * This function automatically selects the proper invocation of exporting a
+ * block backend via NBD in qemu. This includes use of nodename for blockdev
+ * and proper configuration for the exportname for older qemus.
+ *
+ * This function must be called while in the monitor context.
+ */
+int
+qemuBlockExportAddNBD(virDomainObjPtr vm,
+                      const char *drivealias,
+                      virStorageSourcePtr src,
+                      const char *exportname,
+                      bool writable,
+                      const char *bitmap)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+
+    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_BLOCKDEV)) {
+        if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_BLOCK_EXPORT_ADD)) {
+            g_autoptr(virJSONValue) nbdprops = NULL;
+            const char *bitmaps[2] = { bitmap, NULL };
+
+            if (!(nbdprops = qemuBlockExportGetNBDProps(src->nodeformat,
+                                                        exportname,
+                                                        writable,
+                                                        bitmaps)))
+                return -1;
+
+            return qemuMonitorBlockExportAdd(priv->mon, &nbdprops);
+        } else {
+            return qemuMonitorNBDServerAdd(priv->mon, src->nodeformat,
+                                           exportname, writable, bitmap);
+        }
+    } else {
+        /* older qemu versions didn't support configuring the exportname and
+         * took the 'drivealias' as the export name */
+        return qemuMonitorNBDServerAdd(priv->mon, drivealias, NULL, writable, NULL);
     }
 
     return 0;

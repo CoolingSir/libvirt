@@ -32,6 +32,7 @@
 #include "virutil.h"
 #include "configmake.h"
 #include "virstring.h"
+#include "virdevmapper.h"
 
 #define VIR_FROM_THIS VIR_FROM_STORAGE
 
@@ -73,8 +74,7 @@ virStorageBackendDiskMakeDataVol(virStoragePoolObjPtr pool,
          * we're discovering the existing partitions for the pool
          */
         addVol = true;
-        if (VIR_ALLOC(vol) < 0)
-            return -1;
+        vol = g_new0(virStorageVolDef, 1);
         vol->name = g_strdup(partname);
     }
 
@@ -131,8 +131,7 @@ virStorageBackendDiskMakeDataVol(virStoragePoolObjPtr pool,
     }
 
     if (vol->source.extents == NULL) {
-        if (VIR_ALLOC(vol->source.extents) < 0)
-            goto error;
+        vol->source.extents = g_new0(virStorageVolSourceExtent, 1);
         vol->source.nextent = 1;
 
         if (virStrToLong_ull(groups[3], NULL, 10,
@@ -672,10 +671,10 @@ virStorageBackendDiskPartBoundaries(virStoragePoolObjPtr pool,
     virStoragePoolSourceDevicePtr dev = &def->source.devices[0];
     unsigned long long cylinderSize = (unsigned long long)dev->geometry.heads *
                                       dev->geometry.sectors * SECTOR_SIZE;
+    int partType = virStorageBackendDiskPartTypeToCreate(pool);
 
     VIR_DEBUG("find free area: allocation %llu, cyl size %llu", allocation,
           cylinderSize);
-    int partType = virStorageBackendDiskPartTypeToCreate(pool);
 
     /* how many extra bytes we have since we allocate
        aligned to the cylinder boundary */
@@ -690,7 +689,7 @@ virStorageBackendDiskPartBoundaries(virStoragePoolObjPtr pool,
          if (def->source.format == VIR_STORAGE_POOL_DISK_DOS) {
              /* align to cylinder boundary */
              neededSize += extraBytes;
-             if ((*start % cylinderSize) > extraBytes) {
+             if ((dev->freeExtents[i].start % cylinderSize) > extraBytes) {
                  /* add an extra cylinder if the offset can't fit within
                     the extra bytes we have */
                  neededSize += cylinderSize;

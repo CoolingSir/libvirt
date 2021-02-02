@@ -17,13 +17,13 @@
  */
 #include <config.h>
 
-#if HAVE_DECL_BPF_CGROUP_DEVICE
+#if WITH_DECL_BPF_CGROUP_DEVICE
 # include <fcntl.h>
 # include <linux/bpf.h>
 # include <sys/stat.h>
 # include <sys/syscall.h>
 # include <sys/types.h>
-#endif /* !HAVE_DECL_BPF_CGROUP_DEVICE */
+#endif /* !WITH_DECL_BPF_CGROUP_DEVICE */
 
 #include "internal.h"
 
@@ -34,6 +34,7 @@
 #include "virbpf.h"
 #include "vircgroup.h"
 #include "vircgroupv2devices.h"
+#include "virerror.h"
 #include "virfile.h"
 #include "virlog.h"
 
@@ -41,7 +42,7 @@ VIR_LOG_INIT("util.cgroup");
 
 #define VIR_FROM_THIS VIR_FROM_CGROUP
 
-#if HAVE_DECL_BPF_CGROUP_DEVICE
+#if WITH_DECL_BPF_CGROUP_DEVICE
 bool
 virCgroupV2DevicesAvailable(virCgroupPtr group)
 {
@@ -342,7 +343,7 @@ virCgroupV2DevicesCountMapEntries(int mapfd)
         prevKey = key;
     }
 
-    if (rc < 0)
+    if (rc < 0 && errno != ENOENT)
         return -1;
 
     return ret;
@@ -581,7 +582,7 @@ virCgroupV2DevicesGetPerms(int perms,
 
     return ret;
 }
-#else /* !HAVE_DECL_BPF_CGROUP_DEVICE */
+#else /* !WITH_DECL_BPF_CGROUP_DEVICE */
 bool
 virCgroupV2DevicesAvailable(virCgroupPtr group G_GNUC_UNUSED)
 {
@@ -632,7 +633,7 @@ virCgroupV2DevicesGetPerms(int perms G_GNUC_UNUSED,
 {
     return 0;
 }
-#endif /* !HAVE_DECL_BPF_CGROUP_DEVICE */
+#endif /* !WITH_DECL_BPF_CGROUP_DEVICE */
 
 
 uint64_t

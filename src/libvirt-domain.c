@@ -284,7 +284,7 @@ virDomainCreateLinux(virConnectPtr conn, const char *xmlDesc,
  *
  * Try to find a domain based on the hypervisor ID number
  * Note that this won't work for inactive domains which have an ID of -1,
- * in that case a lookup based on the Name or UUId need to be done instead.
+ * in that case a lookup based on the Name or UUID need to be done instead.
  *
  * virDomainFree should be used to free the resources after the
  * domain object is no longer needed.
@@ -590,7 +590,7 @@ virDomainFree(virDomainPtr domain)
 int
 virDomainRef(virDomainPtr domain)
 {
-    VIR_DOMAIN_DEBUG(domain, "refs=%d", domain ? domain->parent.u.s.refs : 0);
+    VIR_DOMAIN_DEBUG(domain);
 
     virResetLastError();
 
@@ -2130,6 +2130,7 @@ virDomainGetMemoryParameters(virDomainPtr domain,
                              int *nparams, unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "params=%p, nparams=%d, flags=0x%x",
                      params, (nparams) ? *nparams : -1, flags);
@@ -2142,8 +2143,11 @@ virDomainGetMemoryParameters(virDomainPtr domain,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_AFFECT_LIVE,
@@ -2251,6 +2255,7 @@ virDomainGetNumaParameters(virDomainPtr domain,
                            int *nparams, unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "params=%p, nparams=%d, flags=0x%x",
                      params, (nparams) ? *nparams : -1, flags);
@@ -2263,8 +2268,11 @@ virDomainGetNumaParameters(virDomainPtr domain,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     conn = domain->conn;
@@ -2369,6 +2377,7 @@ virDomainGetBlkioParameters(virDomainPtr domain,
                             int *nparams, unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "params=%p, nparams=%d, flags=0x%x",
                      params, (nparams) ? *nparams : -1, flags);
@@ -2381,8 +2390,11 @@ virDomainGetBlkioParameters(virDomainPtr domain,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_AFFECT_LIVE,
@@ -2726,9 +2738,8 @@ virDomainMigrateVersion1(virDomainPtr domain,
                          const char *uri,
                          unsigned long bandwidth)
 {
-    virDomainPtr ddomain = NULL;
-    char *uri_out = NULL;
-    char *cookie = NULL;
+    g_autofree char *uri_out = NULL;
+    g_autofree char *cookie = NULL;
     int cookielen = 0, ret;
     virDomainInfo info;
     unsigned int destflags;
@@ -2758,12 +2769,12 @@ virDomainMigrateVersion1(virDomainPtr domain,
     if (dconn->driver->domainMigratePrepare
         (dconn, &cookie, &cookielen, uri, &uri_out, destflags, dname,
          bandwidth) == -1)
-        goto done;
+        return NULL;
 
     if (uri == NULL && uri_out == NULL) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("domainMigratePrepare did not set uri"));
-        goto done;
+        return NULL;
     }
     if (uri_out)
         uri = uri_out; /* Did domainMigratePrepare change URI? */
@@ -2773,7 +2784,7 @@ virDomainMigrateVersion1(virDomainPtr domain,
      */
     if (domain->conn->driver->domainMigratePerform
         (domain, cookie, cookielen, uri, flags, dname, bandwidth) == -1)
-        goto done;
+        return NULL;
 
     /* Get the destination domain and return it or error.
      * 'domain' no longer actually exists at this point
@@ -2782,15 +2793,10 @@ virDomainMigrateVersion1(virDomainPtr domain,
      */
     dname = dname ? dname : domain->name;
     if (dconn->driver->domainMigrateFinish)
-        ddomain = dconn->driver->domainMigrateFinish
+        return dconn->driver->domainMigrateFinish
             (dconn, dname, cookie, cookielen, uri, destflags);
-    else
-        ddomain = virDomainLookupByName(dconn, dname);
 
- done:
-    VIR_FREE(uri_out);
-    VIR_FREE(cookie);
-    return ddomain;
+    return virDomainLookupByName(dconn, dname);
 }
 
 
@@ -2822,9 +2828,9 @@ virDomainMigrateVersion2(virDomainPtr domain,
                          unsigned long bandwidth)
 {
     virDomainPtr ddomain = NULL;
-    char *uri_out = NULL;
-    char *cookie = NULL;
-    char *dom_xml = NULL;
+    g_autofree char *uri_out = NULL;
+    g_autofree char *cookie = NULL;
+    g_autofree char *dom_xml = NULL;
     int cookielen = 0, ret;
     virDomainInfo info;
     virErrorPtr orig_err = NULL;
@@ -2857,12 +2863,14 @@ virDomainMigrateVersion2(virDomainPtr domain,
         return NULL;
     }
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_XML_MIGRATABLE)) {
+    ret = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                   VIR_DRV_FEATURE_XML_MIGRATABLE);
+    if (ret < 0)
+        return NULL;
+    if (ret)
         getxml_flags |= VIR_DOMAIN_XML_MIGRATABLE;
-    } else {
+    else
         getxml_flags |= VIR_DOMAIN_XML_SECURE | VIR_DOMAIN_XML_UPDATE_CPU;
-    }
 
     dom_xml = domain->conn->driver->domainGetXMLDesc(domain, getxml_flags);
     if (!dom_xml)
@@ -2879,7 +2887,6 @@ virDomainMigrateVersion2(virDomainPtr domain,
     ret = dconn->driver->domainMigratePrepare2
         (dconn, &cookie, &cookielen, uri, &uri_out, destflags, dname,
          bandwidth, dom_xml);
-    VIR_FREE(dom_xml);
     if (ret == -1)
         goto done;
 
@@ -2924,8 +2931,6 @@ virDomainMigrateVersion2(virDomainPtr domain,
 
  done:
     virErrorRestore(&orig_err);
-    VIR_FREE(uri_out);
-    VIR_FREE(cookie);
     return ddomain;
 }
 
@@ -2971,10 +2976,10 @@ virDomainMigrateVersion3Full(virDomainPtr domain,
                              unsigned int flags)
 {
     virDomainPtr ddomain = NULL;
-    char *uri_out = NULL;
-    char *cookiein = NULL;
-    char *cookieout = NULL;
-    char *dom_xml = NULL;
+    g_autofree char *uri_out = NULL;
+    g_autofree char *cookiein = NULL;
+    g_autofree char *cookieout = NULL;
+    g_autofree char *dom_xml = NULL;
     int cookieinlen = 0;
     int cookieoutlen = 0;
     int ret;
@@ -3014,8 +3019,11 @@ virDomainMigrateVersion3Full(virDomainPtr domain,
         return NULL;
     params = tmp;
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION))
+    ret = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                   VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION);
+    if (ret < 0)
+        goto done;
+    if (ret)
         protection = VIR_MIGRATE_CHANGE_PROTECTION;
 
     VIR_DEBUG("Begin3 %p", domain->conn);
@@ -3248,10 +3256,6 @@ virDomainMigrateVersion3Full(virDomainPtr domain,
 
  done:
     virErrorRestore(&orig_err);
-    VIR_FREE(dom_xml);
-    VIR_FREE(uri_out);
-    VIR_FREE(cookiein);
-    VIR_FREE(cookieout);
     virTypedParamsFree(params, nparams);
     return ddomain;
 }
@@ -3282,26 +3286,26 @@ virDomainMigrateVersion3Params(virDomainPtr domain,
                                         params, nparams, true, flags);
 }
 
-
-static int
+int
 virDomainMigrateCheckNotLocal(const char *dconnuri)
 {
-    virURIPtr tempuri = NULL;
-    int ret = -1;
+    g_autoptr(virURI) tempuri = NULL;
 
     if (!(tempuri = virURIParse(dconnuri)))
-        goto cleanup;
-    if (!tempuri->server || STRPREFIX(tempuri->server, "localhost")) {
+        return -1;
+
+    /*
+     * If someone migrates explicitly to a unix socket, then they have to know
+     * what they are doing and it most probably was not a mistake.
+     */
+    if ((tempuri->server && STRPREFIX(tempuri->server, "localhost")) ||
+        (!tempuri->server && !virURICheckUnixSocket(tempuri))) {
         virReportInvalidArg(dconnuri, "%s",
                             _("Attempt to migrate guest to the same host"));
-        goto cleanup;
+        return -1;
     }
 
-    ret = 0;
-
- cleanup:
-    virURIFree(tempuri);
-    return ret;
+    return 0;
 }
 
 
@@ -3396,14 +3400,14 @@ virDomainMigrateUnmanagedProto3(virDomainPtr domain,
 
 
 /*
- * In normal migration, the libvirt client co-ordinates communication
+ * In normal migration, the libvirt client coordinates communication
  * between the 2 libvirtd instances on source & dest hosts.
  *
  * This function encapsulates 2 alternatives to the above case.
  *
  * 1. peer-2-peer migration, the libvirt client only talks to the source
  * libvirtd instance. The source libvirtd then opens its own
- * connection to the destination and co-ordinates migration itself.
+ * connection to the destination and coordinates migration itself.
  *
  * 2. direct migration, where there is no requirement for a libvirtd instance
  * on the dest host. Eg, XenD can talk direct to XenD, so libvirtd on dest
@@ -3416,6 +3420,8 @@ virDomainMigrateUnmanagedParams(virDomainPtr domain,
                                 int nparams,
                                 unsigned int flags)
 {
+    int rc;
+
     VIR_DOMAIN_DEBUG(domain, "dconnuri=%s, params=%p, nparams=%d, flags=0x%x",
                      NULLSTR(dconnuri), params, nparams, flags);
     VIR_TYPED_PARAMS_DEBUG(params, nparams);
@@ -3424,19 +3430,28 @@ virDomainMigrateUnmanagedParams(virDomainPtr domain,
         virDomainMigrateCheckNotLocal(dconnuri) < 0)
         return -1;
 
-    if ((flags & VIR_MIGRATE_PEER2PEER) &&
-        VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_MIGRATION_PARAMS)) {
-        VIR_DEBUG("Using migration protocol 3 with extensible parameters");
-        if (!domain->conn->driver->domainMigratePerform3Params) {
-            virReportUnsupportedError();
+    if (flags & VIR_MIGRATE_PEER2PEER) {
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_PARAMS);
+        if (rc < 0)
             return -1;
+        if (rc) {
+            VIR_DEBUG("Using migration protocol 3 with extensible parameters");
+            if (!domain->conn->driver->domainMigratePerform3Params) {
+                virReportUnsupportedError();
+                return -1;
+            }
+            return domain->conn->driver->domainMigratePerform3Params
+                    (domain, dconnuri, params, nparams,
+                     NULL, 0, NULL, NULL, flags);
         }
-        return domain->conn->driver->domainMigratePerform3Params
-                (domain, dconnuri, params, nparams,
-                 NULL, 0, NULL, NULL, flags);
-    } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                        VIR_DRV_FEATURE_MIGRATION_V3)) {
+    }
+
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_MIGRATION_V3);
+    if (rc < 0)
+        return -1;
+    if (rc) {
         VIR_DEBUG("Using migration protocol 3");
         if (!domain->conn->driver->domainMigratePerform3) {
             virReportUnsupportedError();
@@ -3528,6 +3543,9 @@ virDomainMigrate(virDomainPtr domain,
                  unsigned long bandwidth)
 {
     virDomainPtr ddomain = NULL;
+    int rc_src;
+    int rc_dst;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain,
                      "dconn=%p, flags=0x%lx, dname=%s, uri=%s, bandwidth=%lu",
@@ -3552,26 +3570,34 @@ virDomainMigrate(virDomainPtr domain,
                              error);
 
     if (flags & VIR_MIGRATE_OFFLINE) {
-        if (!VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the source host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the source host"));
             goto error;
         }
-        if (!VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the destination host"));
+
+        rc = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the destination host"));
             goto error;
         }
     }
 
     if (flags & VIR_MIGRATE_PEER2PEER) {
-        if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                     VIR_DRV_FEATURE_MIGRATION_P2P)) {
-            char *dstURI = NULL;
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_P2P);
+        if (rc < 0)
+            goto error;
+        if (rc) {
+            g_autofree char *dstURI = NULL;
             if (uri == NULL) {
                 dstURI = virConnectGetURI(dconn);
                 if (!dstURI)
@@ -3580,11 +3606,8 @@ virDomainMigrate(virDomainPtr domain,
 
             VIR_DEBUG("Using peer2peer migration");
             if (virDomainMigrateUnmanaged(domain, NULL, flags, dname,
-                                          uri ? uri : dstURI, NULL, bandwidth) < 0) {
-                VIR_FREE(dstURI);
+                                          uri ? uri : dstURI, NULL, bandwidth) < 0)
                 goto error;
-            }
-            VIR_FREE(dstURI);
 
             ddomain = virDomainLookupByName(dconn, dname ? dname : domain->name);
         } else {
@@ -3598,12 +3621,15 @@ virDomainMigrate(virDomainPtr domain,
          * the flag for just the source side.  We mask it out for
          * non-peer2peer to allow migration from newer source to an
          * older destination that rejects the flag.  */
-        if (flags & VIR_MIGRATE_CHANGE_PROTECTION &&
-            !VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("cannot enforce change protection"));
-            goto error;
+        if (flags & VIR_MIGRATE_CHANGE_PROTECTION) {
+            rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION);
+            if (rc <= 0) {
+                if (rc == 0)
+                    virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                                   _("cannot enforce change protection"));
+                goto error;
+            }
         }
         flags &= ~VIR_MIGRATE_CHANGE_PROTECTION;
         if (flags & VIR_MIGRATE_TUNNELLED) {
@@ -3613,34 +3639,57 @@ virDomainMigrate(virDomainPtr domain,
         }
 
         /* Check that migration is supported by both drivers. */
-        if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                     VIR_DRV_FEATURE_MIGRATION_V3) &&
-            VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                     VIR_DRV_FEATURE_MIGRATION_V3)) {
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V3);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V3);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 3");
             ddomain = virDomainMigrateVersion3(domain, dconn, NULL,
                                                flags, dname, uri, bandwidth);
-        } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                            VIR_DRV_FEATURE_MIGRATION_V2) &&
-                   VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                          VIR_DRV_FEATURE_MIGRATION_V2)) {
+            goto done;
+        }
+
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V2);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V2);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 2");
             ddomain = virDomainMigrateVersion2(domain, dconn, flags,
                                                dname, uri, bandwidth);
-        } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                            VIR_DRV_FEATURE_MIGRATION_V1) &&
-                   VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                            VIR_DRV_FEATURE_MIGRATION_V1)) {
+            goto done;
+        }
+
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V1);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V1);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 1");
             ddomain = virDomainMigrateVersion1(domain, dconn, flags,
                                                dname, uri, bandwidth);
-        } else {
-            /* This driver does not support any migration method */
-            virReportUnsupportedError();
-            goto error;
+            goto done;
         }
+
+        /* This driver does not support any migration method */
+        virReportUnsupportedError();
+        goto error;
     }
 
+ done:
     if (ddomain == NULL)
         goto error;
 
@@ -3687,6 +3736,9 @@ virDomainMigrate2(virDomainPtr domain,
                   unsigned long bandwidth)
 {
     virDomainPtr ddomain = NULL;
+    int rc_src;
+    int rc_dst;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain,
                      "dconn=%p, flags=0x%lx, dname=%s, uri=%s, bandwidth=%lu",
@@ -3711,36 +3763,40 @@ virDomainMigrate2(virDomainPtr domain,
                              error);
 
     if (flags & VIR_MIGRATE_OFFLINE) {
-        if (!VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the source host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the source host"));
             goto error;
         }
-        if (!VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the destination host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the destination host"));
             goto error;
         }
     }
 
     if (flags & VIR_MIGRATE_PEER2PEER) {
-        if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                     VIR_DRV_FEATURE_MIGRATION_P2P)) {
-            char *dstURI = virConnectGetURI(dconn);
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_P2P);
+        if (rc < 0)
+            goto error;
+        if (rc) {
+            g_autofree char *dstURI = virConnectGetURI(dconn);
             if (!dstURI)
                 return NULL;
 
             VIR_DEBUG("Using peer2peer migration");
             if (virDomainMigrateUnmanaged(domain, dxml, flags, dname,
-                                          dstURI, uri, bandwidth) < 0) {
-                VIR_FREE(dstURI);
+                                          dstURI, uri, bandwidth) < 0)
                 goto error;
-            }
-            VIR_FREE(dstURI);
 
             ddomain = virDomainLookupByName(dconn, dname ? dname : domain->name);
         } else {
@@ -3754,12 +3810,15 @@ virDomainMigrate2(virDomainPtr domain,
          * the flag for just the source side.  We mask it out for
          * non-peer2peer to allow migration from newer source to an
          * older destination that rejects the flag.  */
-        if (flags & VIR_MIGRATE_CHANGE_PROTECTION &&
-            !VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("cannot enforce change protection"));
-            goto error;
+        if (flags & VIR_MIGRATE_CHANGE_PROTECTION) {
+            rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION);
+            if (rc <= 0) {
+                if (rc == 0)
+                    virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                                   _("cannot enforce change protection"));
+                goto error;
+            }
         }
         flags &= ~VIR_MIGRATE_CHANGE_PROTECTION;
         if (flags & VIR_MIGRATE_TUNNELLED) {
@@ -3769,17 +3828,30 @@ virDomainMigrate2(virDomainPtr domain,
         }
 
         /* Check that migration is supported by both drivers. */
-        if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                     VIR_DRV_FEATURE_MIGRATION_V3) &&
-            VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                     VIR_DRV_FEATURE_MIGRATION_V3)) {
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V3);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V3);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 3");
             ddomain = virDomainMigrateVersion3(domain, dconn, dxml,
                                                flags, dname, uri, bandwidth);
-        } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                            VIR_DRV_FEATURE_MIGRATION_V2) &&
-                   VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                          VIR_DRV_FEATURE_MIGRATION_V2)) {
+            goto done;
+        }
+
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V2);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V2);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 2");
             if (dxml) {
                 virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
@@ -3788,10 +3860,18 @@ virDomainMigrate2(virDomainPtr domain,
             }
             ddomain = virDomainMigrateVersion2(domain, dconn, flags,
                                                dname, uri, bandwidth);
-        } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                            VIR_DRV_FEATURE_MIGRATION_V1) &&
-                   VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                            VIR_DRV_FEATURE_MIGRATION_V1)) {
+            goto done;
+        }
+
+        rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                          VIR_DRV_FEATURE_MIGRATION_V1);
+        if (rc_src < 0)
+            goto error;
+        rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                          VIR_DRV_FEATURE_MIGRATION_V1);
+        if (rc_dst < 0)
+            goto error;
+        if (rc_src && rc_dst) {
             VIR_DEBUG("Using migration protocol 1");
             if (dxml) {
                 virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
@@ -3800,13 +3880,15 @@ virDomainMigrate2(virDomainPtr domain,
             }
             ddomain = virDomainMigrateVersion1(domain, dconn, flags,
                                                dname, uri, bandwidth);
-        } else {
-            /* This driver does not support any migration method */
-            virReportUnsupportedError();
-            goto error;
+            goto done;
         }
+
+        /* This driver does not support any migration method */
+        virReportUnsupportedError();
+        goto error;
     }
 
+ done:
     if (ddomain == NULL)
         goto error;
 
@@ -3865,6 +3947,9 @@ virDomainMigrate3(virDomainPtr domain,
     const char *dname = NULL;
     const char *dxml = NULL;
     unsigned long long bandwidth = 0;
+    int rc_src;
+    int rc_dst;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "dconn=%p, params=%p, nparms=%u flags=0x%x",
                      dconn, params, nparams, flags);
@@ -3897,18 +3982,23 @@ virDomainMigrate3(virDomainPtr domain,
     }
 
     if (flags & VIR_MIGRATE_OFFLINE) {
-        if (!VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the source host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the source host"));
             goto error;
         }
-        if (!VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("offline migration is not supported by "
-                             "the destination host"));
+
+        rc = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the destination host"));
             goto error;
         }
     }
@@ -3918,21 +4008,29 @@ virDomainMigrate3(virDomainPtr domain,
      * the flag for just the source side.  We mask it out to allow
      * migration from newer source to an older destination that
      * rejects the flag.  */
-    if (flags & VIR_MIGRATE_CHANGE_PROTECTION &&
-        !VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                  VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION)) {
-        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                       _("cannot enforce change protection"));
-        goto error;
+    if (flags & VIR_MIGRATE_CHANGE_PROTECTION) {
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("cannot enforce change protection"));
+            goto error;
+        }
     }
     flags &= ~VIR_MIGRATE_CHANGE_PROTECTION;
 
     /* Prefer extensible API but fall back to older migration APIs if params
      * only contains parameters which were supported by the older API. */
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_MIGRATION_PARAMS) &&
-        VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                 VIR_DRV_FEATURE_MIGRATION_PARAMS)) {
+    rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_PARAMS);
+    if (rc_src < 0)
+        goto error;
+    rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_PARAMS);
+    if (rc_dst < 0)
+        goto error;
+    if (rc_src && rc_dst) {
         VIR_DEBUG("Using migration protocol 3 with extensible parameters");
         ddomain = virDomainMigrateVersion3Params(domain, dconn, params,
                                                  nparams, flags);
@@ -3958,17 +4056,30 @@ virDomainMigrate3(virDomainPtr domain,
         goto error;
     }
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_MIGRATION_V3) &&
-        VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                 VIR_DRV_FEATURE_MIGRATION_V3)) {
+    rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_V3);
+    if (rc_src < 0)
+        goto error;
+    rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_V3);
+    if (rc_dst < 0)
+        goto error;
+    if (rc_src && rc_dst) {
         VIR_DEBUG("Using migration protocol 3");
         ddomain = virDomainMigrateVersion3(domain, dconn, dxml, flags,
                                            dname, uri, bandwidth);
-    } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                        VIR_DRV_FEATURE_MIGRATION_V2) &&
-               VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                      VIR_DRV_FEATURE_MIGRATION_V2)) {
+        goto done;
+    }
+
+    rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_V2);
+    if (rc_src < 0)
+        goto error;
+    rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_V2);
+    if (rc_dst < 0)
+        goto error;
+    if (rc_src && rc_dst) {
         VIR_DEBUG("Using migration protocol 2");
         if (dxml) {
             virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
@@ -3978,10 +4089,18 @@ virDomainMigrate3(virDomainPtr domain,
         }
         ddomain = virDomainMigrateVersion2(domain, dconn, flags,
                                            dname, uri, bandwidth);
-    } else if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                        VIR_DRV_FEATURE_MIGRATION_V1) &&
-               VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
-                                        VIR_DRV_FEATURE_MIGRATION_V1)) {
+        goto done;
+    }
+
+    rc_src = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_V1);
+    if (rc_src < 0)
+        goto error;
+    rc_dst = VIR_DRV_SUPPORTS_FEATURE(dconn->driver, dconn,
+                                      VIR_DRV_FEATURE_MIGRATION_V1);
+    if (rc_dst < 0)
+        goto error;
+    if (rc_src && rc_dst) {
         VIR_DEBUG("Using migration protocol 1");
         if (dxml) {
             virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
@@ -3991,11 +4110,12 @@ virDomainMigrate3(virDomainPtr domain,
         }
         ddomain = virDomainMigrateVersion1(domain, dconn, flags,
                                            dname, uri, bandwidth);
-    } else {
-        /* This driver does not support any migration method */
-        virReportUnsupportedError();
-        goto error;
+        goto done;
     }
+
+    /* This driver does not support any migration method */
+    virReportUnsupportedError();
+    goto error;
 
  done:
     if (ddomain == NULL)
@@ -4013,33 +4133,44 @@ static
 int virDomainMigrateUnmanagedCheckCompat(virDomainPtr domain,
                                          unsigned int flags)
 {
+    int rc;
+
     VIR_EXCLUSIVE_FLAGS_RET(VIR_MIGRATE_NON_SHARED_DISK,
                             VIR_MIGRATE_NON_SHARED_INC,
                             -1);
 
-    if (flags & VIR_MIGRATE_OFFLINE &&
-        !VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                  VIR_DRV_FEATURE_MIGRATION_OFFLINE)) {
-        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                       _("offline migration is not supported by "
-                         "the source host"));
-        return -1;
+    if (flags & VIR_MIGRATE_OFFLINE) {
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_OFFLINE);
+
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("offline migration is not supported by "
+                                 "the source host"));
+            return -1;
+        }
     }
 
     if (flags & VIR_MIGRATE_PEER2PEER) {
-        if (!VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATION_P2P)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("p2p migration is not supported by "
-                             "the source host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_P2P);
+
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("p2p migration is not supported by "
+                                 "the source host"));
             return -1;
         }
     } else {
-        if (!VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                      VIR_DRV_FEATURE_MIGRATION_DIRECT)) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                           _("direct migration is not supported by "
-                             "the source host"));
+        rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                      VIR_DRV_FEATURE_MIGRATION_DIRECT);
+        if (rc <= 0) {
+            if (rc == 0)
+                virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                               _("direct migration is not supported by "
+                                 "the source host"));
             return -1;
         }
     }
@@ -5220,6 +5351,7 @@ virDomainGetSchedulerParametersFlags(virDomainPtr domain,
                                      unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "params=%p, nparams=%p, flags=0x%x",
                      params, nparams, flags);
@@ -5232,8 +5364,11 @@ virDomainGetSchedulerParametersFlags(virDomainPtr domain,
     virCheckNonNullArgGoto(nparams, error);
     virCheckPositiveArgGoto(*nparams, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_AFFECT_LIVE,
@@ -5484,6 +5619,7 @@ virDomainBlockStatsFlags(virDomainPtr dom,
                          unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(dom, "disk=%s, params=%p, nparams=%d, flags=0x%x",
                      disk, params, nparams ? *nparams : -1, flags);
@@ -5497,8 +5633,11 @@ virDomainBlockStatsFlags(virDomainPtr dom,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
     conn = dom->conn;
 
@@ -5676,6 +5815,7 @@ virDomainGetInterfaceParameters(virDomainPtr domain,
                                 int *nparams, unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "device=%s, params=%p, nparams=%d, flags=0x%x",
                      device, params, (nparams) ? *nparams : -1, flags);
@@ -5688,8 +5828,11 @@ virDomainGetInterfaceParameters(virDomainPtr domain,
     if (*nparams != 0)
         virCheckNonNullArgGoto(params, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     conn = domain->conn;
@@ -5749,9 +5892,9 @@ virDomainGetInterfaceParameters(virDomainPtr domain,
  *     Memory that can be reclaimed without additional I/O, typically disk
  *     caches (in kb).
  * VIR_DOMAIN_MEMORY_STAT_HUGETLB_PGALLOC
- *     The amount of successful huge page allocations from inside the domain
+ *     The number of successful huge page allocations from inside the domain
  * VIR_DOMAIN_MEMORY_STAT_HUGETLB_PGFAIL
- *     The amount of failed huge page allocations from inside the domain
+ *     The number of failed huge page allocations from inside the domain
  *
  * Returns: The number of stats provided or -1 in case of failure.
  */
@@ -5760,7 +5903,6 @@ virDomainMemoryStats(virDomainPtr dom, virDomainMemoryStatPtr stats,
                      unsigned int nr_stats, unsigned int flags)
 {
     virConnectPtr conn;
-    unsigned long nr_stats_ret = 0;
 
     VIR_DOMAIN_DEBUG(dom, "stats=%p, nr_stats=%u, flags=0x%x",
                      stats, nr_stats, flags);
@@ -5777,11 +5919,10 @@ virDomainMemoryStats(virDomainPtr dom, virDomainMemoryStatPtr stats,
 
     conn = dom->conn;
     if (conn->driver->domainMemoryStats) {
-        nr_stats_ret = conn->driver->domainMemoryStats(dom, stats, nr_stats,
-                                                       flags);
-        if (nr_stats_ret == -1)
+        int ret = conn->driver->domainMemoryStats(dom, stats, nr_stats, flags);
+        if (ret == -1)
             goto error;
-        return nr_stats_ret;
+        return ret;
     }
 
     virReportUnsupportedError();
@@ -9961,12 +10102,23 @@ virDomainBlockJobAbort(virDomainPtr dom, const char *disk,
  * can be found by calling virDomainGetXMLDesc() and inspecting
  * elements within //domain/devices/disk.
  *
- * As a corner case underlying hypervisor may report cur == 0 and
- * end == 0 when the block job hasn't been started yet. In this
- * case libvirt reports cur = 0 and end = 1. However, hypervisor
- * may return cur == 0 and end == 0 if the block job has finished
- * and was no-op. In this case libvirt reports cur = 1 and end = 1.
- * Since 2.3.0.
+ * In cases when libvirt can't determine actual progress of the block job from
+ * the underlying hypervisor due to corner cases such as the job wasn't yet
+ * fully initialized, or finalized and thus the progress can't be queried,
+ * libvirt reports 'cur = 0, end = 1'.
+ *
+ * For jobs requiring finalizing via qemuDomainBlockJobAbort() with
+ * VIR_DOMAIN_BLOCK_JOB_ABORT_PIVOT flag which reached synchronised phase, but
+ * were empty, or the progress can't be determined libvirt returns
+ * 'cur = 1, end = 1'.
+ *
+ * Users thus should not consider any data where 'end = 1' as absolute progress
+ * value.
+ *
+ * Applications looking for a reliable and low-overhead way to determine whether
+ * a block job already finished or reached synchronised phase should register a
+ * handler for the VIR_DOMAIN_EVENT_ID_BLOCK_JOB_2 event instead of polling this
+ * API.
  *
  * Note that the progress reported for blockjobs corresponding to a pull-mode
  * backup don't report progress of the backup but rather usage of temporary
@@ -10016,7 +10168,7 @@ virDomainGetBlockJobInfo(virDomainPtr dom, const char *disk,
  * @bandwidth: specify bandwidth limit; flags determine the unit
  * @flags: bitwise-OR of virDomainBlockJobSetSpeedFlags
  *
- * Set the maximimum allowable bandwidth that a block job may consume.  If
+ * Set the maximum allowable bandwidth that a block job may consume.  If
  * bandwidth is 0, the limit will revert to the hypervisor default of
  * unlimited.
  *
@@ -10591,6 +10743,8 @@ virDomainOpenGraphics(virDomainPtr dom,
                       unsigned int flags)
 {
     struct stat sb;
+    int rc;
+
     VIR_DOMAIN_DEBUG(dom, "idx=%u, fd=%d, flags=0x%x",
                      idx, fd, flags);
 
@@ -10616,10 +10770,12 @@ virDomainOpenGraphics(virDomainPtr dom,
 
     virCheckReadOnlyGoto(dom->conn->flags, error);
 
-    if (!VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
-                                  VIR_DRV_FEATURE_FD_PASSING)) {
-        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                       _("fd passing is not supported by this connection"));
+    rc = VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
+                                  VIR_DRV_FEATURE_FD_PASSING);
+    if (rc <= 0) {
+        if (rc == 0)
+            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                           _("fd passing is not supported by this connection"));
         goto error;
     }
 
@@ -10665,6 +10821,8 @@ virDomainOpenGraphicsFD(virDomainPtr dom,
                         unsigned int idx,
                         unsigned int flags)
 {
+    int rc;
+
     VIR_DOMAIN_DEBUG(dom, "idx=%u, flags=0x%x", idx, flags);
 
     virResetLastError();
@@ -10673,10 +10831,13 @@ virDomainOpenGraphicsFD(virDomainPtr dom,
 
     virCheckReadOnlyGoto(dom->conn->flags, error);
 
-    if (!VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
-                                  VIR_DRV_FEATURE_FD_PASSING)) {
-        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
-                       _("fd passing is not supported by this connection"));
+    rc = VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
+                                  VIR_DRV_FEATURE_FD_PASSING);
+
+    if (rc <= 0) {
+        if (rc == 0)
+            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                           _("fd passing is not supported by this connection"));
         goto error;
     }
 
@@ -10799,6 +10960,7 @@ virDomainGetBlockIoTune(virDomainPtr dom,
                         unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(dom, "disk=%s, params=%p, nparams=%d, flags=0x%x",
                      NULLSTR(disk), params, (nparams) ? *nparams : -1, flags);
@@ -10814,8 +10976,11 @@ virDomainGetBlockIoTune(virDomainPtr dom,
         virCheckNonNullArgGoto(disk, error);
     }
 
-    if (VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(dom->conn->driver, dom->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_AFFECT_LIVE,
@@ -10925,6 +11090,7 @@ virDomainGetCPUStats(virDomainPtr domain,
                      unsigned int flags)
 {
     virConnectPtr conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain,
                      "params=%p, nparams=%d, start_cpu=%d, ncpus=%u, flags=0x%x",
@@ -10962,8 +11128,11 @@ virDomainGetCPUStats(virDomainPtr domain,
                        nparams, ncpus);
         goto error;
     }
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     if (conn->driver->domainGetCPUStats) {
@@ -11479,6 +11648,34 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
  *                         as unsigned long long.
  *     "balloon.maximum" - the maximum memory in kiB allowed
  *                         as unsigned long long.
+ *     "balloon.swap_in" - the amount of data read from swap space (in KiB)
+ *                         as unsigned long long
+ *     "balloon.swap_out" - the amount of memory written out to swap space
+ *                          (in KiB) as unsigned long long
+ *     "balloon.major_fault" - the number of page faults when disk IO was
+ *                             required as unsigned long long
+ *     "balloon.minor_fault" - the number of other page faults
+ *                             as unsigned long long
+ *     "balloon.unused" - the amount of memory left unused by the system
+ *                        (in KiB) as unsigned long long
+ *     "balloon.available" - the amount of usable memory as seen by the domain
+ *                           (in KiB) as unsigned long long
+ *     "balloon.rss" - Resident Set Size of running domain's process
+ *                     (in KiB) as unsigned long long
+ *     "balloon.usable" - the amount of memory which can be reclaimed by balloon
+ *                        without causing host swapping (in KiB)
+ *                        as unsigned long long
+ *     "balloon.last-update" - timestamp of the last update of statistics
+ *                             (in seconds) as unsigned long long
+ *     "balloon.disk_caches" - the amount of memory that can be reclaimed
+ *                             without additional I/O, typically disk (in KiB)
+ *                             as unsigned long long
+ *     "balloon.hugetlb_pgalloc" - the number of successful huge page allocations
+ *                                 from inside the domain via virtio balloon
+ *                                 as unsigned long long
+ *     "balloon.hugetlb_pgfail" - the number of failed huge page allocations
+ *                                from inside the domain via virtio balloon
+ *                                as unsigned long long
  *
  * VIR_DOMAIN_STATS_VCPU:
  *     Return virtual CPU statistics.
@@ -11493,6 +11690,11 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
  *                          from virVcpuState enum.
  *     "vcpu.<num>.time" - virtual cpu time spent by virtual CPU <num>
  *                         as unsigned long long.
+ *     "vcpu.<num>.wait" - time the vCPU <num> wants to run, but the host
+ *                         scheduler has something else running ahead of it.
+ *     "vcpu.<num>.halted" - virtual CPU <num> is halted, may indicate the
+ *                           processor is idle or even disabled, depending
+ *                           on the architecture)
  *
  * VIR_DOMAIN_STATS_INTERFACE:
  *     Return network interface statistics (from domain point of view).
@@ -12329,6 +12531,23 @@ virDomainSetVcpu(virDomainPtr domain,
  *      "fs.<num>.disk.<num>.serial" - the serial number of the disk
  *      "fs.<num>.disk.<num>.device" - the device node of the disk
  *
+ * VIR_DOMAIN_GUEST_INFO_DISKS:
+ *  Returns information about the disks within the domain.  The typed
+ *  parameter keys are in this format:
+ *
+ *      "disk.count" - the number of disks defined on this domain
+ *                      as an unsigned int
+ *      "disk.<num>.name" - device node (Linux) or device UNC (Windows)
+ *      "disk.<num>.partition" - whether this is a partition or disk
+ *      "disk.<num>.dependency.count" - the number of device dependencies
+ *                      e.g. for LVs of the LVM this will
+ *                      hold the list of PVs, for LUKS encrypted volume this will
+ *                      contain the disk where the volume is placed. (Linux)
+ *      "disk.<num>.dependency.<num>.name" - a dependency
+ *      "disk.<num>.alias" - the device alias of the disk (e.g. sda)
+ *      "disk.<num>.guest_alias" - optional alias assigned to the disk, on Linux
+ *                      this is a name assigned by device mapper
+ *
  * VIR_DOMAIN_GUEST_INFO_HOSTNAME:
  *  Returns information about the hostname of the domain. The typed
  *  parameter keys are in this format:
@@ -12389,6 +12608,19 @@ int virDomainGetGuestInfo(virDomainPtr domain,
  * described by @dev is written beyond the set threshold level. The threshold
  * level is unset once the event fires. The event might not be delivered at all
  * if libvirtd was not running at the moment when the threshold was reached.
+ * Note that if the threshold level is reached for a top level image, the event
+ * is emitted for @dev corresponding to the disk target, and may also be reported
+ * with @dev corresponding to the disk target with an index corresponding to the
+ * 'index' attribute of 'source' in the live VM XML if the attribute is present.
+ *
+ * @dev can either be a disk target name (vda, sda) or disk target with index (
+ * vda[4]). Without the index the top image in the backing chain will have the
+ * threshold set. The index corresponds to the 'index' attribute reported in the
+ * live VM XML for 'backingStore' or 'source' elements of a disk. If index is
+ * given the threshold is set for the corresponding image.
+ *
+ * Note that the threshold event can be registered also for destinations of a
+ * 'virDomainBlockCopy' destination by using the 'index' of the 'mirror' source.
  *
  * Hypervisors report the last written sector of an image in the bulk stats API
  * (virConnectGetAllDomainStats/virDomainListGetStats) as
@@ -12510,6 +12742,7 @@ int virDomainGetLaunchSecurityInfo(virDomainPtr domain,
                                    unsigned int flags)
 {
     virConnectPtr conn = domain->conn;
+    int rc;
 
     VIR_DOMAIN_DEBUG(domain, "params=%p, nparams=%p flags=0x%x",
                      params, nparams, flags);
@@ -12521,8 +12754,11 @@ int virDomainGetLaunchSecurityInfo(virDomainPtr domain,
     virCheckNonNullArgGoto(nparams, error);
     virCheckReadOnlyGoto(conn->flags, error);
 
-    if (VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
-                                 VIR_DRV_FEATURE_TYPED_PARAM_STRING))
+    rc = VIR_DRV_SUPPORTS_FEATURE(domain->conn->driver, domain->conn,
+                                  VIR_DRV_FEATURE_TYPED_PARAM_STRING);
+    if (rc < 0)
+        goto error;
+    if (rc)
         flags |= VIR_TYPED_PARAM_STRING_OKAY;
 
     if (conn->driver->domainGetLaunchSecurityInfo) {
@@ -12550,13 +12786,13 @@ int virDomainGetLaunchSecurityInfo(virDomainPtr domain,
  * Set how long to wait for a response from guest agent commands. By default,
  * agent commands block forever waiting for a response.
  *
- * @timeout must be a value from virDomainAgentCommandTimeoutValues or
+ * @timeout must be a value from virDomainAgentResponseTimeoutValues or
  * positive:
  *
- *   VIR_DOMAIN_AGENT_COMMAND_TIMEOUT_BLOCK(-2): meaning to block forever
+ *   VIR_DOMAIN_AGENT_RESPONSE_TIMEOUT_BLOCK(-2): meaning to block forever
  *      waiting for a result.
- *   VIR_DOMAIN_AGENT_COMMAND_TIMEOUT_DEFAULT(-1): use default timeout value.
- *   VIR_DOMAIN_AGENT_COMMAND_TIMEOUT_NOWAIT(0): does not wait.
+ *   VIR_DOMAIN_AGENT_RESPONSE_TIMEOUT_DEFAULT(-1): use default timeout value.
+ *   VIR_DOMAIN_AGENT_RESPONSE_TIMEOUT_NOWAIT(0): does not wait.
  *   positive value: wait for @timeout seconds
  *
  * Returns 0 on success, -1 on failure
@@ -12732,4 +12968,137 @@ virDomainBackupGetXMLDesc(virDomainPtr domain,
  error:
     virDispatchError(conn);
     return NULL;
+}
+
+
+/**
+ * virDomainAuthorizedSSHKeysGet:
+ * @domain: a domain object
+ * @user: user to list keys for
+ * @keys: pointer to a variable to store authorized keys
+ * @flags: extra flags; not used yet, so callers should always pass 0
+ *
+ * For given @user in @domain fetch list of public SSH authorized
+ * keys and store them into @keys array which is allocated upon
+ * successful return and is NULL terminated. The caller is
+ * responsible for freeing @keys when no longer needed.
+ *
+ * Keys are in OpenSSH format (see sshd(8)) but from libvirt's
+ * point of view are opaque strings, i.e. not interpreted.
+ *
+ * Please note that some hypervisors may require guest agent to
+ * be configured and running in order to be able to run this API.
+ *
+ * Returns: number of keys stored in @keys,
+ *          -1 otherwise.
+ */
+int
+virDomainAuthorizedSSHKeysGet(virDomainPtr domain,
+                              const char *user,
+                              char ***keys,
+                              unsigned int flags)
+{
+    virConnectPtr conn;
+
+    VIR_DOMAIN_DEBUG(domain, "user=%s, keys=%p, flags=0x%x",
+                     user, keys, flags);
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+    conn = domain->conn;
+    virCheckNonNullArgGoto(user, error);
+    virCheckNonNullArgGoto(keys, error);
+
+    virCheckReadOnlyGoto(conn->flags, error);
+
+    if (conn->driver->domainAuthorizedSSHKeysGet) {
+        int ret;
+        ret = conn->driver->domainAuthorizedSSHKeysGet(domain, user,
+                                                       keys, flags);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(conn);
+    return -1;
+}
+
+
+/**
+ * virDomainAuthorizedSSHKeysSet:
+ * @domain: a domain object
+ * @user: user to add keys for
+ * @keys: authorized keys to set
+ * @nkeys: number of keys in @keys array
+ * @flags: bitwise or of virDomainAuthorizedSSHKeysSetFlags
+ *
+ * For given @user in @domain set @keys in authorized keys file.
+ * Any previous content of the file is overwritten with new keys.
+ * That is, if this API is called with @nkeys = 0, @keys = NULL
+ * and @flags = 0 then the authorized keys file for @user is
+ * cleared out.
+ *
+ * Keys are in OpenSSH format (see sshd(8)) but from libvirt's
+ * point of view are opaque strings, i.e. not interpreted.
+ *
+ * If VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_APPEND flag is set
+ * then the file is not overwritten and new @keys are appended
+ * instead.
+ *
+ * If VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_REMOVE flag is set then
+ * instead of adding any new keys, provided @keys are removed
+ * from the file. It's not considered error if the key doesn't
+ * exist.
+ *
+ * Please note that some hypervisors may require guest agent to
+ * be configured and running in order to be able to run this API.
+ *
+ * Returns: 0 on success,
+ *         -1 otherwise.
+ */
+int
+virDomainAuthorizedSSHKeysSet(virDomainPtr domain,
+                              const char *user,
+                              const char **keys,
+                              unsigned int nkeys,
+                              unsigned int flags)
+{
+    virConnectPtr conn;
+
+    VIR_DOMAIN_DEBUG(domain, "user=%s, keys=%p, nkeys=%u, flags=0x%x",
+                     user, keys, nkeys, flags);
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+    conn = domain->conn;
+    virCheckNonNullArgGoto(user, error);
+
+    if (flags & VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_APPEND ||
+        flags & VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_REMOVE)
+        virCheckNonNullArgGoto(keys, error);
+
+    VIR_EXCLUSIVE_FLAGS_RET(VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_APPEND,
+                            VIR_DOMAIN_AUTHORIZED_SSH_KEYS_SET_REMOVE,
+                            -1);
+
+    virCheckReadOnlyGoto(conn->flags, error);
+
+    if (conn->driver->domainAuthorizedSSHKeysSet) {
+        int ret;
+        ret = conn->driver->domainAuthorizedSSHKeysSet(domain, user,
+                                                       keys, nkeys, flags);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(conn);
+    return -1;
 }

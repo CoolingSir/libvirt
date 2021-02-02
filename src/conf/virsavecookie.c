@@ -57,7 +57,7 @@ virSaveCookieParse(xmlXPathContextPtr ctxt,
                    virObjectPtr *obj,
                    virSaveCookieCallbacksPtr saveCookie)
 {
-    xmlNodePtr node = ctxt->node;
+    VIR_XPATH_NODE_AUTORESTORE(ctxt)
     int ret = -1;
 
     *obj = NULL;
@@ -70,7 +70,6 @@ virSaveCookieParse(xmlXPathContextPtr ctxt,
     ret = virSaveCookieParseNode(ctxt, obj, saveCookie);
 
  cleanup:
-    ctxt->node = node;
     return ret;
 }
 
@@ -128,14 +127,10 @@ char *
 virSaveCookieFormat(virObjectPtr obj,
                     virSaveCookieCallbacksPtr saveCookie)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     if (virSaveCookieFormatBuf(&buf, obj, saveCookie) < 0)
-        goto error;
+        return NULL;
 
     return virBufferContentAndReset(&buf);
-
- error:
-    virBufferFreeAndReset(&buf);
-    return NULL;
 }

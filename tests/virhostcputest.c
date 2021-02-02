@@ -1,6 +1,7 @@
 #include <config.h>
 
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "testutils.h"
 #include "internal.h"
@@ -111,7 +112,7 @@ linuxCPUStatsCompareFiles(const char *cpustatfile,
     char *actualData = NULL;
     FILE *cpustat = NULL;
     virNodeCPUStatsPtr params = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
     int nparams = 0;
 
@@ -123,8 +124,7 @@ linuxCPUStatsCompareFiles(const char *cpustatfile,
     if (virHostCPUGetStatsLinux(NULL, 0, NULL, &nparams) < 0)
         goto fail;
 
-    if (VIR_ALLOC_N(params, nparams) < 0)
-        goto fail;
+    params = g_new0(virNodeCPUStats, nparams);
 
     if (virHostCPUGetStatsLinux(cpustat, VIR_NODE_CPU_STATS_ALL_CPUS, params,
                                 &nparams) < 0)
@@ -152,7 +152,6 @@ linuxCPUStatsCompareFiles(const char *cpustatfile,
     ret = 0;
 
  fail:
-    virBufferFreeAndReset(&buf);
     VIR_FORCE_FCLOSE(cpustat);
     VIR_FREE(actualData);
     VIR_FREE(params);
@@ -192,6 +191,38 @@ linuxTestHostCPU(const void *opaque)
 
     return result;
 }
+
+
+static int
+hostCPUSignature(const void *opaque)
+{
+    const struct linuxTestHostCPUData *data = opaque;
+    const char *arch = virArchToString(data->arch);
+    g_autofree char *cpuinfo = NULL;
+    g_autofree char *expected = NULL;
+    g_autofree char *signature = NULL;
+    g_autoptr(FILE) f = NULL;
+
+    cpuinfo = g_strdup_printf("%s/virhostcpudata/linux-%s-%s.cpuinfo",
+                              abs_srcdir, arch, data->testName);
+    expected = g_strdup_printf("%s/virhostcpudata/linux-%s-%s.signature",
+                               abs_srcdir, arch, data->testName);
+
+    if (!(f = fopen(cpuinfo, "r"))) {
+        virReportSystemError(errno,
+                             "Failed to open cpuinfo file '%s'", cpuinfo);
+        return -1;
+    }
+
+    if (virHostCPUReadSignature(data->arch, f, &signature) < 0)
+        return -1;
+
+    if (!signature && !virFileExists(expected))
+        return 0;
+
+    return virTestCompareToFile(signature, expected);
+}
+
 
 struct nodeCPUStatsData {
     const char *name;
@@ -268,9 +299,16 @@ mymain(void)
     if (virInitialize() < 0)
         return EXIT_FAILURE;
 
-    for (i = 0; i < G_N_ELEMENTS(nodeData); i++)
+    for (i = 0; i < G_N_ELEMENTS(nodeData); i++) {
+        g_autofree char *sigTest = NULL;
+
         if (virTestRun(nodeData[i].testName, linuxTestHostCPU, &nodeData[i]) != 0)
             ret = -1;
+
+        sigTest = g_strdup_printf("%s CPU signature", nodeData[i].testName);
+        if (virTestRun(sigTest, hostCPUSignature, &nodeData[i]) != 0)
+            ret = -1;
+    }
 
 # define DO_TEST_CPU_STATS(name, ncpus, shouldFail) \
     do { \

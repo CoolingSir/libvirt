@@ -27,6 +27,7 @@
 #define LIBVIRT_VIRRESCTRLPRIV_H_ALLOW
 #include "virresctrlpriv.h"
 #include "viralloc.h"
+#include "virbuffer.h"
 #include "virfile.h"
 #include "virlog.h"
 #include "virobject.h"
@@ -216,7 +217,7 @@ virResctrlInfoDispose(void *obj)
     }
 
     if (resctrl->monitor_info)
-        virStringListFree(resctrl->monitor_info->features);
+        g_strfreev(resctrl->monitor_info->features);
 
     VIR_FREE(resctrl->membw_info);
     VIR_FREE(resctrl->levels);
@@ -230,7 +231,7 @@ virResctrlInfoMonFree(virResctrlInfoMonPtr mon)
     if (!mon)
         return;
 
-    virStringListFree(mon->features);
+    g_strfreev(mon->features);
     VIR_FREE(mon);
 }
 
@@ -453,17 +454,19 @@ VIR_ONCE_GLOBAL_INIT(virResctrl);
 
 
 /* Common functions */
+#ifndef WIN32
+
 static int
-virResctrlLockWrite(void)
+virResctrlLock(void)
 {
-    int fd = open(SYSFS_RESCTRL_PATH, O_RDWR | O_CLOEXEC);
+    int fd = open(SYSFS_RESCTRL_PATH, O_RDONLY | O_CLOEXEC);
 
     if (fd < 0) {
         virReportSystemError(errno, "%s", _("Cannot open resctrl"));
         return -1;
     }
 
-    if (virFileFlock(fd, true, true) < 0) {
+    if (flock(fd, LOCK_EX) < 0) {
         virReportSystemError(errno, "%s", _("Cannot lock resctrl"));
         VIR_FORCE_CLOSE(fd);
         return -1;
@@ -485,7 +488,7 @@ virResctrlUnlock(int fd)
         virReportSystemError(errno, "%s", _("Cannot close resctrl"));
 
         /* Trying to save the already broken */
-        if (virFileFlock(fd, false, false) < 0)
+        if (flock(fd, LOCK_UN) < 0)
             virReportSystemError(errno, "%s", _("Cannot unlock resctrl"));
 
         return -1;
@@ -493,6 +496,29 @@ virResctrlUnlock(int fd)
 
     return 0;
 }
+
+#else /* WIN32 */
+
+static int
+virResctrlLock(void)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("resctrl locking is not supported "
+                           "on this platform"));
+    return -1;
+}
+
+
+static int
+virResctrlUnlock(int fd G_GNUC_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("resctrl locking is not supported "
+                           "on this platform"));
+    return -1;
+}
+
+#endif /* WIN32 */
 
 
 /* virResctrlInfo-related definitions */
@@ -527,9 +553,7 @@ virResctrlGetCacheInfo(virResctrlInfoPtr resctrl,
             continue;
         }
 
-        if (VIR_ALLOC(i_type) < 0)
-            goto cleanup;
-
+        i_type = g_new0(virResctrlInfoPerType, 1);
         i_type->control.scope = type;
 
         rv = virFileReadValueUint(&i_type->control.max_allocation,
@@ -592,13 +616,9 @@ virResctrlGetCacheInfo(virResctrlInfoPtr resctrl,
         if (!resctrl->levels[level]) {
             virResctrlInfoPerTypePtr *types = NULL;
 
-            if (VIR_ALLOC_N(types, VIR_CACHE_TYPE_LAST) < 0)
-                goto cleanup;
+            types = g_new0(virResctrlInfoPerTypePtr, VIR_CACHE_TYPE_LAST);
 
-            if (VIR_ALLOC(resctrl->levels[level]) < 0) {
-                VIR_FREE(types);
-                goto cleanup;
-            }
+            resctrl->levels[level] = g_new0(virResctrlInfoPerLevel, 1);
             resctrl->levels[level]->types = types;
         }
 
@@ -629,8 +649,7 @@ virResctrlGetMemoryBandwidthInfo(virResctrlInfoPtr resctrl)
     virResctrlInfoMemBWPtr i_membw = NULL;
 
     /* query memory bandwidth allocation info */
-    if (VIR_ALLOC(i_membw) < 0)
-        goto cleanup;
+    i_membw = g_new0(virResctrlInfoMemBW, 1);
     rv = virFileReadValueUint(&i_membw->bandwidth_granularity,
                               SYSFS_RESCTRL_PATH "/info/MB/bandwidth_gran");
     if (rv == -2) {
@@ -696,8 +715,7 @@ virResctrlGetMonitorInfo(virResctrlInfoPtr resctrl)
     size_t nfeatures = 0;
     virResctrlInfoMongrpPtr info_monitor = NULL;
 
-    if (VIR_ALLOC(info_monitor) < 0)
-        return -1;
+    info_monitor = g_new0(virResctrlInfoMongrp, 1);
 
     /* For now, monitor only exists in level 3 cache */
     info_monitor->cache_level = 3;
@@ -755,7 +773,7 @@ virResctrlGetMonitorInfo(virResctrlInfoPtr resctrl)
     ret = 0;
  cleanup:
     VIR_FREE(featurestr);
-    virStringListFree(features);
+    g_strfreev(features);
     VIR_FREE(info_monitor);
     return ret;
 }
@@ -764,29 +782,23 @@ virResctrlGetMonitorInfo(virResctrlInfoPtr resctrl)
 static int
 virResctrlGetInfo(virResctrlInfoPtr resctrl)
 {
-    DIR *dirp = NULL;
+    g_autoptr(DIR) dirp = NULL;
     int ret = -1;
 
     ret = virDirOpenIfExists(&dirp, SYSFS_RESCTRL_PATH "/info");
     if (ret <= 0)
-        goto cleanup;
+        return ret;
 
-    ret = virResctrlGetMemoryBandwidthInfo(resctrl);
-    if (ret < 0)
-        goto cleanup;
+    if ((ret = virResctrlGetMemoryBandwidthInfo(resctrl)) < 0)
+        return -1;
 
-    ret = virResctrlGetCacheInfo(resctrl, dirp);
-    if (ret < 0)
-        goto cleanup;
+    if ((ret = virResctrlGetCacheInfo(resctrl, dirp)) < 0)
+        return -1;
 
-    ret = virResctrlGetMonitorInfo(resctrl);
-    if (ret < 0)
-        goto cleanup;
+    if ((ret = virResctrlGetMonitorInfo(resctrl)) < 0)
+        return -1;
 
-    ret = 0;
- cleanup:
-    VIR_DIR_CLOSE(dirp);
-    return ret;
+    return 0;
 }
 
 
@@ -922,9 +934,7 @@ virResctrlInfoGetCache(virResctrlInfoPtr resctrl,
 
         if (VIR_EXPAND_N(*controls, *ncontrols, 1) < 0)
             goto error;
-        if (VIR_ALLOC((*controls)[*ncontrols - 1]) < 0)
-            goto error;
-
+        (*controls)[*ncontrols - 1] = g_new0(virResctrlInfoPerCache, 1);
         memcpy((*controls)[*ncontrols - 1], &i_type->control, sizeof(i_type->control));
     }
 
@@ -979,8 +989,7 @@ virResctrlInfoGetMonitorPrefix(virResctrlInfoPtr resctrl,
 
     for (i = 0; i < VIR_RESCTRL_MONITOR_TYPE_LAST; i++) {
         if (STREQ(prefix, virResctrlMonitorPrefixTypeToString(i))) {
-            if (VIR_ALLOC(mon) < 0)
-                goto cleanup;
+            mon = g_new0(virResctrlInfoMon, 1);
             mon->type = i;
             break;
         }
@@ -1096,20 +1105,16 @@ virResctrlAllocGetType(virResctrlAllocPtr alloc,
     if (!alloc->levels[level]) {
         virResctrlAllocPerTypePtr *types = NULL;
 
-        if (VIR_ALLOC_N(types, VIR_CACHE_TYPE_LAST) < 0)
-            return NULL;
+        types = g_new0(virResctrlAllocPerTypePtr, VIR_CACHE_TYPE_LAST);
 
-        if (VIR_ALLOC(alloc->levels[level]) < 0) {
-            VIR_FREE(types);
-            return NULL;
-        }
+        alloc->levels[level] = g_new0(virResctrlAllocPerLevel, 1);
         alloc->levels[level]->types = types;
     }
 
     a_level = alloc->levels[level];
 
-    if (!a_level->types[type] && VIR_ALLOC(a_level->types[type]) < 0)
-        return NULL;
+    if (!a_level->types[type])
+        a_level->types[type] = g_new0(virResctrlAllocPerType, 1);
 
     return a_level->types[type];
 }
@@ -1132,14 +1137,10 @@ virResctrlAllocUpdateMask(virResctrlAllocPtr alloc,
                      cache - a_type->nmasks + 1) < 0)
         return -1;
 
-    if (!a_type->masks[cache]) {
-        a_type->masks[cache] = virBitmapNew(virBitmapSize(mask));
+    if (!a_type->masks[cache])
+        a_type->masks[cache] = virBitmapNewCopy(mask);
 
-        if (!a_type->masks[cache])
-            return -1;
-    }
-
-    return virBitmapCopy(a_type->masks[cache], mask);
+    return 0;
 }
 
 
@@ -1160,8 +1161,8 @@ virResctrlAllocUpdateSize(virResctrlAllocPtr alloc,
                      cache - a_type->nsizes + 1) < 0)
         return -1;
 
-    if (!a_type->sizes[cache] && VIR_ALLOC(a_type->sizes[cache]) < 0)
-        return -1;
+    if (!a_type->sizes[cache])
+        a_type->sizes[cache] = g_new0(unsigned long long, 1);
 
     *(a_type->sizes[cache]) = size;
 
@@ -1311,8 +1312,7 @@ virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
     }
 
     if (!mem_bw) {
-        if (VIR_ALLOC(mem_bw) < 0)
-            return -1;
+        mem_bw = g_new0(virResctrlAllocMemBW, 1);
         alloc->mem_bw = mem_bw;
     }
 
@@ -1328,9 +1328,7 @@ virResctrlAllocSetMemoryBandwidth(virResctrlAllocPtr alloc,
         return -1;
     }
 
-    if (VIR_ALLOC(mem_bw->bandwidths[id]) < 0)
-        return -1;
-
+    mem_bw->bandwidths[id] = g_new0(unsigned int, 1);
     *(mem_bw->bandwidths[id]) = memory_bandwidth;
     return 0;
 }
@@ -1412,7 +1410,7 @@ virResctrlAllocGetID(virResctrlAllocPtr alloc)
  *
  *     MB:0=100;1=100
  *
- * which indicates node id 0 has 100 percent bandwith and node id 1
+ * which indicates node id 0 has 100 percent bandwidth and node id 1
  * has 100 percent bandwidth. A trailing semi-colon is not formatted.
  */
 static int
@@ -1476,10 +1474,8 @@ virResctrlAllocParseProcessMemoryBandwidth(virResctrlInfoPtr resctrl,
                      id - alloc->mem_bw->nbandwidths + 1) < 0) {
         return -1;
     }
-    if (!alloc->mem_bw->bandwidths[id]) {
-        if (VIR_ALLOC(alloc->mem_bw->bandwidths[id]) < 0)
-            return -1;
-    }
+    if (!alloc->mem_bw->bandwidths[id])
+        alloc->mem_bw->bandwidths[id] = g_new0(unsigned int, 1);
 
     *(alloc->mem_bw->bandwidths[id]) = bandwidth;
     return 0;
@@ -1515,10 +1511,8 @@ virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
         return -1;
     }
 
-    if (!alloc->mem_bw) {
-        if (VIR_ALLOC(alloc->mem_bw) < 0)
-            return -1;
-    }
+    if (!alloc->mem_bw)
+        alloc->mem_bw = g_new0(virResctrlAllocMemBW, 1);
 
     tmp = strchr(line, ':');
     if (!tmp)
@@ -1533,7 +1527,7 @@ virResctrlAllocParseMemoryBandwidthLine(virResctrlInfoPtr resctrl,
 
     ret = 0;
  cleanup:
-    virStringListFree(mbs);
+    g_strfreev(mbs);
     return ret;
 }
 
@@ -1567,7 +1561,7 @@ virResctrlAllocFormatCache(virResctrlAllocPtr alloc,
                 if (!mask)
                     continue;
 
-                mask_str = virBitmapToString(mask, false, true);
+                mask_str = virBitmapToString(mask);
                 if (!mask_str)
                     return -1;
 
@@ -1587,20 +1581,16 @@ virResctrlAllocFormatCache(virResctrlAllocPtr alloc,
 char *
 virResctrlAllocFormat(virResctrlAllocPtr alloc)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     if (!alloc)
         return NULL;
 
-    if (virResctrlAllocFormatCache(alloc, &buf) < 0) {
-        virBufferFreeAndReset(&buf);
+    if (virResctrlAllocFormatCache(alloc, &buf) < 0)
         return NULL;
-    }
 
-    if (virResctrlAllocMemoryBandwidthFormat(alloc, &buf) < 0) {
-        virBufferFreeAndReset(&buf);
+    if (virResctrlAllocMemoryBandwidthFormat(alloc, &buf) < 0)
         return NULL;
-    }
 
     return virBufferContentAndReset(&buf);
 }
@@ -1711,7 +1701,7 @@ virResctrlAllocParseCacheLine(virResctrlInfoPtr resctrl,
 
     ret = 0;
  cleanup:
-    virStringListFree(caches);
+    g_strfreev(caches);
     return ret;
 }
 
@@ -1737,7 +1727,7 @@ virResctrlAllocParse(virResctrlInfoPtr resctrl,
 
     ret = 0;
  cleanup:
-    virStringListFree(lines);
+    g_strfreev(lines);
     return ret;
 }
 
@@ -1853,8 +1843,6 @@ virResctrlAllocNewFromInfo(virResctrlInfoPtr info)
 
             virBitmapFree(mask);
             mask = virBitmapNew(i_type->bits);
-            if (!mask)
-                goto error;
             virBitmapSetAll(mask);
 
             for (k = 0; k <= i_type->max_cache_id; k++) {
@@ -1864,18 +1852,16 @@ virResctrlAllocNewFromInfo(virResctrlInfoPtr info)
         }
     }
 
-    /* set default free memory bandwidth to 100%*/
+    /* set default free memory bandwidth to 100% */
     if (info->membw_info) {
-        if (VIR_ALLOC(ret->mem_bw) < 0)
-            goto error;
+        ret->mem_bw = g_new0(virResctrlAllocMemBW, 1);
 
         if (VIR_EXPAND_N(ret->mem_bw->bandwidths, ret->mem_bw->nbandwidths,
                          info->membw_info->max_id + 1) < 0)
             goto error;
 
         for (i = 0; i < ret->mem_bw->nbandwidths; i++) {
-            if (VIR_ALLOC(ret->mem_bw->bandwidths[i]) < 0)
-                goto error;
+            ret->mem_bw->bandwidths[i] = g_new0(unsigned int, 1);
             *(ret->mem_bw->bandwidths[i]) = 100;
         }
     }
@@ -1909,7 +1895,7 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
     virResctrlAllocPtr ret = NULL;
     virResctrlAllocPtr alloc = NULL;
     struct dirent *ent = NULL;
-    DIR *dirp = NULL;
+    g_autoptr(DIR) dirp = NULL;
     int rv = -1;
 
     if (virResctrlInfoIsEmpty(resctrl)) {
@@ -1956,7 +1942,6 @@ virResctrlAllocGetUnused(virResctrlInfoPtr resctrl)
 
  cleanup:
     virObjectUnref(alloc);
-    VIR_DIR_CLOSE(dirp);
     return ret;
 
  error:
@@ -2081,8 +2066,6 @@ virResctrlAllocFindUnused(virResctrlAllocPtr alloc,
     }
 
     a_mask = virBitmapNew(i_type->bits);
-    if (!a_mask)
-        return -1;
 
     for (i = last_pos; i < last_pos + need_bits; i++)
         ignore_value(virBitmapSetBit(a_mask, i));
@@ -2158,9 +2141,8 @@ virResctrlAllocCopyMemBW(virResctrlAllocPtr dst,
     if (!src->mem_bw)
         return 0;
 
-    if (!dst->mem_bw &&
-        VIR_ALLOC(dst->mem_bw) < 0)
-        return -1;
+    if (!dst->mem_bw)
+        dst->mem_bw = g_new0(virResctrlAllocMemBW, 1);
 
     dst_bw = dst->mem_bw;
 
@@ -2172,8 +2154,7 @@ virResctrlAllocCopyMemBW(virResctrlAllocPtr dst,
     for (i = 0; i < src_bw->nbandwidths; i++) {
         if (dst_bw->bandwidths[i])
             continue;
-        if (VIR_ALLOC(dst_bw->bandwidths[i]) < 0)
-            return -1;
+        dst_bw->bandwidths[i] = g_new0(unsigned int, 1);
         *dst_bw->bandwidths[i] = *src_bw->bandwidths[i];
     }
 
@@ -2308,8 +2289,6 @@ virResctrlDeterminePath(const char *parentpath,
                         const char *prefix,
                         const char *id)
 {
-    char *path = NULL;
-
     if (!id) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Resctrl ID must be set before determining resctrl "
@@ -2317,9 +2296,7 @@ virResctrlDeterminePath(const char *parentpath,
         return NULL;
     }
 
-    path = g_strdup_printf("%s/%s-%s", parentpath, prefix, id);
-
-    return path;
+    return g_strdup_printf("%s/%s-%s", parentpath, prefix, id);
 }
 
 
@@ -2399,7 +2376,7 @@ virResctrlAllocCreate(virResctrlInfoPtr resctrl,
     if (STREQ(alloc->path, SYSFS_RESCTRL_PATH))
         return 0;
 
-    lockfd = virResctrlLockWrite();
+    lockfd = virResctrlLock();
     if (lockfd < 0)
         goto cleanup;
 
@@ -2592,7 +2569,7 @@ virResctrlMonitorCreate(virResctrlMonitorPtr monitor,
     if (virResctrlMonitorDeterminePath(monitor, machinename) < 0)
         return -1;
 
-    lockfd = virResctrlLockWrite();
+    lockfd = virResctrlLock();
     if (lockfd < 0)
         return -1;
 
@@ -2680,7 +2657,7 @@ virResctrlMonitorGetStats(virResctrlMonitorPtr monitor,
     int ret = -1;
     size_t i = 0;
     unsigned long long val = 0;
-    DIR *dirp = NULL;
+    g_autoptr(DIR) dirp = NULL;
     char *datapath = NULL;
     char *filepath = NULL;
     struct dirent *ent = NULL;
@@ -2727,8 +2704,7 @@ virResctrlMonitorGetStats(virResctrlMonitorPtr monitor,
         if (!(node_id = STRSKIP(node_id, "_")))
             continue;
 
-        if (VIR_ALLOC(stat) < 0)
-            goto cleanup;
+        stat = g_new0(virResctrlMonitorStats, 1);
 
         /* The node ID number should be here, parsing it. */
         if (virStrToLong_uip(node_id, NULL, 0, &stat->id) < 0)
@@ -2765,7 +2741,6 @@ virResctrlMonitorGetStats(virResctrlMonitorPtr monitor,
     VIR_FREE(datapath);
     VIR_FREE(filepath);
     virResctrlMonitorStatsFree(stat);
-    VIR_DIR_CLOSE(dirp);
     return ret;
 }
 
@@ -2776,7 +2751,7 @@ virResctrlMonitorStatsFree(virResctrlMonitorStatsPtr stat)
     if (!stat)
         return;
 
-    virStringListFree(stat->features);
+    g_strfreev(stat->features);
     VIR_FREE(stat->vals);
     VIR_FREE(stat);
 }

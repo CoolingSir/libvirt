@@ -578,7 +578,6 @@ char *
 virSocketAddrGetPath(virSocketAddrPtr addr G_GNUC_UNUSED)
 {
 #ifndef WIN32
-    char *path = NULL;
     if (addr == NULL) {
         virReportError(VIR_ERR_INVALID_ARG, "%s",
                        _("No socket address provided"));
@@ -591,9 +590,7 @@ virSocketAddrGetPath(virSocketAddrPtr addr G_GNUC_UNUSED)
         return NULL;
     }
 
-    path = g_strndup(addr->data.un.sun_path, sizeof(addr->data.un.sun_path));
-
-    return path;
+    return g_strndup(addr->data.un.sun_path, sizeof(addr->data.un.sun_path));
 #else
     virReportError(VIR_ERR_NO_SUPPORT, "%s",
                    _("UNIX sockets not supported on this platform"));
@@ -1100,6 +1097,8 @@ virSocketAddrPrefixToNetmask(unsigned int prefix,
                              virSocketAddrPtr netmask,
                              int family)
 {
+    memset(netmask, 0, sizeof(*netmask));
+
     netmask->data.stor.ss_family = AF_UNSPEC; /* assume failure */
 
     if (family == AF_INET) {
@@ -1138,7 +1137,7 @@ virSocketAddrPrefixToNetmask(unsigned int prefix,
     }
 
     return 0;
- }
+}
 
 /**
  * virSocketAddrGetIPPrefix:
@@ -1266,18 +1265,17 @@ virSocketAddrPTRDomain(const virSocketAddr *addr,
                        unsigned int prefix,
                        char **ptr)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
-    int ret = -1;
 
     if (VIR_SOCKET_ADDR_IS_FAMILY(addr, AF_INET)) {
         virSocketAddrIPv4 ip;
 
         if (prefix == 0 || prefix >= 32 || prefix % 8 != 0)
-            goto unsupported;
+            return -2;
 
         if (virSocketAddrGetIPv4Addr(addr, &ip) < 0)
-            goto cleanup;
+            return -1;
 
         for (i = prefix / 8; i > 0; i--)
             virBufferAsprintf(&buf, "%u.", ip[i - 1]);
@@ -1287,31 +1285,23 @@ virSocketAddrPTRDomain(const virSocketAddr *addr,
         virSocketAddrIPv6Nibbles ip;
 
         if (prefix == 0 || prefix >= 128 || prefix % 4 != 0)
-            goto unsupported;
+            return -2;
 
         if (virSocketAddrGetIPv6Nibbles(addr, &ip) < 0)
-            goto cleanup;
+            return -1;
 
         for (i = prefix / 4; i > 0; i--)
             virBufferAsprintf(&buf, "%x.", ip[i - 1]);
 
         virBufferAddLit(&buf, VIR_SOCKET_ADDR_IPV6_ARPA);
     } else {
-        goto unsupported;
+        return -2;
     }
 
     if (!(*ptr = virBufferContentAndReset(&buf)))
-        goto cleanup;
+        return -1;
 
-    ret = 0;
-
- cleanup:
-    virBufferFreeAndReset(&buf);
-    return ret;
-
- unsupported:
-    ret = -2;
-    goto cleanup;
+    return 0;
 }
 
 void

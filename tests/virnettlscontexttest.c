@@ -30,7 +30,7 @@
 #include "vircommand.h"
 #include "virsocket.h"
 
-#if !defined WIN32 && HAVE_LIBTASN1_H && LIBGNUTLS_VERSION_NUMBER >= 0x020600
+#if !defined WIN32 && WITH_LIBTASN1_H && LIBGNUTLS_VERSION_NUMBER >= 0x020600
 
 # include "rpc/virnettlscontext.h"
 
@@ -136,6 +136,7 @@ mymain(void)
     }; \
     testTLSGenerateCert(&varname, cavarname.crt)
 
+    VIR_WARNINGS_NO_DECLARATION_AFTER_STATEMENT
 # define TLS_ROOT_REQ(varname, \
                       co, cn, an1, an2, ia1, ia2, bce, bcc, bci, \
                       kue, kuc, kuv, kpe, kpc, kpo1, kpo2, so, eo) \
@@ -562,6 +563,8 @@ mymain(void)
     testTLSWriteCertChain("cacertchain-ctx.pem",
                           certchain,
                           G_N_ELEMENTS(certchain));
+
+    VIR_WARNINGS_RESET
 
     DO_CTX_TEST(true, "cacertchain-ctx.pem", servercertlevel3areq.filename, false);
     DO_CTX_TEST(false, "cacertchain-ctx.pem", clientcertlevel2breq.filename, false);

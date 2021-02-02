@@ -21,8 +21,6 @@
 #pragma once
 
 #include <stdarg.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #ifndef WIN32
 # include <termios.h>
 #endif
@@ -154,6 +152,8 @@ struct _vshCmdOptDef {
 struct _vshCmdOpt {
     const vshCmdOptDef *def;    /* non-NULL pointer to option definition */
     char *data;                 /* allocated data, or NULL for bool option */
+    bool completeThis;          /* true if this is the option user's wishing to
+                                   autocomplete */
     vshCmdOpt *next;
 };
 
@@ -250,7 +250,6 @@ void vshCloseLogFile(vshControl *ctl);
 
 const char *vshCmddefGetInfo(const vshCmdDef *cmd, const char *info);
 const vshCmdDef *vshCmddefSearch(const char *cmdname);
-bool vshCmddefHelp(vshControl *ctl, const vshCmdDef *def);
 const vshCmdGrp *vshCmdGrpSearch(const char *grpname);
 bool vshCmdGrpHelp(vshControl *ctl, const vshCmdGrp *grp);
 
@@ -295,7 +294,8 @@ int vshBlockJobOptionBandwidth(vshControl *ctl,
                                unsigned long *bandwidth);
 bool vshCommandOptBool(const vshCmd *cmd, const char *name);
 bool vshCommandRun(vshControl *ctl, const vshCmd *cmd);
-bool vshCommandStringParse(vshControl *ctl, char *cmdstr, vshCmd **partial);
+bool vshCommandStringParse(vshControl *ctl, char *cmdstr,
+                           vshCmd **partial, size_t point);
 
 const vshCmdOpt *vshCommandOptArgv(vshControl *ctl, const vshCmd *cmd,
                                    const vshCmdOpt *opt);
@@ -465,11 +465,7 @@ bool cmdComplete(vshControl *ctl, const vshCmd *cmd);
 /* readline */
 char * vshReadline(vshControl *ctl, const char *prompt);
 
-/* allocation wrappers */
-void *_vshMalloc(vshControl *ctl, size_t sz, const char *filename, int line);
-#define vshMalloc(_ctl, _sz)    _vshMalloc(_ctl, _sz, __FILE__, __LINE__)
-
-void *vshCalloc(vshControl *ctl, size_t nmemb, size_t sz);
+void vshReadlineHistoryAdd(const char *cmd);
 
 /* Macros to help dealing with mutually exclusive options. */
 

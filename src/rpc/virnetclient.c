@@ -50,6 +50,10 @@ enum {
     VIR_NET_CLIENT_MODE_COMPLETE,
 };
 
+VIR_ENUM_IMPL(virNetClientProxy,
+              VIR_NET_CLIENT_PROXY_LAST,
+              "auto", "netcat", "native");
+
 struct _virNetClientCall {
     int mode;
 
@@ -391,28 +395,121 @@ virNetClientPtr virNetClientNewTCP(const char *nodename,
     return virNetClientNew(sock, nodename);
 }
 
+
+/*
+ * The SSH Server uses shell to spawn the command we give
+ * it.  Our command then invokes shell again. Thus we need
+ * to apply two levels of escaping, so that commands with
+ * whitespace in their path get correctly interpreted.
+ */
+static char *
+virNetClientDoubleEscapeShell(const char *str)
+{
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_autofree char *tmp = NULL;
+
+    virBufferEscapeShell(&buf, str);
+
+    tmp = virBufferContentAndReset(&buf);
+
+    virBufferEscapeShell(&buf, tmp);
+
+    return virBufferContentAndReset(&buf);
+}
+
+char *
+virNetClientSSHHelperCommand(virNetClientProxy proxy,
+                             const char *netcatPath,
+                             const char *socketPath,
+                             const char *driverURI,
+                             bool readonly)
+{
+    g_autofree char *netcatPathSafe = virNetClientDoubleEscapeShell(netcatPath ? netcatPath : "nc");
+    g_autofree char *driverURISafe = virNetClientDoubleEscapeShell(driverURI);
+    g_autofree char *nccmd = NULL;
+    g_autofree char *helpercmd = NULL;
+
+    /* If user gave a 'netcat' path in the URI, we must
+     * assume they want the legacy 'nc' based proxy, not
+     * our new virt-ssh-helper
+     */
+    if (proxy == VIR_NET_CLIENT_PROXY_AUTO &&
+        netcatPath != NULL) {
+        proxy = VIR_NET_CLIENT_PROXY_NETCAT;
+    }
+
+    nccmd = g_strdup_printf(
+        "if '%s' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
+            "ARG=-q0;"
+        "else "
+            "ARG=;"
+        "fi;"
+        "'%s' $ARG -U %s",
+        netcatPathSafe, netcatPathSafe, socketPath);
+
+    helpercmd = g_strdup_printf("virt-ssh-helper%s'%s'",
+                                readonly ? " -r " : " ",
+                                driverURISafe);
+
+    switch (proxy) {
+    case VIR_NET_CLIENT_PROXY_AUTO:
+        return g_strdup_printf("sh -c 'which virt-ssh-helper 1>/dev/null 2>&1; "
+                               "if test $? = 0; then "
+                               "    %s; "
+                               "else"
+                               "    %s; "
+                               "fi'", helpercmd, nccmd);
+
+    case VIR_NET_CLIENT_PROXY_NETCAT:
+        return g_strdup_printf("sh -c '%s'", nccmd);
+
+    case VIR_NET_CLIENT_PROXY_NATIVE:
+        if (netcatPath) {
+            virReportError(VIR_ERR_INVALID_ARG, "%s",
+                           _("netcat path not valid with native proxy mode"));
+            return NULL;
+        }
+        return g_strdup_printf("sh -c '%s'", helpercmd);
+
+    case VIR_NET_CLIENT_PROXY_LAST:
+    default:
+        virReportEnumRangeError(virNetClientProxy, proxy);
+        return NULL;
+    }
+}
+
+
+#define DEFAULT_VALUE(VAR, VAL) \
+    if (!VAR) \
+        VAR = VAL;
+
 virNetClientPtr virNetClientNewSSH(const char *nodename,
                                    const char *service,
                                    const char *binary,
                                    const char *username,
                                    bool noTTY,
                                    bool noVerify,
-                                   const char *netcat,
                                    const char *keyfile,
-                                   const char *path)
+                                   virNetClientProxy proxy,
+                                   const char *netcatPath,
+                                   const char *socketPath,
+                                   const char *driverURI,
+                                   bool readonly)
 {
     virNetSocketPtr sock;
+    g_autofree char *command = NULL;
+
+    if (!(command = virNetClientSSHHelperCommand(proxy, netcatPath, socketPath,
+                                                 driverURI, readonly)))
+        return NULL;
 
     if (virNetSocketNewConnectSSH(nodename, service, binary, username, noTTY,
-                                  noVerify, netcat, keyfile, path, &sock) < 0)
+                                  noVerify, keyfile, command, &sock) < 0)
         return NULL;
 
     return virNetClientNew(sock, NULL);
 }
 
-#define DEFAULT_VALUE(VAR, VAL) \
-    if (!VAR) \
-        VAR = VAL;
 virNetClientPtr virNetClientNewLibSSH2(const char *host,
                                        const char *port,
                                        int family,
@@ -421,107 +518,16 @@ virNetClientPtr virNetClientNewLibSSH2(const char *host,
                                        const char *knownHostsPath,
                                        const char *knownHostsVerify,
                                        const char *authMethods,
+                                       virNetClientProxy proxy,
                                        const char *netcatPath,
                                        const char *socketPath,
+                                       const char *driverURI,
+                                       bool readonly,
                                        virConnectAuthPtr authPtr,
                                        virURIPtr uri)
 {
     virNetSocketPtr sock = NULL;
-
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
-    g_autofree char *nc = NULL;
     g_autofree char *command = NULL;
-
-    g_autofree char *homedir = NULL;
-    g_autofree char *confdir = NULL;
-    g_autofree char *knownhosts = NULL;
-    g_autofree char *privkey = NULL;
-
-    /* Use default paths for known hosts an public keys if not provided */
-    if (knownHostsPath) {
-        knownhosts = g_strdup(knownHostsPath);
-    } else {
-        confdir = virGetUserConfigDirectory();
-        virBufferAsprintf(&buf, "%s/known_hosts", confdir);
-        if (!(knownhosts = virBufferContentAndReset(&buf)))
-            return NULL;
-    }
-
-    if (privkeyPath) {
-        privkey = g_strdup(privkeyPath);
-    } else {
-        homedir = virGetUserDirectory();
-        if (virNetClientFindDefaultSshKey(homedir, &privkey) < 0)
-            return NULL;
-    }
-
-    if (!authMethods) {
-        if (privkey)
-            authMethods = "agent,privkey,password,keyboard-interactive";
-        else
-            authMethods = "agent,password,keyboard-interactive";
-    }
-
-    DEFAULT_VALUE(host, "localhost");
-    DEFAULT_VALUE(port, "22");
-    DEFAULT_VALUE(username, "root");
-    DEFAULT_VALUE(netcatPath, "nc");
-    DEFAULT_VALUE(knownHostsVerify, "normal");
-
-    virBufferEscapeShell(&buf, netcatPath);
-    if (!(nc = virBufferContentAndReset(&buf)))
-        return NULL;
-    virBufferEscapeShell(&buf, nc);
-    VIR_FREE(nc);
-    if (!(nc = virBufferContentAndReset(&buf)))
-        return NULL;
-
-    virBufferAsprintf(&buf,
-         "sh -c "
-         "'if '%s' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
-             "ARG=-q0;"
-         "else "
-             "ARG=;"
-         "fi;"
-         "'%s' $ARG -U %s'",
-         nc, nc, socketPath);
-
-    if (!(command = virBufferContentAndReset(&buf)))
-        return NULL;
-
-    if (virNetSocketNewConnectLibSSH2(host, port,
-                                      family,
-                                      username, privkey,
-                                      knownhosts, knownHostsVerify, authMethods,
-                                      command, authPtr, uri, &sock) != 0)
-        return NULL;
-
-   return virNetClientNew(sock, NULL);
-}
-#undef DEFAULT_VALUE
-
-#define DEFAULT_VALUE(VAR, VAL) \
-    if (!VAR) \
-        VAR = VAL;
-virNetClientPtr virNetClientNewLibssh(const char *host,
-                                      const char *port,
-                                      int family,
-                                      const char *username,
-                                      const char *privkeyPath,
-                                      const char *knownHostsPath,
-                                      const char *knownHostsVerify,
-                                      const char *authMethods,
-                                      const char *netcatPath,
-                                      const char *socketPath,
-                                      virConnectAuthPtr authPtr,
-                                      virURIPtr uri)
-{
-    virNetSocketPtr sock = NULL;
-
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
-    g_autofree char *nc = NULL;
-    g_autofree char *command = NULL;
-
     g_autofree char *homedir = NULL;
     g_autofree char *confdir = NULL;
     g_autofree char *knownhosts = NULL;
@@ -553,21 +559,76 @@ virNetClientPtr virNetClientNewLibssh(const char *host,
     DEFAULT_VALUE(host, "localhost");
     DEFAULT_VALUE(port, "22");
     DEFAULT_VALUE(username, "root");
-    DEFAULT_VALUE(netcatPath, "nc");
     DEFAULT_VALUE(knownHostsVerify, "normal");
 
-    virBufferEscapeShell(&buf, netcatPath);
-    if (!(nc = virBufferContentAndReset(&buf)))
-        return NULL;
-    virBufferEscapeShell(&buf, nc);
-    VIR_FREE(nc);
-    if (!(nc = virBufferContentAndReset(&buf)))
+    if (!(command = virNetClientSSHHelperCommand(proxy, netcatPath, socketPath,
+                                                 driverURI, readonly)))
         return NULL;
 
-    command = g_strdup_printf("sh -c "
-                              "'if '%s' -q 2>&1 | grep \"requires an argument\" >/dev/null 2>&1; then "
-                              "ARG=-q0;" "else " "ARG=;" "fi;" "'%s' $ARG -U %s'", nc, nc,
-                              socketPath);
+    if (virNetSocketNewConnectLibSSH2(host, port,
+                                      family,
+                                      username, privkey,
+                                      knownhosts, knownHostsVerify, authMethods,
+                                      command, authPtr, uri, &sock) != 0)
+        return NULL;
+
+   return virNetClientNew(sock, NULL);
+}
+
+virNetClientPtr virNetClientNewLibssh(const char *host,
+                                      const char *port,
+                                      int family,
+                                      const char *username,
+                                      const char *privkeyPath,
+                                      const char *knownHostsPath,
+                                      const char *knownHostsVerify,
+                                      const char *authMethods,
+                                      virNetClientProxy proxy,
+                                      const char *netcatPath,
+                                      const char *socketPath,
+                                      const char *driverURI,
+                                      bool readonly,
+                                      virConnectAuthPtr authPtr,
+                                      virURIPtr uri)
+{
+    virNetSocketPtr sock = NULL;
+    g_autofree char *command = NULL;
+    g_autofree char *homedir = NULL;
+    g_autofree char *confdir = NULL;
+    g_autofree char *knownhosts = NULL;
+    g_autofree char *privkey = NULL;
+
+    /* Use default paths for known hosts an public keys if not provided */
+    if (knownHostsPath) {
+        knownhosts = g_strdup(knownHostsPath);
+    } else {
+        confdir = virGetUserConfigDirectory();
+        knownhosts = g_strdup_printf("%s/known_hosts", confdir);
+    }
+
+    if (privkeyPath) {
+        privkey = g_strdup(privkeyPath);
+    } else {
+        homedir = virGetUserDirectory();
+        if (virNetClientFindDefaultSshKey(homedir, &privkey) < 0)
+            return NULL;
+    }
+
+    if (!authMethods) {
+        if (privkey)
+            authMethods = "agent,privkey,password,keyboard-interactive";
+        else
+            authMethods = "agent,password,keyboard-interactive";
+    }
+
+    DEFAULT_VALUE(host, "localhost");
+    DEFAULT_VALUE(port, "22");
+    DEFAULT_VALUE(username, "root");
+    DEFAULT_VALUE(knownHostsVerify, "normal");
+
+    if (!(command = virNetClientSSHHelperCommand(proxy, netcatPath, socketPath,
+                                                 driverURI, readonly)))
+        return NULL;
 
     if (virNetSocketNewConnectLibssh(host, port,
                                      family,
@@ -826,6 +887,7 @@ virNetClientIOEventTLS(int fd,
 static gboolean
 virNetClientTLSHandshake(virNetClientPtr client)
 {
+    g_autoptr(GSource) source = NULL;
     GIOCondition ev;
     int ret;
 
@@ -840,10 +902,10 @@ virNetClientTLSHandshake(virNetClientPtr client)
     else
         ev = G_IO_OUT;
 
-    virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
-                               ev,
-                               client->eventCtx,
-                               virNetClientIOEventTLS, client, NULL);
+    source = virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
+                                        ev,
+                                        client->eventCtx,
+                                        virNetClientIOEventTLS, client, NULL);
 
     return TRUE;
 }
@@ -882,6 +944,7 @@ int virNetClientSetTLSSession(virNetClientPtr client,
     int ret;
     char buf[1];
     int len;
+    g_autoptr(GSource) source = NULL;
 
 #ifndef WIN32
     sigset_t oldmask, blockedsigs;
@@ -934,10 +997,10 @@ int virNetClientSetTLSSession(virNetClientPtr client,
      * etc.  If we make the grade, it will send us a '\1' byte.
      */
 
-    virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
-                               G_IO_IN,
-                               client->eventCtx,
-                               virNetClientIOEventTLSConfirm, client, NULL);
+    source = virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
+                                        G_IO_IN,
+                                        client->eventCtx,
+                                        virNetClientIOEventTLSConfirm, client, NULL);
 
 #ifndef WIN32
     /* Block SIGWINCH from interrupting poll in curses programs */
@@ -1043,8 +1106,10 @@ int virNetClientAddStream(virNetClientPtr client,
 void virNetClientRemoveStream(virNetClientPtr client,
                               virNetClientStreamPtr st)
 {
-    virObjectLock(client);
     size_t i;
+
+    virObjectLock(client);
+
     for (i = 0; i < client->nstreams; i++) {
         if (client->streams[i] == st)
             break;
@@ -1370,8 +1435,7 @@ virNetClientIOReadMessage(virNetClientPtr client)
     /* Start by reading length word */
     if (client->msg.bufferLength == 0) {
         client->msg.bufferLength = 4;
-        if (VIR_ALLOC_N(client->msg.buffer, client->msg.bufferLength) < 0)
-            return -ENOMEM;
+        client->msg.buffer = g_new0(char, client->msg.bufferLength);
     }
 
     wantData = client->msg.bufferLength - client->msg.bufferOffset;
@@ -1519,7 +1583,7 @@ static bool virNetClientIOEventLoopRemoveDone(virNetClientCallPtr call,
         if (call->expectReply)
             VIR_WARN("Got a call expecting a reply but without a waiting thread");
         virCondDestroy(&call->cond);
-        VIR_FREE(call->msg);
+        virNetMessageFree(call->msg);
         VIR_FREE(call);
     }
 
@@ -1546,7 +1610,7 @@ virNetClientIOEventLoopRemoveAll(virNetClientCallPtr call,
 
     VIR_DEBUG("Removing call %p", call);
     virCondDestroy(&call->cond);
-    VIR_FREE(call->msg);
+    virNetMessageFree(call->msg);
     VIR_FREE(call);
     return true;
 }
@@ -1556,8 +1620,10 @@ static void
 virNetClientIOEventLoopPassTheBuck(virNetClientPtr client,
                                    virNetClientCallPtr thiscall)
 {
-    VIR_DEBUG("Giving up the buck %p", thiscall);
     virNetClientCallPtr tmp = client->waitDispatch;
+
+    VIR_DEBUG("Giving up the buck %p", thiscall);
+
     /* See if someone else is still waiting
      * and if so, then pass the buck ! */
     while (tmp) {
@@ -1617,6 +1683,7 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
 #endif /* !WIN32 */
         int timeout = -1;
         virNetMessagePtr msg = NULL;
+        g_autoptr(GSource) source = NULL;
         GIOCondition ev = 0;
         struct virNetClientIOEventData data = {
             .client = client,
@@ -1651,10 +1718,10 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
         if (client->nstreams)
             ev |= G_IO_IN;
 
-        virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
-                                   ev,
-                                   client->eventCtx,
-                                   virNetClientIOEventFD, &data, NULL);
+        source = virEventGLibAddSocketWatch(virNetSocketGetFD(client->sock),
+                                            ev,
+                                            client->eventCtx,
+                                            virNetClientIOEventFD, &data, NULL);
 
         /* Release lock while poll'ing so other threads
          * can stuff themselves on the queue */
@@ -1831,7 +1898,7 @@ static void virNetClientIOUpdateCallback(virNetClientPtr client,
  *
  * We call this dance  'passing the buck'
  *
- *      http://en.wikipedia.org/wiki/Passing_the_buck
+ *      https://en.wikipedia.org/wiki/Passing_the_buck
  *
  *   "Buck passing or passing the buck is the action of transferring
  *    responsibility or blame unto another person. It is also used as
@@ -2039,8 +2106,7 @@ virNetClientCallNew(virNetMessagePtr msg,
         goto error;
     }
 
-    if (VIR_ALLOC(call) < 0)
-        goto error;
+    call = g_new0(virNetClientCall, 1);
 
     if (virCondInit(&call->cond) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",

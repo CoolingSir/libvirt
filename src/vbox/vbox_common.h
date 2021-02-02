@@ -34,7 +34,7 @@
  * vbox_CAPI_v*.h, or it would cause multiple
  * definitions.
  *
- * You can see the more informations in vbox_api.h
+ * You can see the more information in vbox_api.h
  */
 
 /* Copied definitions from vbox_CAPI_*.h.
@@ -429,12 +429,12 @@ typedef nsISupports IKeyboard;
 #define installUniformedAPI(gVBoxAPI, result) \
     do { \
         result = 0; \
-        if (uVersion >= 5000000 && uVersion < 5000051) { \
-            vbox50InstallUniformedAPI(&gVBoxAPI); \
-        } else if (uVersion >= 5000051 && uVersion < 5001051) { \
-            vbox51InstallUniformedAPI(&gVBoxAPI); \
-        } else if (uVersion >= 5001051 && uVersion < 5002051) { \
+        if (uVersion >= 5001051 && uVersion < 5002051) { \
             vbox52InstallUniformedAPI(&gVBoxAPI); \
+        } else if (uVersion >= 6000000 && uVersion < 6000051) { \
+            vbox60InstallUniformedAPI(&gVBoxAPI); \
+        } else if (uVersion >= 6000051 && uVersion < 6001051) { \
+            vbox61InstallUniformedAPI(&gVBoxAPI); \
         } else { \
             result = -1; \
         } \

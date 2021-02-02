@@ -20,6 +20,8 @@
 
 #include <config.h>
 
+#include <libxml/uri.h>
+
 #include "viruri.h"
 
 #include "viralloc.h"
@@ -48,7 +50,7 @@ virURIParamAppend(virURIPtr uri,
 
     uri->params[uri->paramsCount].name = pname;
     uri->params[uri->paramsCount].value = pvalue;
-    uri->params[uri->paramsCount].ignore = 0;
+    uri->params[uri->paramsCount].ignore = false;
     uri->paramsCount++;
 
     return 0;
@@ -155,8 +157,7 @@ virURIParse(const char *uri)
         return NULL;
     }
 
-    if (VIR_ALLOC(ret) < 0)
-        goto error;
+    ret = g_new0(virURI, 1);
 
     ret->scheme = g_strdup(xmluri->scheme);
     ret->server = g_strdup(xmluri->server);
@@ -208,7 +209,7 @@ char *
 virURIFormat(virURIPtr uri)
 {
     xmlURI xmluri;
-    char *tmpserver = NULL;
+    g_autofree char *tmpserver = NULL;
     char *ret;
 
     memset(&xmluri, 0, sizeof(xmluri));
@@ -240,11 +241,8 @@ virURIFormat(virURIPtr uri)
     ret = (char *)xmlSaveUri(&xmluri);
     if (!ret) {
         virReportOOMError();
-        goto cleanup;
+        return NULL;
     }
-
- cleanup:
-    VIR_FREE(tmpserver);
 
     return ret;
 }
@@ -252,7 +250,7 @@ virURIFormat(virURIPtr uri)
 
 char *virURIFormatParams(virURIPtr uri)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     size_t i;
     bool amp = false;
 
@@ -368,7 +366,7 @@ virURIResolveAlias(virConfPtr conf, const char *alias, char **uri)
 
     if (aliases && *aliases) {
         ret = virURIFindAliasMatch(aliases, alias, uri);
-        virStringListFree(aliases);
+        g_strfreev(aliases);
     } else {
         ret = 0;
     }
@@ -390,4 +388,34 @@ virURIGetParam(virURIPtr uri, const char *name)
     virReportError(VIR_ERR_INVALID_ARG,
                    _("Missing URI parameter '%s'"), name);
     return NULL;
+}
+
+
+/**
+ * virURICheckUnixSocket:
+ * @uri: URI to check
+ *
+ * Check if the URI looks like it refers to a non-standard socket path.  In such
+ * scenario the socket might be proxied to a remote server even though the URI
+ * looks like it is only local.
+ *
+ * Returns: true if the URI might be proxied to a remote server
+ */
+bool
+virURICheckUnixSocket(virURIPtr uri)
+{
+    size_t i = 0;
+
+    if (!uri->scheme)
+        return false;
+
+    if (STRNEQ_NULLABLE(strchr(uri->scheme, '+'), "+unix"))
+        return false;
+
+    for (i = 0; i < uri->paramsCount; i++) {
+        if (STREQ(uri->params[i].name, "socket"))
+            return true;
+    }
+
+    return false;
 }

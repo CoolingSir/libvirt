@@ -45,16 +45,46 @@ testCompareXMLToXMLHelper(const void *data)
 }
 
 
-static int
-testCompareBackupXML(const void *data)
+struct testCompareBackupXMLData {
+    const char *testname;
+    bool internal;
+};
+
+
+static virDomainDiskDefPtr
+testCompareBackupXMLGetFakeDomdisk(const char *dst)
 {
-    const char *testname = data;
+    virDomainDiskDefPtr domdisk = NULL;
+
+    if (!(domdisk = virDomainDiskDefNew(NULL)))
+        abort();
+
+    domdisk->dst = g_strdup(dst);
+    domdisk->src->type = VIR_STORAGE_TYPE_FILE;
+    domdisk->src->format = VIR_STORAGE_FILE_QCOW2;
+    domdisk->src->path = g_strdup_printf("/fake/%s.qcow2", dst);
+
+    return domdisk;
+}
+
+
+static int
+testCompareBackupXML(const void *opaque)
+{
+    const struct testCompareBackupXMLData *data = opaque;
+    const char *testname = data->testname;
     g_autofree char *xml_in = NULL;
     g_autofree char *file_in = NULL;
     g_autofree char *file_out = NULL;
     g_autoptr(virDomainBackupDef) backup = NULL;
     g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     g_autofree char *actual = NULL;
+    unsigned int parseFlags = 0;
+    g_autoptr(virDomainDef) fakedef = NULL;
+    size_t i;
+
+    if (data->internal)
+        parseFlags |= VIR_DOMAIN_BACKUP_PARSE_INTERNAL;
 
     file_in = g_strdup_printf("%s/domainbackupxml2xmlin/%s.xml",
                               abs_srcdir, testname);
@@ -64,12 +94,29 @@ testCompareBackupXML(const void *data)
     if (virFileReadAll(file_in, 1024 * 64, &xml_in) < 0)
         return -1;
 
-    if (!(backup = virDomainBackupDefParseString(xml_in, xmlopt, 0))) {
+    if (!(backup = virDomainBackupDefParseString(xml_in, xmlopt, parseFlags))) {
         VIR_TEST_VERBOSE("failed to parse backup def '%s'", file_in);
         return -1;
     }
 
-    if (virDomainBackupDefFormat(&buf, backup, false) < 0) {
+    /* create a fake definition and fill it with disks */
+    if (!(fakedef = virDomainDefNew()))
+        return -1;
+
+    fakedef->ndisks = backup->ndisks + 1;
+    fakedef->disks = g_new0(virDomainDiskDefPtr, fakedef->ndisks);
+
+    for (i = 0; i < backup->ndisks; i++)
+        fakedef->disks[i] = testCompareBackupXMLGetFakeDomdisk(backup->disks[i].name);
+
+    fakedef->disks[fakedef->ndisks -1 ] = testCompareBackupXMLGetFakeDomdisk("vdextradisk");
+
+    if (virDomainBackupAlignDisks(backup, fakedef, "SUFFIX") < 0) {
+        VIR_TEST_VERBOSE("failed to align backup def '%s'", file_in);
+        return -1;
+    }
+
+    if (virDomainBackupDefFormat(&buf, backup, data->internal) < 0) {
         VIR_TEST_VERBOSE("failed to format backup def '%s'", file_in);
         return -1;
     }
@@ -107,6 +154,8 @@ mymain(void)
     DO_TEST_FULL(name, 1, false, TEST_COMPARE_DOM_XML2XML_RESULT_SUCCESS)
 
     DO_TEST_DIFFERENT("disk-virtio");
+    DO_TEST_DIFFERENT("disk-hyperv-physical");
+    DO_TEST_DIFFERENT("disk-hyperv-virtual");
 
     DO_TEST_DIFFERENT("graphics-vnc-minimal");
     DO_TEST_DIFFERENT("graphics-vnc-manual-port");
@@ -135,6 +184,8 @@ mymain(void)
     DO_TEST("cpu-cache-emulate");
     DO_TEST("cpu-cache-passthrough");
     DO_TEST("cpu-cache-disable");
+
+    DO_TEST("network-interface-mac-check");
 
     DO_TEST_DIFFERENT("chardev-tcp");
     DO_TEST_FULL("chardev-tcp-missing-host", 0, false,
@@ -184,10 +235,18 @@ mymain(void)
     DO_TEST("launch-security-sev");
 
     DO_TEST_DIFFERENT("cputune");
+    DO_TEST("device-backenddomain");
+
+#define DO_TEST_BACKUP_FULL(name, intrnl) \
+    do { \
+        const struct testCompareBackupXMLData data = { .testname = name, \
+                                                       .internal = intrnl }; \
+        if (virTestRun("QEMU BACKUP XML-2-XML " name, testCompareBackupXML, &data) < 0) \
+          ret = -1; \
+    } while (false)
 
 #define DO_TEST_BACKUP(name) \
-    if (virTestRun("QEMU BACKUP XML-2-XML " name, testCompareBackupXML, name) < 0) \
-        ret = -1;
+    DO_TEST_BACKUP_FULL(name, false)
 
     DO_TEST_BACKUP("empty");
     DO_TEST_BACKUP("backup-pull");
@@ -196,6 +255,8 @@ mymain(void)
     DO_TEST_BACKUP("backup-push");
     DO_TEST_BACKUP("backup-push-seclabel");
     DO_TEST_BACKUP("backup-push-encrypted");
+
+    DO_TEST_BACKUP_FULL("backup-pull-internal-invalid", true);
 
 
     virObjectUnref(caps);

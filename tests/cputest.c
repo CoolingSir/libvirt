@@ -81,7 +81,7 @@ cpuTestLoadXML(virArch arch, const char *name)
     if (!(doc = virXMLParseFileCtxt(xml, &ctxt)))
         goto cleanup;
 
-    virCPUDefParseXML(ctxt, NULL, VIR_CPU_TYPE_AUTO, &cpu);
+    virCPUDefParseXML(ctxt, NULL, VIR_CPU_TYPE_AUTO, &cpu, false);
 
  cleanup:
     xmlXPathFreeContext(ctxt);
@@ -111,14 +111,17 @@ cpuTestLoadMultiXML(virArch arch,
         goto cleanup;
 
     n = virXPathNodeSet("/cpuTest/cpu", ctxt, &nodes);
-    if (n <= 0 || (VIR_ALLOC_N(cpus, n) < 0)) {
+    if (n <= 0) {
         fprintf(stderr, "\nNo /cpuTest/cpu elements found in %s\n", xml);
         goto cleanup;
     }
 
+    cpus = g_new0(virCPUDefPtr, n);
+
     for (i = 0; i < n; i++) {
         ctxt->node = nodes[i];
-        if (virCPUDefParseXML(ctxt, NULL, VIR_CPU_TYPE_HOST, &cpus[i]) < 0)
+        if (virCPUDefParseXML(ctxt, NULL, VIR_CPU_TYPE_HOST, &cpus[i],
+                              false) < 0)
             goto cleanup_cpus;
     }
 
@@ -237,7 +240,7 @@ cpuTestGuestCPU(const void *arg)
     virCPUDefPtr host = NULL;
     virCPUDefPtr cpu = NULL;
     virCPUCompareResult cmpResult;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     char *result = NULL;
 
     if (!(host = cpuTestLoadXML(data->arch, data->host)) ||
@@ -481,6 +484,8 @@ cpuTestMakeQEMUCaps(const struct data *data)
 
     if (!(testMon = qemuMonitorTestNewFromFile(json, driver.xmlopt, true)))
         goto error;
+
+    qemuMonitorTestAllowUnusedCommands(testMon);
 
     cpu = virCPUDefNew();
 
@@ -812,8 +817,8 @@ cpuTestUpdateLive(const void *arg)
     if (!(expected = cpuTestLoadXML(data->arch, expectedFile)))
         goto cleanup;
 
-    /* In case the host CPU signature does not exactly match any CPU model from
-     * cpu_map.xml, the CPU model we detect from CPUID may differ from the one
+    /* In case the host CPU signature does not exactly match any CPU model in
+     * src/cpu_map, the CPU model we detect from CPUID may differ from the one
      * we compute by asking QEMU. Since this test expands both CPU models and
      * compares their features, we can try to translate the 'actual' CPU to
      * use the CPU model from 'expected'.
@@ -995,10 +1000,8 @@ mymain(void)
             flags, result \
         }; \
         char *testLabel; \
-        char *tmp; \
  \
-        tmp = virTestLogContentAndReset(); \
-        VIR_FREE(tmp); \
+        g_free(virTestLogContentAndReset());\
  \
         testLabel = g_strdup_printf("%s(%s): %s", #api, \
                                     virArchToString(arch), name); \
@@ -1134,10 +1137,10 @@ mymain(void)
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-exact", VIR_CPU_COMPARE_INCOMPATIBLE);
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-legacy", VIR_CPU_COMPARE_IDENTICAL);
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-legacy-incompatible", VIR_CPU_COMPARE_INCOMPATIBLE);
-    DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-legacy-invalid", VIR_CPU_COMPARE_ERROR);
+    DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-legacy-bad", VIR_CPU_COMPARE_ERROR);
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-compat-none", VIR_CPU_COMPARE_IDENTICAL);
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-compat-valid", VIR_CPU_COMPARE_IDENTICAL);
-    DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-compat-invalid", VIR_CPU_COMPARE_ERROR);
+    DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-compat-bad", VIR_CPU_COMPARE_ERROR);
     DO_TEST_COMPARE(VIR_ARCH_PPC64, "host", "guest-compat-incompatible", VIR_CPU_COMPARE_INCOMPATIBLE);
 
     /* guest updates for migration
@@ -1155,10 +1158,10 @@ mymain(void)
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-nofallback", VIR_CPU_COMPARE_INCOMPATIBLE);
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-legacy", VIR_CPU_COMPARE_IDENTICAL);
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-legacy-incompatible", VIR_CPU_COMPARE_INCOMPATIBLE);
-    DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-legacy-invalid", VIR_CPU_COMPARE_ERROR);
+    DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-legacy-bad", VIR_CPU_COMPARE_ERROR);
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-compat-none", VIR_CPU_COMPARE_IDENTICAL);
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-compat-valid", VIR_CPU_COMPARE_IDENTICAL);
-    DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-compat-invalid", VIR_CPU_COMPARE_ERROR);
+    DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-compat-bad", VIR_CPU_COMPARE_ERROR);
     DO_TEST_UPDATE(VIR_ARCH_PPC64, "host", "guest-compat-incompatible", VIR_CPU_COMPARE_INCOMPATIBLE);
 
     /* computing baseline CPUs */
@@ -1213,11 +1216,12 @@ mymain(void)
     DO_TEST_GUESTCPU(VIR_ARCH_PPC64, "host", "guest-nofallback", ppc_models, -1);
     DO_TEST_GUESTCPU(VIR_ARCH_PPC64, "host", "guest-legacy", ppc_models, 0);
     DO_TEST_GUESTCPU(VIR_ARCH_PPC64, "host", "guest-legacy-incompatible", ppc_models, -1);
-    DO_TEST_GUESTCPU(VIR_ARCH_PPC64, "host", "guest-legacy-invalid", ppc_models, -1);
+    DO_TEST_GUESTCPU(VIR_ARCH_PPC64, "host", "guest-legacy-bad", ppc_models, -1);
 
     DO_TEST_CPUID(VIR_ARCH_X86_64, "A10-5800K", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Atom-D510", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Atom-N450", JSON_NONE);
+    DO_TEST_CPUID(VIR_ARCH_X86_64, "Atom-P5362", JSON_MODELS_REQUIRED);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Core-i5-650", JSON_MODELS_REQUIRED);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Core-i5-2500", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Core-i5-2540M", JSON_MODELS);
@@ -1242,6 +1246,7 @@ mymain(void)
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Hygon-C86-7185-32-core", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "EPYC-7601-32-Core", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "EPYC-7601-32-Core-ibpb", JSON_MODELS_REQUIRED);
+    DO_TEST_CPUID(VIR_ARCH_X86_64, "EPYC-7502-32-Core", JSON_MODELS);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "FX-8150", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Opteron-1352", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Opteron-2350", JSON_HOST);
@@ -1250,6 +1255,7 @@ mymain(void)
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Pentium-P6100", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Phenom-B95", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Ryzen-7-1800X-Eight-Core", JSON_HOST);
+    DO_TEST_CPUID(VIR_ARCH_X86_64, "Ryzen-9-3900X-12-Core", JSON_MODELS);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Xeon-5110", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Xeon-E3-1225-v5", JSON_MODELS);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Xeon-E3-1245-v5", JSON_MODELS);
@@ -1272,6 +1278,7 @@ mymain(void)
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Xeon-W3520", JSON_HOST);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Xeon-X5460", JSON_NONE);
     DO_TEST_CPUID(VIR_ARCH_X86_64, "Ice-Lake-Server", JSON_MODELS);
+    DO_TEST_CPUID(VIR_ARCH_X86_64, "Cooperlake", JSON_MODELS);
 
  cleanup:
 #if WITH_QEMU

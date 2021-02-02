@@ -16,7 +16,7 @@
       </li>
      <li>
         <strong>Go</strong>: Daniel Berrange develops
-        <a href="https://godoc.org/github.com/libvirt/libvirt-go">Go bindings</a>.
+        <a href="https://pkg.go.dev/libvirt.org/libvirt-go">Go bindings</a>.
       </li>
       <li>
         <strong>Java</strong>: Daniel Veillard develops
@@ -28,7 +28,7 @@
       </li>
       <li>
         <strong>Perl</strong>: Daniel Berrange develops
-        <a href="http://search.cpan.org/dist/Sys-Virt/">Perl bindings</a>.
+        <a href="https://search.cpan.org/dist/Sys-Virt/">Perl bindings</a>.
       </li>
       <li>
         <p>
@@ -49,7 +49,7 @@
       <li>
         <p>
           <strong>Python</strong>: Libvirt's python bindings are split to a
-          separate <a href="https://libvirt.org/git/?p=libvirt-python.git">package</a>
+          separate <a href="https://gitlab.com/libvirt/libvirt-python">package</a>
           since version 1.2.0, older versions came with direct support for the
           Python language.
         </p>
@@ -60,7 +60,7 @@
         </p>
         <p>
           This is named <b>libvirt-python</b> on RHEL/Fedora,
-          <a href="http://packages.ubuntu.com/search?keywords=python-libvirt"><b>python-libvirt</b></a>
+          <a href="https://packages.ubuntu.com/search?keywords=python-libvirt"><b>python-libvirt</b></a>
           on Ubuntu, and may be named differently on others.
         </p>
         <p>

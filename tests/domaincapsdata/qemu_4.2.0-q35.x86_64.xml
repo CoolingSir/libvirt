@@ -29,7 +29,12 @@
     </loader>
   </os>
   <cpu>
-    <mode name='host-passthrough' supported='yes'/>
+    <mode name='host-passthrough' supported='yes'>
+      <enum name='hostPassthroughMigratable'>
+        <value>on</value>
+        <value>off</value>
+      </enum>
+    </mode>
     <mode name='host-model' supported='yes'>
       <model fallback='forbid'>Skylake-Client-IBRS</model>
       <vendor>Intel</vendor>
@@ -47,6 +52,7 @@
       <feature policy='require' name='pdpe1gb'/>
       <feature policy='require' name='invtsc'/>
       <feature policy='require' name='skip-l1dfl-vmentry'/>
+      <feature policy='require' name='pschange-mc-no'/>
     </mode>
     <mode name='custom' supported='yes'>
       <model usable='yes'>qemu64</model>
@@ -63,6 +69,7 @@
       <model usable='no'>athlon</model>
       <model usable='yes'>Westmere-IBRS</model>
       <model usable='yes'>Westmere</model>
+      <model usable='no'>Snowridge</model>
       <model usable='no'>Skylake-Server-noTSX-IBRS</model>
       <model usable='no'>Skylake-Server-IBRS</model>
       <model usable='no'>Skylake-Server</model>
@@ -128,6 +135,7 @@
         <value>sdl</value>
         <value>vnc</value>
         <value>spice</value>
+        <value>egl-headless</value>
       </enum>
     </graphics>
     <video supported='yes'>

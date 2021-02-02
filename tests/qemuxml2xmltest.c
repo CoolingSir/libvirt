@@ -7,17 +7,15 @@
 
 #include "testutils.h"
 
-#ifdef WITH_QEMU
+#include "internal.h"
+#include "qemu/qemu_domain_address.h"
+#include "qemu/qemu_domain.h"
+#include "testutilsqemu.h"
+#include "virstring.h"
+#include "virfilewrapper.h"
+#include "configmake.h"
 
-# include "internal.h"
-# include "qemu/qemu_domain_address.h"
-# include "qemu/qemu_domain.h"
-# include "testutilsqemu.h"
-# include "virstring.h"
-# include "virfilewrapper.h"
-# include "configmake.h"
-
-# define VIR_FROM_THIS VIR_FROM_NONE
+#define VIR_FROM_THIS VIR_FROM_NONE
 
 static virQEMUDriver driver;
 
@@ -34,7 +32,8 @@ testXML2XMLActive(const void *opaque)
     const struct testQemuInfo *info = opaque;
 
     return testCompareDomXML2XMLFiles(driver.caps, driver.xmlopt,
-                                      info->infile, info->outfile, true, 0,
+                                      info->infile, info->outfile, true,
+                                      info->parseFlags,
                                       TEST_COMPARE_DOM_XML2XML_RESULT_SUCCESS);
 }
 
@@ -45,48 +44,9 @@ testXML2XMLInactive(const void *opaque)
     const struct testQemuInfo *info = opaque;
 
     return testCompareDomXML2XMLFiles(driver.caps, driver.xmlopt,
-                                      info->infile, info->outfile, false, 0,
+                                      info->infile, info->outfile, false,
+                                      info->parseFlags,
                                       TEST_COMPARE_DOM_XML2XML_RESULT_SUCCESS);
-}
-
-
-static int
-testCompareStatusXMLToXMLFiles(const void *opaque)
-{
-    const struct testQemuInfo *data = opaque;
-    virDomainObjPtr obj = NULL;
-    char *actual = NULL;
-    int ret = -1;
-
-    if (!(obj = virDomainObjParseFile(data->infile, driver.xmlopt,
-                                      VIR_DOMAIN_DEF_PARSE_STATUS |
-                                      VIR_DOMAIN_DEF_PARSE_ACTUAL_NET |
-                                      VIR_DOMAIN_DEF_PARSE_PCI_ORIG_STATES |
-                                      VIR_DOMAIN_DEF_PARSE_SKIP_VALIDATE |
-                                      VIR_DOMAIN_DEF_PARSE_ALLOW_POST_PARSE_FAIL))) {
-        VIR_TEST_DEBUG("\nfailed to parse '%s'", data->infile);
-        goto cleanup;
-    }
-
-    if (!(actual = virDomainObjFormat(obj, driver.xmlopt,
-                                      VIR_DOMAIN_DEF_FORMAT_SECURE |
-                                      VIR_DOMAIN_DEF_FORMAT_STATUS |
-                                      VIR_DOMAIN_DEF_FORMAT_ACTUAL_NET |
-                                      VIR_DOMAIN_DEF_FORMAT_PCI_ORIG_STATES |
-                                      VIR_DOMAIN_DEF_FORMAT_CLOCK_ADJUST))) {
-        VIR_TEST_DEBUG("\nfailed to format back '%s'", data->infile);
-        goto cleanup;
-    }
-
-    if (virTestCompareToFile(actual, data->outfile) < 0)
-        goto cleanup;
-
-    ret = 0;
-
- cleanup:
-    virDomainObjEndAPI(&obj);
-    VIR_FREE(actual);
-    return ret;
 }
 
 
@@ -116,25 +76,16 @@ testInfoSetPaths(struct testQemuInfo *info,
 }
 
 
-static const char *statusPath = abs_srcdir "/qemustatusxml2xmldata/";
-
-static void
-testInfoSetStatusPaths(struct testQemuInfo *info)
-{
-    info->infile = g_strdup_printf("%s%s-in.xml", statusPath, info->name);
-    info->outfile = g_strdup_printf("%s%s-out.xml", statusPath, info->name);
-}
-
-
-# define FAKEROOTDIRTEMPLATE abs_builddir "/fakerootdir-XXXXXX"
+#define FAKEROOTDIRTEMPLATE abs_builddir "/fakerootdir-XXXXXX"
 
 static int
 mymain(void)
 {
     int ret = 0;
-    char *fakerootdir;
-    virQEMUDriverConfigPtr cfg = NULL;
-    virHashTablePtr capslatest = NULL;
+    g_autofree char *fakerootdir = NULL;
+    g_autoptr(virQEMUDriverConfig) cfg = NULL;
+    g_autoptr(GHashTable) capslatest = NULL;
+    g_autoptr(virConnect) conn = NULL;
 
     capslatest = testQemuGetLatestCaps();
     if (!capslatest)
@@ -164,7 +115,17 @@ mymain(void)
     cfg = virQEMUDriverGetConfig(&driver);
     driver.privileged = true;
 
-# define DO_TEST_INTERNAL(_name, suffix, when, ...) \
+    if (!(conn = virGetConnect()))
+        goto cleanup;
+
+    virSetConnectInterface(conn);
+    virSetConnectNetwork(conn);
+    virSetConnectNWFilter(conn);
+    virSetConnectNodeDev(conn);
+    virSetConnectSecret(conn);
+    virSetConnectStorage(conn);
+
+#define DO_TEST_INTERNAL(_name, suffix, when, ...) \
     do { \
         static struct testQemuInfo info = { \
             .name = _name, \
@@ -199,38 +160,38 @@ mymain(void)
         testQemuInfoClear(&info); \
     } while (0)
 
-# define DO_TEST_CAPS_INTERNAL(name, arch, ver, ...) \
+#define DO_TEST_CAPS_INTERNAL(name, arch, ver, ...) \
     DO_TEST_INTERNAL(name, "." arch "-" ver, WHEN_BOTH, \
                      ARG_CAPS_ARCH, arch, \
                      ARG_CAPS_VER, ver, \
                      __VA_ARGS__)
 
-# define DO_TEST_CAPS_ARCH_LATEST_FULL(name, arch, ...) \
+#define DO_TEST_CAPS_ARCH_LATEST_FULL(name, arch, ...) \
     DO_TEST_CAPS_INTERNAL(name, arch, "latest", __VA_ARGS__)
 
-# define DO_TEST_CAPS_ARCH_VER_FULL(name, arch, ver, ...) \
+#define DO_TEST_CAPS_ARCH_VER_FULL(name, arch, ver, ...) \
     DO_TEST_CAPS_INTERNAL(name, arch, ver, __VA_ARGS__)
 
-# define DO_TEST_CAPS_ARCH_LATEST(name, arch) \
+#define DO_TEST_CAPS_ARCH_LATEST(name, arch) \
     DO_TEST_CAPS_ARCH_LATEST_FULL(name, arch, ARG_END)
 
-# define DO_TEST_CAPS_ARCH_VER(name, arch, ver) \
+#define DO_TEST_CAPS_ARCH_VER(name, arch, ver) \
     DO_TEST_CAPS_ARCH_VER_FULL(name, arch, ver, ARG_END)
 
-# define DO_TEST_CAPS_LATEST(name) \
+#define DO_TEST_CAPS_LATEST(name) \
     DO_TEST_CAPS_ARCH_LATEST(name, "x86_64")
 
-# define DO_TEST_CAPS_VER(name, ver) \
+#define DO_TEST_CAPS_VER(name, ver) \
     DO_TEST_CAPS_ARCH_VER(name, "x86_64", ver)
 
-# define DO_TEST_FULL(name, when, ...) \
+#define DO_TEST_FULL(name, when, ...) \
     DO_TEST_INTERNAL(name, "", when, __VA_ARGS__)
 
-# define DO_TEST(name, ...) \
+#define DO_TEST(name, ...) \
     DO_TEST_FULL(name, WHEN_BOTH, \
                  ARG_QEMU_CAPS, __VA_ARGS__, QEMU_CAPS_LAST)
 
-# define NONE QEMU_CAPS_LAST
+#define NONE QEMU_CAPS_LAST
 
     /* Unset or set all envvars here that are copied in qemudBuildCommandLine
      * using ADD_ENV_COPY, otherwise these tests may fail due to unexpected
@@ -293,18 +254,21 @@ mymain(void)
 
     DO_TEST("pages-discard", NONE);
     DO_TEST("pages-discard-hugepages", QEMU_CAPS_OBJECT_MEMORY_FILE);
-    DO_TEST("pages-dimm-discard", NONE);
+    DO_TEST("pages-dimm-discard", QEMU_CAPS_DEVICE_PC_DIMM);
     DO_TEST("hugepages-default", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-default-2M", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-default-system-size", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-nodeset", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-numa-default-2M", QEMU_CAPS_OBJECT_MEMORY_FILE);
-    DO_TEST("hugepages-numa-default-dimm", QEMU_CAPS_OBJECT_MEMORY_FILE);
+    DO_TEST("hugepages-numa-default-dimm", QEMU_CAPS_DEVICE_PC_DIMM,
+            QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-numa-nodeset", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-numa-nodeset-part", QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-shared", QEMU_CAPS_OBJECT_MEMORY_FILE);
-    DO_TEST("hugepages-memaccess", QEMU_CAPS_OBJECT_MEMORY_FILE);
-    DO_TEST("hugepages-memaccess2", QEMU_CAPS_OBJECT_MEMORY_FILE);
+    DO_TEST("hugepages-memaccess", QEMU_CAPS_DEVICE_PC_DIMM,
+            QEMU_CAPS_OBJECT_MEMORY_FILE);
+    DO_TEST("hugepages-memaccess2", QEMU_CAPS_DEVICE_PC_DIMM,
+            QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("hugepages-nvdimm", QEMU_CAPS_DEVICE_NVDIMM,
             QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("nosharepages", NONE);
@@ -312,11 +276,12 @@ mymain(void)
     DO_TEST("migrate", NONE);
     DO_TEST("qemu-ns-no-env", NONE);
     DO_TEST("disk-aio", NONE);
+    DO_TEST_CAPS_LATEST("disk-aio-io_uring");
     DO_TEST("disk-cdrom", NONE);
     DO_TEST_CAPS_LATEST("disk-cdrom-empty-network-invalid");
-    DO_TEST("disk-cdrom-bus-other", NONE);
+    DO_TEST("disk-cdrom-bus-other", QEMU_CAPS_DEVICE_USB_STORAGE);
     DO_TEST("disk-floppy", NONE);
-    DO_TEST("disk-usb-device", NONE);
+    DO_TEST("disk-usb-device", QEMU_CAPS_DEVICE_USB_STORAGE);
     DO_TEST("disk-virtio", NONE);
     DO_TEST("floppy-drive-fat", NONE);
     DO_TEST("disk-virtio-queues", QEMU_CAPS_VIRTIO_BLK_NUM_QUEUES);
@@ -329,19 +294,24 @@ mymain(void)
     DO_TEST_CAPS_VER("disk-cache", "2.7.0");
     DO_TEST_CAPS_VER("disk-cache", "2.12.0");
     DO_TEST_CAPS_LATEST("disk-cache");
+    DO_TEST_CAPS_LATEST("disk-metadata-cache");
     DO_TEST("disk-network-nbd", NONE);
-    DO_TEST("disk-network-iscsi", QEMU_CAPS_VIRTIO_SCSI);
+    DO_TEST("disk-network-iscsi", QEMU_CAPS_VIRTIO_SCSI,
+            QEMU_CAPS_SCSI_BLOCK);
     DO_TEST("disk-network-gluster", NONE);
     DO_TEST("disk-network-rbd", NONE);
     DO_TEST("disk-network-source-auth", NONE);
     DO_TEST("disk-network-sheepdog", NONE);
     DO_TEST("disk-network-vxhs", NONE);
-    DO_TEST("disk-network-tlsx509", NONE);
+    DO_TEST_CAPS_LATEST("disk-network-nfs");
+    DO_TEST("disk-network-tlsx509-nbd", NONE);
+    DO_TEST("disk-network-tlsx509-vxhs", NONE);
     DO_TEST("disk-nvme", QEMU_CAPS_VIRTIO_SCSI, QEMU_CAPS_QCOW2_LUKS);
-    DO_TEST("disk-scsi", QEMU_CAPS_SCSI_LSI, QEMU_CAPS_SCSI_MEGASAS,
-            QEMU_CAPS_SCSI_MPTSAS1068, QEMU_CAPS_SCSI_DISK_WWN);
+    DO_TEST_CAPS_LATEST("disk-scsi");
     DO_TEST("disk-virtio-scsi-reservations",
-            QEMU_CAPS_VIRTIO_SCSI, QEMU_CAPS_PR_MANAGER_HELPER);
+            QEMU_CAPS_VIRTIO_SCSI,
+            QEMU_CAPS_PR_MANAGER_HELPER,
+            QEMU_CAPS_SCSI_BLOCK);
     DO_TEST("controller-virtio-scsi", QEMU_CAPS_VIRTIO_SCSI);
     DO_TEST("disk-virtio-s390-zpci",
             QEMU_CAPS_DEVICE_ZPCI,
@@ -450,14 +420,16 @@ mymain(void)
     DO_TEST("net-user", NONE);
     DO_TEST("net-user-addr", NONE);
     DO_TEST("net-virtio", NONE);
-    DO_TEST("net-virtio-device", NONE);
+    DO_TEST("net-virtio-device", QEMU_CAPS_VIRTIO_TX_ALG);
     DO_TEST("net-virtio-disable-offloads", NONE);
     DO_TEST("net-eth", NONE);
     DO_TEST("net-eth-ifname", NONE);
     DO_TEST("net-eth-hostip", NONE);
     DO_TEST("net-eth-unmanaged-tap", NONE);
     DO_TEST("net-virtio-network-portgroup", NONE);
-    DO_TEST("net-virtio-rxtxqueuesize", NONE);
+    DO_TEST("net-virtio-rxtxqueuesize",
+            QEMU_CAPS_VIRTIO_NET_RX_QUEUE_SIZE,
+            QEMU_CAPS_VIRTIO_NET_TX_QUEUE_SIZE);
     DO_TEST("net-virtio-teaming",
             QEMU_CAPS_VIRTIO_NET_FAILOVER,
             QEMU_CAPS_DEVICE_VFIO_PCI);
@@ -480,9 +452,10 @@ mymain(void)
     DO_TEST("watchdog", NONE);
     DO_TEST("net-bandwidth", QEMU_CAPS_DEVICE_VGA, QEMU_CAPS_VNC);
     DO_TEST("net-bandwidth2", QEMU_CAPS_DEVICE_VGA, QEMU_CAPS_VNC);
-    DO_TEST("net-mtu", NONE);
+    DO_TEST("net-mtu", QEMU_CAPS_VIRTIO_NET_HOST_MTU);
     DO_TEST("net-coalesce", NONE);
     DO_TEST("net-many-models", NONE);
+    DO_TEST("net-vdpa", QEMU_CAPS_NETDEV_VHOST_VDPA);
 
     DO_TEST("serial-tcp-tlsx509-chardev", NONE);
     DO_TEST("serial-tcp-tlsx509-chardev-notls", NONE);
@@ -519,9 +492,19 @@ mymain(void)
     DO_TEST("hostdev-vfio-zpci-autogenerate",
             QEMU_CAPS_DEVICE_VFIO_PCI,
             QEMU_CAPS_DEVICE_ZPCI);
+    DO_TEST("hostdev-vfio-zpci-autogenerate-uids",
+            QEMU_CAPS_DEVICE_VFIO_PCI,
+            QEMU_CAPS_DEVICE_ZPCI);
+    DO_TEST("hostdev-vfio-zpci-autogenerate-fids",
+            QEMU_CAPS_DEVICE_VFIO_PCI,
+            QEMU_CAPS_DEVICE_ZPCI);
     DO_TEST("hostdev-vfio-zpci-boundaries",
             QEMU_CAPS_DEVICE_VFIO_PCI,
             QEMU_CAPS_DEVICE_PCI_BRIDGE,
+            QEMU_CAPS_DEVICE_ZPCI);
+    DO_TEST("hostdev-vfio-zpci-ccw-memballoon",
+            QEMU_CAPS_CCW,
+            QEMU_CAPS_DEVICE_VFIO_PCI,
             QEMU_CAPS_DEVICE_ZPCI);
     DO_TEST("hostdev-mdev-precreated", QEMU_CAPS_DEVICE_VFIO_PCI);
     DO_TEST("hostdev-mdev-display",
@@ -529,6 +512,7 @@ mymain(void)
             QEMU_CAPS_VFIO_PCI_DISPLAY,
             QEMU_CAPS_DEVICE_VFIO_PCI,
             QEMU_CAPS_VNC);
+    DO_TEST_CAPS_LATEST("hostdev-mdev-display-ramfb");
     DO_TEST("pci-rom", NONE);
     DO_TEST("pci-rom-disabled", NONE);
     DO_TEST("pci-rom-disabled-invalid", NONE);
@@ -553,6 +537,8 @@ mymain(void)
     DO_TEST("vcpu-placement-static",
             QEMU_CAPS_KVM,
             QEMU_CAPS_OBJECT_IOTHREAD);
+    DO_TEST_CAPS_LATEST("cputune-cpuset-big-id");
+    DO_TEST_CAPS_LATEST("numavcpus-topology-mismatch");
 
     DO_TEST("smp", NONE);
     DO_TEST("iothreads", NONE);
@@ -599,16 +585,22 @@ mymain(void)
             QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
             QEMU_CAPS_PIIX3_USB_UHCI);
     DO_TEST("usb-port-missing", QEMU_CAPS_USB_HUB);
-    DO_TEST("usb-redir", NONE);
-    DO_TEST("usb-redir-filter", NONE);
-    DO_TEST("usb-redir-filter-version", NONE);
-    DO_TEST("blkdeviotune", NONE);
-    DO_TEST("blkdeviotune-max", NONE);
-    DO_TEST("blkdeviotune-group-num", NONE);
-    DO_TEST("blkdeviotune-max-length", NONE);
+    DO_TEST("usb-redir", QEMU_CAPS_USB_REDIR);
+    DO_TEST("usb-redir-filter",
+            QEMU_CAPS_USB_REDIR,
+            QEMU_CAPS_USB_REDIR_FILTER);
+    DO_TEST("usb-redir-filter-version",
+            QEMU_CAPS_USB_REDIR,
+            QEMU_CAPS_USB_REDIR_FILTER);
+    DO_TEST_CAPS_LATEST("blkdeviotune");
+    DO_TEST_CAPS_LATEST("blkdeviotune-max");
+    DO_TEST_CAPS_LATEST("blkdeviotune-group-num");
+    DO_TEST_CAPS_LATEST("blkdeviotune-max-length");
     DO_TEST("controller-usb-order",
             QEMU_CAPS_PIIX_DISABLE_S3,
             QEMU_CAPS_PIIX_DISABLE_S4);
+    DO_TEST_CAPS_ARCH_LATEST("ppc64-tpmproxy-single", "ppc64");
+    DO_TEST_CAPS_ARCH_LATEST("ppc64-tpmproxy-with-tpm", "ppc64");
 
     DO_TEST_FULL("seclabel-dynamic-baselabel", WHEN_INACTIVE,
                  ARG_QEMU_CAPS, NONE);
@@ -631,21 +623,28 @@ mymain(void)
     DO_TEST("numad-static-vcpu-no-numatune", NONE);
 
     DO_TEST("disk-scsi-lun-passthrough-sgio",
-            QEMU_CAPS_SCSI_LSI, QEMU_CAPS_VIRTIO_SCSI, QEMU_CAPS_SCSI_DISK_WWN);
+            QEMU_CAPS_SCSI_LSI,
+            QEMU_CAPS_VIRTIO_SCSI,
+            QEMU_CAPS_SCSI_DISK_WWN,
+            QEMU_CAPS_SCSI_BLOCK);
     DO_TEST("disk-scsi-disk-vpd",
             QEMU_CAPS_SCSI_LSI, QEMU_CAPS_VIRTIO_SCSI, QEMU_CAPS_SCSI_DISK_WWN);
     DO_TEST("disk-source-pool", NONE);
     DO_TEST("disk-source-pool-mode", NONE);
 
-    DO_TEST("disk-discard", NONE);
-    DO_TEST("disk-detect-zeroes", NONE);
+    DO_TEST_CAPS_LATEST("disk-discard");
+    DO_TEST_CAPS_LATEST("disk-detect-zeroes");
 
     DO_TEST("disk-serial", NONE);
 
+    DO_TEST_CAPS_ARCH_LATEST("disk-arm-virtio-sd", "aarch64");
+
     DO_TEST("virtio-rng-random",
-            QEMU_CAPS_DEVICE_VIRTIO_RNG);
+            QEMU_CAPS_DEVICE_VIRTIO_RNG,
+            QEMU_CAPS_OBJECT_RNG_RANDOM);
     DO_TEST("virtio-rng-egd",
-            QEMU_CAPS_DEVICE_VIRTIO_RNG);
+            QEMU_CAPS_DEVICE_VIRTIO_RNG,
+            QEMU_CAPS_OBJECT_RNG_EGD);
     DO_TEST_CAPS_LATEST("virtio-rng-builtin");
 
     DO_TEST("pseries-nvram",
@@ -694,7 +693,10 @@ mymain(void)
             QEMU_CAPS_MACHINE_PSERIES_CAP_HTM,
             QEMU_CAPS_MACHINE_PSERIES_CAP_NESTED_HV,
             QEMU_CAPS_MACHINE_PSERIES_CAP_CCF_ASSIST,
-            QEMU_CAPS_MACHINE_PSERIES_RESIZE_HPT);
+            QEMU_CAPS_MACHINE_PSERIES_RESIZE_HPT,
+            QEMU_CAPS_MACHINE_PSERIES_CAP_CFPC,
+            QEMU_CAPS_MACHINE_PSERIES_CAP_SBBC,
+            QEMU_CAPS_MACHINE_PSERIES_CAP_IBS);
 
     DO_TEST("pseries-serial-native",
             QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
@@ -755,12 +757,13 @@ mymain(void)
     DO_TEST("numad-auto-memory-vcpu-no-cpuset-and-placement", NONE);
     DO_TEST("numad-auto-memory-vcpu-cpuset", NONE);
     DO_TEST("usb-ich9-ehci-addr", NONE);
-    DO_TEST("disk-copy_on_read", NONE);
+    DO_TEST("disk-copy_on_read", QEMU_CAPS_VIRTIO_TX_ALG);
     DO_TEST_CAPS_LATEST("tpm-passthrough");
     DO_TEST_CAPS_LATEST("tpm-passthrough-crb");
     DO_TEST_CAPS_LATEST("tpm-emulator");
     DO_TEST_CAPS_LATEST("tpm-emulator-tpm2");
     DO_TEST_CAPS_LATEST("tpm-emulator-tpm2-enc");
+    DO_TEST_CAPS_LATEST("tpm-emulator-tpm2-pstate");
 
     DO_TEST("metadata", NONE);
     DO_TEST("metadata-duplicate", NONE);
@@ -1014,9 +1017,6 @@ mymain(void)
     DO_TEST("hostdev-scsi-virtio-scsi",
             QEMU_CAPS_VIRTIO_SCSI,
             QEMU_CAPS_SCSI_LSI);
-    DO_TEST("hostdev-scsi-readonly",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_SCSI_LSI);
 
     DO_TEST("hostdev-scsi-shareable",
             QEMU_CAPS_VIRTIO_SCSI,
@@ -1032,19 +1032,6 @@ mymain(void)
             QEMU_CAPS_VIRTIO_SCSI,
             QEMU_CAPS_SCSI_LSI);
     DO_TEST("hostdev-scsi-large-unit",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_SCSI_LSI);
-
-    DO_TEST("hostdev-scsi-lsi-iscsi",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_SCSI_LSI);
-    DO_TEST("hostdev-scsi-lsi-iscsi-auth",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_SCSI_LSI);
-    DO_TEST("hostdev-scsi-virtio-iscsi",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_SCSI_LSI);
-    DO_TEST("hostdev-scsi-virtio-iscsi-auth",
             QEMU_CAPS_VIRTIO_SCSI,
             QEMU_CAPS_SCSI_LSI);
 
@@ -1084,12 +1071,12 @@ mymain(void)
             QEMU_CAPS_DEVICE_QXL,
             QEMU_CAPS_Q35_PCI_HOLE64_SIZE);
 
-    DO_TEST("panic", NONE);
-    DO_TEST("panic-isa", NONE);
+    DO_TEST("panic", QEMU_CAPS_DEVICE_PANIC);
+    DO_TEST("panic-isa", QEMU_CAPS_DEVICE_PANIC);
     DO_TEST("panic-pseries",
             QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE);
-    DO_TEST("panic-double", NONE);
-    DO_TEST("panic-no-address", NONE);
+    DO_TEST("panic-double", QEMU_CAPS_DEVICE_PANIC);
+    DO_TEST("panic-no-address", QEMU_CAPS_DEVICE_PANIC);
 
     DO_TEST("disk-backing-chains", NONE);
     DO_TEST("disk-backing-chains-index", NONE);
@@ -1098,7 +1085,8 @@ mymain(void)
     DO_TEST_CAPS_LATEST("disk-network-http");
 
     DO_TEST("chardev-label",
-            QEMU_CAPS_DEVICE_VIRTIO_RNG);
+            QEMU_CAPS_DEVICE_VIRTIO_RNG,
+            QEMU_CAPS_OBJECT_RNG_EGD);
 
     DO_TEST("cpu-numa1", NONE);
     DO_TEST("cpu-numa2", NONE);
@@ -1110,16 +1098,21 @@ mymain(void)
     DO_TEST("numatune-auto-prefer", NONE);
     DO_TEST("numatune-memnode", QEMU_CAPS_NUMA, QEMU_CAPS_OBJECT_MEMORY_FILE);
     DO_TEST("numatune-memnode-no-memory", QEMU_CAPS_OBJECT_MEMORY_FILE);
+    DO_TEST("numatune-distances", QEMU_CAPS_NUMA, QEMU_CAPS_NUMA_DIST);
+    DO_TEST("numatune-no-vcpu", QEMU_CAPS_NUMA);
+    DO_TEST("numatune-hmat", QEMU_CAPS_NUMA_HMAT, QEMU_CAPS_OBJECT_MEMORY_RAM);
 
     DO_TEST("bios-nvram", NONE);
     DO_TEST("bios-nvram-os-interleave", NONE);
 
     DO_TEST("tap-vhost", NONE);
     DO_TEST("tap-vhost-incorrect", NONE);
-    DO_TEST("shmem", NONE);
-    DO_TEST("shmem-plain-doorbell", NONE);
+    DO_TEST("shmem", QEMU_CAPS_DEVICE_IVSHMEM);
+    DO_TEST("shmem-plain-doorbell",
+            QEMU_CAPS_DEVICE_IVSHMEM_PLAIN, QEMU_CAPS_DEVICE_IVSHMEM_DOORBELL);
     DO_TEST("smbios", NONE);
     DO_TEST("smbios-multiple-type2", NONE);
+    DO_TEST("smbios-type-fwcfg", QEMU_CAPS_FW_CFG);
 
     DO_TEST_CAPS_LATEST("os-firmware-bios");
     DO_TEST_CAPS_LATEST("os-firmware-efi");
@@ -1239,17 +1232,37 @@ mymain(void)
     /* SVE aarch64 CPU features work on modern QEMU */
     DO_TEST_CAPS_ARCH_LATEST("aarch64-features-sve", "aarch64");
 
+    DO_TEST("memory-hotplug-ppc64-nonuma", QEMU_CAPS_KVM, QEMU_CAPS_DEVICE_PC_DIMM, QEMU_CAPS_NUMA,
+            QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
+            QEMU_CAPS_OBJECT_MEMORY_RAM, QEMU_CAPS_OBJECT_MEMORY_FILE);
+    DO_TEST_FULL("memory-hotplug-ppc64-nonuma-abi-update", WHEN_BOTH,
+                 ARG_PARSEFLAGS, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
+                 ARG_QEMU_CAPS,
+                 QEMU_CAPS_KVM, QEMU_CAPS_DEVICE_PC_DIMM,
+                 QEMU_CAPS_NUMA, QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
+                 QEMU_CAPS_OBJECT_MEMORY_RAM,
+                 QEMU_CAPS_OBJECT_MEMORY_FILE, QEMU_CAPS_LAST);
     DO_TEST("memory-hotplug", NONE);
-    DO_TEST("memory-hotplug-nonuma", NONE);
-    DO_TEST("memory-hotplug-dimm", NONE);
+    DO_TEST("memory-hotplug-dimm", QEMU_CAPS_DEVICE_PC_DIMM);
     DO_TEST("memory-hotplug-nvdimm", QEMU_CAPS_DEVICE_NVDIMM);
     DO_TEST("memory-hotplug-nvdimm-access", QEMU_CAPS_DEVICE_NVDIMM);
     DO_TEST("memory-hotplug-nvdimm-label", QEMU_CAPS_DEVICE_NVDIMM);
     DO_TEST("memory-hotplug-nvdimm-align", QEMU_CAPS_DEVICE_NVDIMM);
     DO_TEST("memory-hotplug-nvdimm-pmem", QEMU_CAPS_DEVICE_NVDIMM);
-    DO_TEST("memory-hotplug-nvdimm-readonly", QEMU_CAPS_DEVICE_NVDIMM);
+    DO_TEST("memory-hotplug-nvdimm-readonly", QEMU_CAPS_DEVICE_NVDIMM,
+                                              QEMU_CAPS_DEVICE_NVDIMM_UNARMED);
     DO_TEST("memory-hotplug-nvdimm-ppc64", QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
+                                           QEMU_CAPS_OBJECT_MEMORY_FILE,
                                            QEMU_CAPS_DEVICE_NVDIMM);
+    DO_TEST_FULL("memory-hotplug-nvdimm-ppc64-abi-update", WHEN_BOTH,
+                 ARG_PARSEFLAGS, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
+                 ARG_QEMU_CAPS,
+                 QEMU_CAPS_DEVICE_SPAPR_PCI_HOST_BRIDGE,
+                 QEMU_CAPS_OBJECT_MEMORY_FILE,
+                 QEMU_CAPS_DEVICE_NVDIMM,
+                 QEMU_CAPS_LAST);
+    DO_TEST_CAPS_LATEST("memory-hotplug-virtio-pmem");
+
     DO_TEST("net-udp", NONE);
 
     DO_TEST("video-virtio-gpu-device", QEMU_CAPS_DEVICE_VIRTIO_GPU);
@@ -1278,21 +1291,7 @@ mymain(void)
     DO_TEST("memorybacking-set", NONE);
     DO_TEST("memorybacking-unset", NONE);
 
-    DO_TEST("virtio-options",
-            QEMU_CAPS_VIRTIO_SCSI,
-            QEMU_CAPS_VIRTIO_KEYBOARD,
-            QEMU_CAPS_VIRTIO_MOUSE,
-            QEMU_CAPS_VIRTIO_TABLET,
-            QEMU_CAPS_VIRTIO_INPUT_HOST,
-            QEMU_CAPS_DEVICE_VIRTIO_GPU,
-            QEMU_CAPS_VIRTIO_GPU_VIRGL,
-            QEMU_CAPS_DEVICE_VIRTIO_RNG,
-            QEMU_CAPS_OBJECT_RNG_RANDOM,
-            QEMU_CAPS_DEVICE_VIDEO_PRIMARY,
-            QEMU_CAPS_VIRTIO_PCI_IOMMU_PLATFORM,
-            QEMU_CAPS_VIRTIO_PCI_ATS,
-            QEMU_CAPS_DEVICE_VHOST_USER_GPU,
-            QEMU_CAPS_VIRTIO_PACKED_QUEUES);
+    DO_TEST_CAPS_LATEST("virtio-options");
 
     DO_TEST("fd-memory-numa-topology", QEMU_CAPS_OBJECT_MEMORY_FILE,
             QEMU_CAPS_KVM);
@@ -1345,6 +1344,7 @@ mymain(void)
     DO_TEST_CAPS_LATEST("intel-iommu-caching-mode");
     DO_TEST_CAPS_LATEST("intel-iommu-eim");
     DO_TEST_CAPS_LATEST("intel-iommu-device-iotlb");
+    DO_TEST_CAPS_LATEST("intel-iommu-aw-bits");
     DO_TEST_CAPS_ARCH_LATEST("iommu-smmuv3", "aarch64");
 
     DO_TEST("cpu-check-none", NONE);
@@ -1397,47 +1397,14 @@ mymain(void)
             QEMU_CAPS_VIRTIO_SCSI,
             QEMU_CAPS_MCH_EXTENDED_TSEG_MBYTES);
 
-# define DO_TEST_STATUS(_name) \
-    do { \
-        static struct testQemuInfo info = { \
-            .name = _name, \
-        }; \
-        if (testQemuInfoSetArgs(&info, capslatest, \
-                                ARG_QEMU_CAPS, QEMU_CAPS_LAST, \
-                                ARG_END) < 0 || \
-            qemuTestCapsCacheInsert(driver.qemuCapsCache, info.qemuCaps) < 0) { \
-            VIR_TEST_DEBUG("Failed to generate status test data for '%s'", _name); \
-            return -1; \
-        } \
-        testInfoSetStatusPaths(&info); \
-\
-        if (virTestRun("QEMU status XML-2-XML " _name, \
-                       testCompareStatusXMLToXMLFiles, &info) < 0) \
-            ret = -1; \
-\
-        testQemuInfoClear(&info); \
-    } while (0)
-
-
-    DO_TEST_STATUS("blockjob-mirror");
-    DO_TEST_STATUS("vcpus-multi");
-    DO_TEST_STATUS("modern");
-    DO_TEST_STATUS("migration-out-nbd");
-    DO_TEST_STATUS("migration-in-params");
-    DO_TEST_STATUS("migration-out-params");
-    DO_TEST_STATUS("migration-out-nbd-tls");
-    DO_TEST_STATUS("disk-secinfo-upgrade");
-
-    DO_TEST_STATUS("blockjob-blockdev");
-
-    DO_TEST_STATUS("backup-pull");
-
     DO_TEST("vhost-vsock", QEMU_CAPS_DEVICE_VHOST_VSOCK);
     DO_TEST("vhost-vsock-auto", QEMU_CAPS_DEVICE_VHOST_VSOCK);
     DO_TEST("vhost-vsock-ccw", QEMU_CAPS_DEVICE_VHOST_VSOCK,
             QEMU_CAPS_CCW);
     DO_TEST("vhost-vsock-ccw-auto", QEMU_CAPS_DEVICE_VHOST_VSOCK,
             QEMU_CAPS_CCW);
+    DO_TEST_CAPS_ARCH_LATEST("vhost-vsock-ccw-iommu", "s390x");
+
 
     DO_TEST_CAPS_LATEST("vhost-user-fs-fd-memory");
     DO_TEST_CAPS_LATEST("vhost-user-fs-hugepages");
@@ -1487,13 +1454,14 @@ mymain(void)
     DO_TEST_CAPS_ARCH_LATEST("x86_64-default-cpu-tcg-q35-4.2", "x86_64");
 
     DO_TEST_CAPS_LATEST("virtio-9p-multidevs");
+    DO_TEST_CAPS_LATEST("virtio-9p-createmode");
+    DO_TEST("downscript", NONE);
 
+ cleanup:
     if (getenv("LIBVIRT_SKIP_CLEANUP") == NULL)
         virFileDeleteTree(fakerootdir);
 
-    virHashFree(capslatest);
     qemuTestDriverFree(&driver);
-    VIR_FREE(fakerootdir);
     virFileWrapperClearPrefixes();
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -1502,15 +1470,4 @@ mymain(void)
 VIR_TEST_MAIN_PRELOAD(mymain,
                       VIR_TEST_MOCK("virpci"),
                       VIR_TEST_MOCK("virrandom"),
-                      VIR_TEST_MOCK("domaincaps"),
-                      VIR_TEST_MOCK("virdeterministichash"))
-
-#else
-
-int
-main(void)
-{
-    return EXIT_AM_SKIP;
-}
-
-#endif /* WITH_QEMU */
+                      VIR_TEST_MOCK("domaincaps"))

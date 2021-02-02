@@ -60,7 +60,6 @@ for root, dirs, files in os.walk(os.path.join(srcdir, "src")):
                 file.endswith("common.c") or
                 file.endswith("tmpl.c") or
                 file.endswith("monitor.c") or
-                file.endswith("hal.c") or
                 file.endswith("udev.c")):
             srcs.append(os.path.join(root, file))
 
@@ -421,7 +420,7 @@ for drv in drivers.keys():
 print('''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
-<body class="hvsupport">
+<body id="hvsupport">
 <h1>libvirt API support matrix</h1>
 
 <ul id="toc"></ul>

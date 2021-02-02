@@ -118,8 +118,7 @@ virStorageBackendSheepdogAddVolume(virStoragePoolObjPtr pool, const char *diskIn
         return -1;
     }
 
-    if (VIR_ALLOC(vol) < 0)
-        return -1;
+    vol = g_new0(virStorageVolDef, 1);
 
     vol->name = g_strdup(diskInfo);
 
@@ -140,8 +139,8 @@ virStorageBackendSheepdogRefreshAllVol(virStoragePoolObjPtr pool)
 {
     size_t i;
     g_autofree char *output = NULL;
-    VIR_AUTOSTRINGLIST lines = NULL;
-    VIR_AUTOSTRINGLIST cells = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_auto(GStrv) cells = NULL;
     g_autoptr(virCommand) cmd = NULL;
 
     cmd = virCommandNewArgList(SHEEPDOGCLI, "vdi", "list", "-r", NULL);
@@ -167,7 +166,7 @@ virStorageBackendSheepdogRefreshAllVol(virStoragePoolObjPtr pool)
                 return -1;
         }
 
-        virStringListFree(cells);
+        g_strfreev(cells);
         cells = NULL;
     }
 

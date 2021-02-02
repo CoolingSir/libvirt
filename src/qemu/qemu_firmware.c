@@ -301,8 +301,7 @@ qemuFirmwareInterfaceParse(const char *path,
 
     ninterfaces = virJSONValueArraySize(interfacesJSON);
 
-    if (VIR_ALLOC_N(interfaces, ninterfaces) < 0)
-        return -1;
+    interfaces = g_new0(qemuFirmwareOSInterface, ninterfaces);
 
     for (i = 0; i < ninterfaces; i++) {
         virJSONValuePtr item = virJSONValueArrayGet(interfacesJSON, i);
@@ -434,9 +433,16 @@ qemuFirmwareMappingParse(const char *path,
                          virJSONValuePtr doc,
                          qemuFirmwarePtr fw)
 {
-    virJSONValuePtr mapping = virJSONValueObjectGet(doc, "mapping");
+    virJSONValuePtr mapping;
     const char *deviceStr;
     int tmp;
+
+    if (!(mapping = virJSONValueObjectGet(doc, "mapping"))) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("missing mapping in '%s'"),
+                       path);
+        return -1;
+    }
 
     if (!(deviceStr = virJSONValueObjectGetString(mapping, "device"))) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -497,8 +503,7 @@ qemuFirmwareTargetParse(const char *path,
 
     ntargets = virJSONValueArraySize(targetsJSON);
 
-    if (VIR_ALLOC_N(targets, ntargets) < 0)
-        return -1;
+    targets = g_new0(qemuFirmwareTargetPtr, ntargets);
 
     for (i = 0; i < ntargets; i++) {
         virJSONValuePtr item = virJSONValueArrayGet(targetsJSON, i);
@@ -508,8 +513,7 @@ qemuFirmwareTargetParse(const char *path,
         size_t nmachines;
         size_t j;
 
-        if (VIR_ALLOC(t) < 0)
-            goto cleanup;
+        t = g_new0(qemuFirmwareTarget, 1);
 
         if (!(architectureStr = virJSONValueObjectGetString(item, "architecture"))) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -534,8 +538,7 @@ qemuFirmwareTargetParse(const char *path,
 
         nmachines = virJSONValueArraySize(machines);
 
-        if (VIR_ALLOC_N(t->machines, nmachines) < 0)
-            goto cleanup;
+        t->machines = g_new0(char *, nmachines);
 
         for (j = 0; j < nmachines; j++) {
             virJSONValuePtr machine = virJSONValueArrayGet(machines, j);
@@ -581,8 +584,7 @@ qemuFirmwareFeatureParse(const char *path,
 
     nfeatures = virJSONValueArraySize(featuresJSON);
 
-    if (VIR_ALLOC_N(features, nfeatures) < 0)
-        return -1;
+    features = g_new0(qemuFirmwareFeature, nfeatures);
 
     for (i = 0; i < nfeatures; i++) {
         virJSONValuePtr item = virJSONValueArrayGet(featuresJSON, i);
@@ -625,8 +627,7 @@ qemuFirmwareParse(const char *path)
         return NULL;
     }
 
-    if (VIR_ALLOC(fw) < 0)
-        return NULL;
+    fw = g_new0(qemuFirmware, 1);
 
     if (qemuFirmwareInterfaceParse(path, doc, fw) < 0)
         return NULL;
@@ -1043,9 +1044,8 @@ qemuFirmwareEnableFeatures(virQEMUDriverPtr driver,
 
     switch (fw->mapping.device) {
     case QEMU_FIRMWARE_DEVICE_FLASH:
-        if (!def->os.loader &&
-            VIR_ALLOC(def->os.loader) < 0)
-            return -1;
+        if (!def->os.loader)
+            def->os.loader = g_new0(virDomainLoaderDef, 1);
 
         def->os.loader->type = VIR_DOMAIN_LOADER_TYPE_PFLASH;
         def->os.loader->readonly = VIR_TRISTATE_BOOL_YES;
@@ -1086,9 +1086,8 @@ qemuFirmwareEnableFeatures(virQEMUDriverPtr driver,
         break;
 
     case QEMU_FIRMWARE_DEVICE_MEMORY:
-        if (!def->os.loader &&
-            VIR_ALLOC(def->os.loader) < 0)
-            return -1;
+        if (!def->os.loader)
+            def->os.loader = g_new0(virDomainLoaderDef, 1);
 
         def->os.loader->type = VIR_DOMAIN_LOADER_TYPE_ROM;
         def->os.loader->path = g_strdup(memory->filename);
@@ -1111,7 +1110,6 @@ qemuFirmwareEnableFeatures(virQEMUDriverPtr driver,
                                _("domain has SMM turned off "
                                  "but chosen firmware requires it"));
                 return -1;
-                break;
             case VIR_TRISTATE_SWITCH_ABSENT:
                 VIR_DEBUG("Enabling SMM feature");
                 def->features[VIR_DOMAIN_FEATURE_SMM] = VIR_TRISTATE_SWITCH_ON;
@@ -1185,7 +1183,7 @@ qemuFirmwareFetchParsedConfigs(bool privileged,
                                qemuFirmwarePtr **firmwaresRet,
                                char ***pathsRet)
 {
-    VIR_AUTOSTRINGLIST paths = NULL;
+    g_auto(GStrv) paths = NULL;
     size_t npaths;
     qemuFirmwarePtr *firmwares = NULL;
     size_t i;
@@ -1195,8 +1193,7 @@ qemuFirmwareFetchParsedConfigs(bool privileged,
 
     npaths = virStringListLength((const char **)paths);
 
-    if (VIR_ALLOC_N(firmwares, npaths) < 0)
-        return -1;
+    firmwares = g_new0(qemuFirmwarePtr, npaths);
 
     for (i = 0; i < npaths; i++) {
         if (!(firmwares[i] = qemuFirmwareParse(paths[i])))
@@ -1221,16 +1218,13 @@ qemuFirmwareFillDomain(virQEMUDriverPtr driver,
                        virDomainDefPtr def,
                        unsigned int flags)
 {
-    VIR_AUTOSTRINGLIST paths = NULL;
+    g_auto(GStrv) paths = NULL;
     qemuFirmwarePtr *firmwares = NULL;
     ssize_t nfirmwares = 0;
     const qemuFirmware *theone = NULL;
     bool needResult = true;
     size_t i;
     int ret = -1;
-
-    if (!(flags & VIR_QEMU_PROCESS_START_NEW))
-        return 0;
 
     /* Fill in FW paths if either os.firmware is enabled, or
      * loader path was provided with no nvram varstore. */
@@ -1247,6 +1241,11 @@ qemuFirmwareFillDomain(virQEMUDriverPtr driver,
         /* ... then we want to consult JSON FW descriptors first,
          * but we don't want to fail if we haven't found a match. */
         needResult = false;
+    } else {
+        /* Domain has FW autoselection enabled => do nothing if
+         * we are not starting it from scratch. */
+        if (!(flags & VIR_QEMU_PROCESS_START_NEW))
+            return 0;
     }
 
     if ((nfirmwares = qemuFirmwareFetchParsedConfigs(driver->privileged,
@@ -1423,8 +1422,7 @@ qemuFirmwareGetSupported(const char *machine,
             }
 
             if (j == *nfws) {
-                if (VIR_ALLOC(tmp) < 0)
-                    return -1;
+                tmp = g_new0(virFirmware, 1);
 
                 tmp->name = g_strdup(fwpath);
                 tmp->nvram = g_strdup(nvrampath);

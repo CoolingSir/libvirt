@@ -44,7 +44,6 @@
 #include "lxc_driver.h"
 #include "lxc_native.h"
 #include "lxc_process.h"
-#include "viralloc.h"
 #include "virnetdevbridge.h"
 #include "virnetdevveth.h"
 #include "virnetdevopenvswitch.h"
@@ -59,6 +58,7 @@
 #include "domain_cgroup.h"
 #include "domain_driver.h"
 #include "domain_nwfilter.h"
+#include "domain_validate.h"
 #include "virinitctl.h"
 #include "virnetdev.h"
 #include "virnetdevtap.h"
@@ -1423,10 +1423,11 @@ lxcDomainDestroy(virDomainPtr dom)
 
 static int lxcCheckNetNsSupport(void)
 {
-    const char *argv[] = {"ip", "link", "set", "lo", "netns", "-1", NULL};
+    g_autoptr(virCommand) cmd = virCommandNewArgList("ip", "link", "set", "lo",
+                                                     "netns", "-1", NULL);
     int ip_rc;
 
-    if (virRun(argv, &ip_rc) < 0 || ip_rc == 255)
+    if (virCommandRun(cmd, &ip_rc) < 0 || ip_rc == 255)
         return 0;
 
     if (virProcessNamespaceAvailable(VIR_PROCESS_NAMESPACE_NET) < 0)
@@ -1440,6 +1441,7 @@ static virSecurityManagerPtr
 lxcSecurityInit(virLXCDriverConfigPtr cfg)
 {
     unsigned int flags = VIR_SECURITY_MANAGER_PRIVILEGED;
+    virSecurityManagerPtr mgr;
 
     VIR_INFO("lxcSecurityInit %s", cfg->securityDriverName);
 
@@ -1448,8 +1450,8 @@ lxcSecurityInit(virLXCDriverConfigPtr cfg)
     if (cfg->securityRequireConfined)
         flags |= VIR_SECURITY_MANAGER_REQUIRE_CONFINED;
 
-    virSecurityManagerPtr mgr = virSecurityManagerNew(cfg->securityDriverName,
-                                                      LXC_DRIVER_NAME, flags);
+    mgr = virSecurityManagerNew(cfg->securityDriverName,
+                                LXC_DRIVER_NAME, flags);
     if (!mgr)
         goto error;
 
@@ -1469,6 +1471,7 @@ static int lxcStateInitialize(bool privileged,
 {
     virLXCDriverConfigPtr cfg = NULL;
     bool autostart = true;
+    const char *defsecmodel;
 
     if (root != NULL) {
         virReportError(VIR_ERR_INVALID_ARG, "%s",
@@ -1491,11 +1494,11 @@ static int lxcStateInitialize(bool privileged,
         return VIR_DRV_STATE_INIT_SKIPPED;
     }
 
-    if (VIR_ALLOC(lxc_driver) < 0)
-        return VIR_DRV_STATE_INIT_ERROR;
+    lxc_driver = g_new0(virLXCDriver, 1);
     lxc_driver->lockFD = -1;
     if (virMutexInit(&lxc_driver->lock) < 0) {
-        VIR_FREE(lxc_driver);
+        g_free(lxc_driver);
+        lxc_driver = NULL;
         return VIR_DRV_STATE_INIT_ERROR;
     }
 
@@ -1511,7 +1514,7 @@ static int lxcStateInitialize(bool privileged,
     if (!(lxc_driver->config = cfg = virLXCDriverConfigNew()))
         goto cleanup;
 
-    cfg->log_libvirtd = 0; /* by default log to container logfile */
+    cfg->log_libvirtd = false; /* by default log to container logfile */
     cfg->have_netns = lxcCheckNetNsSupport();
 
     /* Call function to load lxc driver configuration information */
@@ -1524,7 +1527,9 @@ static int lxcStateInitialize(bool privileged,
     if (!(lxc_driver->hostdevMgr = virHostdevManagerGetDefault()))
         goto cleanup;
 
-    if (!(lxc_driver->xmlopt = lxcDomainXMLConfInit(lxc_driver)))
+    defsecmodel = virSecurityManagerGetModel(lxc_driver->securityManager);
+
+    if (!(lxc_driver->xmlopt = lxcDomainXMLConfInit(lxc_driver, defsecmodel)))
         goto cleanup;
 
     if (!(lxc_driver->closeCallbacks = virCloseCallbacksNew()))
@@ -1632,7 +1637,8 @@ static int lxcStateCleanup(void)
 
     virObjectUnref(lxc_driver->config);
     virMutexDestroy(&lxc_driver->lock);
-    VIR_FREE(lxc_driver);
+    g_free(lxc_driver);
+    lxc_driver = NULL;
 
     return 0;
 }
@@ -1698,7 +1704,7 @@ lxcDomainInterfaceAddresses(virDomainPtr dom,
     if (!(vm = lxcDomObjFromDomain(dom)))
         goto cleanup;
 
-    if (virDomainInterfaceAddressesEnsureACL(dom->conn, vm->def) < 0)
+    if (virDomainInterfaceAddressesEnsureACL(dom->conn, vm->def, source) < 0)
         goto cleanup;
 
     if (virDomainObjCheckActive(vm) < 0)
@@ -2472,7 +2478,8 @@ static int lxcDomainSetAutostart(virDomainPtr dom,
 {
     virLXCDriverPtr driver = dom->conn->privateData;
     virDomainObjPtr vm;
-    char *configFile = NULL, *autostartLink = NULL;
+    g_autofree char *configFile = NULL;
+    g_autofree char *autostartLink = NULL;
     int ret = -1;
     virLXCDriverConfigPtr cfg = virLXCDriverGetConfig(driver);
 
@@ -2537,8 +2544,6 @@ static int lxcDomainSetAutostart(virDomainPtr dom,
     virLXCDomainObjEndJob(driver, vm);
 
  cleanup:
-    VIR_FREE(configFile);
-    VIR_FREE(autostartLink);
     virDomainObjEndAPI(&vm);
     virObjectUnref(cfg);
     return ret;
@@ -2550,8 +2555,7 @@ static int lxcFreezeContainer(virDomainObjPtr vm)
     int check_interval = 1; /* In milliseconds */
     int exp = 10;
     int waited_time = 0;
-    int ret = -1;
-    char *state = NULL;
+    g_autofree char *state = NULL;
     virLXCDomainObjPrivatePtr priv = vm->privateData;
 
     while (waited_time < timeout) {
@@ -2598,10 +2602,8 @@ static int lxcFreezeContainer(virDomainObjPtr vm)
         }
         VIR_DEBUG("Read freezer.state: %s", state);
 
-        if (STREQ(state, "FROZEN")) {
-            ret = 0;
-            goto cleanup;
-        }
+        if (STREQ(state, "FROZEN"))
+            return 0;
 
         waited_time += check_interval;
         /*
@@ -2613,7 +2615,6 @@ static int lxcFreezeContainer(virDomainObjPtr vm)
          * In that case, eager polling will just waste CPU time.
          */
         check_interval *= exp;
-        VIR_FREE(state);
     }
     VIR_DEBUG("lxcFreezeContainer timeout");
  error:
@@ -2623,11 +2624,7 @@ static int lxcFreezeContainer(virDomainObjPtr vm)
      * This is likely to fall the group back again gracefully.
      */
     virCgroupSetFreezerState(priv->cgroup, "THAWED");
-    ret = -1;
-
- cleanup:
-    VIR_FREE(state);
-    return ret;
+    return -1;
 }
 
 static int lxcDomainSuspend(virDomainPtr dom)
@@ -3052,8 +3049,7 @@ lxcDomainAttachDeviceConfig(virDomainDefPtr vmdef,
                            _("target %s already exists."), disk->dst);
             return -1;
         }
-        if (virDomainDiskInsert(vmdef, disk) < 0)
-            return -1;
+        virDomainDiskInsert(vmdef, disk);
         /* vmdef has the pointer. Generic codes for vmdef will do all jobs */
         dev->data.disk = NULL;
         ret = 0;
@@ -3344,7 +3340,7 @@ lxcDomainAttachDeviceDiskLive(virLXCDriverPtr driver,
     virDomainDiskDefPtr def = dev->data.disk;
     int ret = -1;
     struct stat sb;
-    char *file = NULL;
+    g_autofree char *file = NULL;
     int perms;
     const char *src = NULL;
 
@@ -3404,8 +3400,9 @@ lxcDomainAttachDeviceDiskLive(virLXCDriverPtr driver,
                              perms) < 0)
         goto cleanup;
 
-    if (VIR_REALLOC_N(vm->def->disks, vm->def->ndisks + 1) < 0)
-        goto cleanup;
+    vm->def->disks = g_renew(virDomainDiskDefPtr,
+                             vm->def->disks,
+                             vm->def->ndisks + 1);
 
     file = g_strdup_printf("/dev/%s", def->dst);
 
@@ -3432,7 +3429,6 @@ lxcDomainAttachDeviceDiskLive(virLXCDriverPtr driver,
  cleanup:
     if (src)
         virDomainAuditDisk(vm, NULL, def->src, "attach", ret == 0);
-    VIR_FREE(file);
     return ret;
 }
 
@@ -3458,22 +3454,18 @@ lxcDomainAttachDeviceNetLive(virLXCDriverPtr driver,
        return -1;
 
     /* preallocate new slot for device */
-    if (VIR_REALLOC_N(vm->def->nets, vm->def->nnets+1) < 0)
-        return -1;
+    vm->def->nets = g_renew(virDomainNetDefPtr,
+                            vm->def->nets,
+                            vm->def->nnets + 1);
 
     /* If appropriate, grab a physical device from the configured
      * network's pool of devices, or resolve bridge device name
      * to the one defined in the network definition.
      */
     if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-        virConnectPtr netconn = virGetConnectNetwork();
-        if (!netconn)
+        g_autoptr(virConnect) netconn = virGetConnectNetwork();
+        if (!netconn || virDomainNetAllocateActualDevice(netconn, vm->def, net) < 0)
             return -1;
-        if (virDomainNetAllocateActualDevice(netconn, vm->def, net) < 0) {
-            virObjectUnref(netconn);
-            return -1;
-        }
-        virObjectUnref(netconn);
     }
 
     /* final validation now that actual type is known */
@@ -3510,6 +3502,7 @@ lxcDomainAttachDeviceNetLive(virLXCDriverPtr driver,
     case VIR_DOMAIN_NET_TYPE_INTERNAL:
     case VIR_DOMAIN_NET_TYPE_HOSTDEV:
     case VIR_DOMAIN_NET_TYPE_UDP:
+    case VIR_DOMAIN_NET_TYPE_VDPA:
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                        _("Network device type is not supported"));
         goto cleanup;
@@ -3564,6 +3557,7 @@ lxcDomainAttachDeviceNetLive(virLXCDriverPtr driver,
         case VIR_DOMAIN_NET_TYPE_INTERNAL:
         case VIR_DOMAIN_NET_TYPE_HOSTDEV:
         case VIR_DOMAIN_NET_TYPE_UDP:
+        case VIR_DOMAIN_NET_TYPE_VDPA:
         case VIR_DOMAIN_NET_TYPE_LAST:
         default:
             /* no-op */
@@ -3583,7 +3577,7 @@ lxcDomainAttachDeviceHostdevSubsysUSBLive(virLXCDriverPtr driver,
     virLXCDomainObjPrivatePtr priv = vm->privateData;
     virDomainHostdevDefPtr def = dev->data.hostdev;
     int ret = -1;
-    char *src = NULL;
+    g_autofree char *src = NULL;
     struct stat sb;
     virUSBDevicePtr usb = NULL;
     virDomainHostdevSubsysUSBPtr usbsrc;
@@ -3613,8 +3607,9 @@ lxcDomainAttachDeviceHostdevSubsysUSBLive(virLXCDriverPtr driver,
         goto cleanup;
     }
 
-    if (VIR_REALLOC_N(vm->def->hostdevs, vm->def->nhostdevs + 1) < 0)
-        goto cleanup;
+    vm->def->hostdevs = g_renew(virDomainHostdevDefPtr,
+                                vm->def->hostdevs,
+                                vm->def->nhostdevs + 1);
 
     if (virUSBDeviceFileIterate(usb,
                                 virLXCSetupHostUSBDeviceCgroup,
@@ -3642,7 +3637,6 @@ lxcDomainAttachDeviceHostdevSubsysUSBLive(virLXCDriverPtr driver,
  cleanup:
     virDomainAuditHostdev(vm, def, "attach", ret == 0);
     virUSBDeviceFree(usb);
-    VIR_FREE(src);
     return ret;
 }
 
@@ -3683,8 +3677,9 @@ lxcDomainAttachDeviceHostdevStorageLive(virLXCDriverPtr driver,
         goto cleanup;
     }
 
-    if (VIR_REALLOC_N(vm->def->hostdevs, vm->def->nhostdevs+1) < 0)
-        goto cleanup;
+    vm->def->hostdevs = g_renew(virDomainHostdevDefPtr,
+                                vm->def->hostdevs,
+                                vm->def->nhostdevs + 1);
 
     if (virCgroupAllowDevice(priv->cgroup,
                              'b',
@@ -3762,8 +3757,9 @@ lxcDomainAttachDeviceHostdevMiscLive(virLXCDriverPtr driver,
                              VIR_CGROUP_DEVICE_RWM) < 0)
         goto cleanup;
 
-    if (VIR_REALLOC_N(vm->def->hostdevs, vm->def->nhostdevs+1) < 0)
-        goto cleanup;
+    vm->def->hostdevs = g_renew(virDomainHostdevDefPtr,
+                                vm->def->hostdevs,
+                                vm->def->nhostdevs + 1);
 
     if (lxcDomainAttachDeviceMknod(driver,
                                    0700 | S_IFBLK,
@@ -3909,14 +3905,14 @@ lxcDomainDetachDeviceDiskLive(virDomainObjPtr vm,
 {
     virLXCDomainObjPrivatePtr priv = vm->privateData;
     virDomainDiskDefPtr def = NULL;
-    int idx, ret = -1;
-    char *dst = NULL;
+    int idx;
+    g_autofree char *dst = NULL;
     const char *src;
 
     if (!priv->initpid) {
         virReportError(VIR_ERR_OPERATION_INVALID, "%s",
                        _("Cannot attach disk until init PID is known"));
-        goto cleanup;
+        return -1;
     }
 
     if ((idx = virDomainDiskIndexByName(vm->def,
@@ -3924,7 +3920,7 @@ lxcDomainDetachDeviceDiskLive(virDomainObjPtr vm,
                                         false)) < 0) {
         virReportError(VIR_ERR_OPERATION_FAILED,
                        _("disk %s not found"), dev->data.disk->dst);
-        goto cleanup;
+        return -1;
     }
 
     def = vm->def->disks[idx];
@@ -3935,12 +3931,12 @@ lxcDomainDetachDeviceDiskLive(virDomainObjPtr vm,
     if (!virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_DEVICES)) {
         virReportError(VIR_ERR_OPERATION_INVALID, "%s",
                        _("devices cgroup isn't mounted"));
-        goto cleanup;
+        return -1;
     }
 
     if (lxcDomainAttachDeviceUnlink(vm, dst) < 0) {
         virDomainAuditDisk(vm, def->src, NULL, "detach", false);
-        goto cleanup;
+        return -1;
     }
     virDomainAuditDisk(vm, def->src, NULL, "detach", true);
 
@@ -3952,11 +3948,7 @@ lxcDomainDetachDeviceDiskLive(virDomainObjPtr vm,
     virDomainDiskRemove(vm->def, idx);
     virDomainDiskDefFree(def);
 
-    ret = 0;
-
- cleanup:
-    VIR_FREE(dst);
-    return ret;
+    return 0;
 }
 
 
@@ -4007,6 +3999,7 @@ lxcDomainDetachDeviceNetLive(virDomainObjPtr vm,
     case VIR_DOMAIN_NET_TYPE_INTERNAL:
     case VIR_DOMAIN_NET_TYPE_HOSTDEV:
     case VIR_DOMAIN_NET_TYPE_UDP:
+    case VIR_DOMAIN_NET_TYPE_VDPA:
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                        _("Only bridged veth devices can be detached"));
         goto cleanup;
@@ -4030,13 +4023,11 @@ lxcDomainDetachDeviceNetLive(virDomainObjPtr vm,
     if (!ret) {
         virErrorPreserveLast(&save_err);
         if (detach->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
-            virConnectPtr conn = virGetConnectNetwork();
-            if (conn) {
+            g_autoptr(virConnect) conn = virGetConnectNetwork();
+            if (conn)
                 virDomainNetReleaseActualDevice(conn, vm->def, detach);
-                virObjectUnref(conn);
-            } else {
+            else
                 VIR_WARN("Unable to release network device '%s'", NULLSTR(detach->ifname));
-            }
         }
         virDomainNetRemove(vm->def, detachidx);
         virDomainNetDefFree(detach);
@@ -4054,7 +4045,7 @@ lxcDomainDetachDeviceHostdevUSBLive(virLXCDriverPtr driver,
     virLXCDomainObjPrivatePtr priv = vm->privateData;
     virDomainHostdevDefPtr def = NULL;
     int idx, ret = -1;
-    char *dst = NULL;
+    g_autofree char *dst = NULL;
     virUSBDevicePtr usb = NULL;
     virHostdevManagerPtr hostdev_mgr = driver->hostdevMgr;
     virDomainHostdevSubsysUSBPtr usbsrc;
@@ -4102,7 +4093,6 @@ lxcDomainDetachDeviceHostdevUSBLive(virLXCDriverPtr driver,
 
  cleanup:
     virUSBDeviceFree(usb);
-    VIR_FREE(dst);
     return ret;
 }
 
@@ -4628,7 +4618,7 @@ static char *
 lxcConnectGetSysinfo(virConnectPtr conn, unsigned int flags)
 {
     virLXCDriverPtr driver = conn->privateData;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     virCheckFlags(0, NULL);
 
@@ -4947,8 +4937,6 @@ lxcDomainGetHostname(virDomainPtr dom,
     virDomainObjPtr vm = NULL;
     char macaddr[VIR_MAC_STRING_BUFLEN];
     g_autoptr(virConnect) conn = NULL;
-    virNetworkDHCPLeasePtr *leases = NULL;
-    int n_leases;
     size_t i, j;
     char *hostname = NULL;
 
@@ -4972,6 +4960,8 @@ lxcDomainGetHostname(virDomainPtr dom,
     for (i = 0; i < vm->def->nnets; i++) {
         g_autoptr(virNetwork) network = NULL;
         virDomainNetDefPtr net = vm->def->nets[i];
+        g_autofree virNetworkDHCPLeasePtr *leases = NULL;
+        int n_leases;
 
         if (net->type != VIR_DOMAIN_NET_TYPE_NETWORK)
             continue;
@@ -4994,8 +4984,6 @@ lxcDomainGetHostname(virDomainPtr dom,
 
             virNetworkDHCPLeaseFree(lease);
         }
-
-        VIR_FREE(leases);
 
         if (hostname)
             goto endjob;

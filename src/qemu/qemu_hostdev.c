@@ -202,7 +202,6 @@ qemuHostdevPreparePCIDevicesCheckSupport(virDomainHostdevDefPtr *hostdevs,
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                            _("host doesn't support legacy PCI passthrough"));
             return false;
-            break;
 
         case VIR_DOMAIN_HOSTDEV_PCI_BACKEND_XEN:
         case VIR_DOMAIN_HOSTDEV_PCI_BACKEND_TYPE_LAST:
@@ -406,14 +405,10 @@ qemuHostdevReAttachPCIDevices(virQEMUDriverPtr driver,
                               virDomainHostdevDefPtr *hostdevs,
                               int nhostdevs)
 {
-    virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
-    const char *oldStateDir = cfg->stateDir;
     virHostdevManagerPtr hostdev_mgr = driver->hostdevMgr;
 
     virHostdevReAttachPCIDevices(hostdev_mgr, QEMU_DRIVER_NAME, name,
-                                 hostdevs, nhostdevs, oldStateDir);
-
-    virObjectUnref(cfg);
+                                 hostdevs, nhostdevs);
 }
 
 void

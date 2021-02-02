@@ -141,8 +141,9 @@ udevGetDeviceProperty(struct udev_device *udev_device,
 
     ret = udev_device_get_property_value(udev_device, property_key);
 
-    VIR_DEBUG("Found property key '%s' value '%s' for device with sysname '%s'",
-              property_key, NULLSTR(ret), udev_device_get_sysname(udev_device));
+    VIR_DEBUG("Found property key '%s' value '%s' for device with sysname '%s' errno='%s'",
+              property_key, NULLSTR(ret), udev_device_get_sysname(udev_device),
+              ret ? "" : g_strerror(errno));
 
     return ret;
 }
@@ -168,10 +169,17 @@ udevGetIntProperty(struct udev_device *udev_device,
     const char *str = NULL;
 
     str = udevGetDeviceProperty(udev_device, property_key);
-
-    if (str && virStrToLong_i(str, NULL, base, value) < 0) {
+    if (!str) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Failed to convert '%s' to int"), str);
+                       _("Missing udev property '%s' on '%s'"),
+                       property_key, udev_device_get_sysname(udev_device));
+        return -1;
+    }
+
+    if (virStrToLong_i(str, NULL, base, value) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to parse int '%s' from udev property '%s' on '%s'"),
+                       str, property_key, udev_device_get_sysname(udev_device));
         return -1;
     }
     return 0;
@@ -187,10 +195,17 @@ udevGetUintProperty(struct udev_device *udev_device,
     const char *str = NULL;
 
     str = udevGetDeviceProperty(udev_device, property_key);
-
-    if (str && virStrToLong_ui(str, NULL, base, value) < 0) {
+    if (!str) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Failed to convert '%s' to int"), str);
+                       _("Missing udev property '%s' on '%s'"),
+                       property_key, udev_device_get_sysname(udev_device));
+        return -1;
+    }
+
+    if (virStrToLong_ui(str, NULL, base, value) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to parse uint '%s' from udev property '%s' on '%s'"),
+                       str, property_key, udev_device_get_sysname(udev_device));
         return -1;
     }
     return 0;
@@ -294,7 +309,7 @@ udevGenerateDeviceName(struct udev_device *device,
                        const char *s)
 {
     size_t i;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
     virBufferAsprintf(&buf, "%s_%s",
                       udev_device_get_subsystem(device),
@@ -352,6 +367,7 @@ udevProcessPCI(struct udev_device *device,
     virNodeDevCapPCIDevPtr pci_dev = &def->caps->data.pci_dev;
     virPCIEDeviceInfoPtr pci_express = NULL;
     virPCIDevicePtr pciDev = NULL;
+    virPCIDeviceAddress devAddr;
     int ret = -1;
     char *p;
     bool privileged;
@@ -401,10 +417,12 @@ udevProcessPCI(struct udev_device *device,
     if (virNodeDeviceGetPCIDynamicCaps(def->sysfs_path, pci_dev) < 0)
         goto cleanup;
 
-    if (!(pciDev = virPCIDeviceNew(pci_dev->domain,
-                                   pci_dev->bus,
-                                   pci_dev->slot,
-                                   pci_dev->function)))
+    devAddr.domain = pci_dev->domain;
+    devAddr.bus = pci_dev->bus;
+    devAddr.slot = pci_dev->slot;
+    devAddr.function = pci_dev->function;
+
+    if (!(pciDev = virPCIDeviceNew(&devAddr)))
         goto cleanup;
 
     /* We need to be root to read PCI device configs */
@@ -413,13 +431,11 @@ udevProcessPCI(struct udev_device *device,
             goto cleanup;
 
         if (virPCIDeviceIsPCIExpress(pciDev) > 0) {
-            if (VIR_ALLOC(pci_express) < 0)
-                goto cleanup;
+            pci_express = g_new0(virPCIEDeviceInfo, 1);
 
             if (virPCIDeviceHasPCIExpressLink(pciDev) > 0) {
-                if (VIR_ALLOC(pci_express->link_cap) < 0 ||
-                    VIR_ALLOC(pci_express->link_sta) < 0)
-                    goto cleanup;
+                pci_express->link_cap = g_new0(virPCIELink, 1);
+                pci_express->link_sta = g_new0(virPCIELink, 1);
 
                 if (virPCIDeviceGetLinkCapSta(pciDev,
                                               &pci_express->link_cap->port,
@@ -838,11 +854,7 @@ udevProcessFloppy(struct udev_device *device,
 {
     int has_media = 0;
 
-    if (udevHasDeviceProperty(device, "ID_CDROM_MEDIA")) {
-        /* USB floppy */
-        if (udevGetIntProperty(device, "DKD_MEDIA_AVAILABLE", &has_media, 0) < 0)
-            return -1;
-    } else if (udevHasDeviceProperty(device, "ID_FS_LABEL")) {
+    if (udevHasDeviceProperty(device, "ID_FS_LABEL")) {
         /* Legacy floppy */
         has_media = 1;
     }
@@ -871,6 +883,19 @@ udevProcessSD(struct udev_device *device,
 }
 
 
+static int
+udevProcessDASD(struct udev_device *device,
+                virNodeDeviceDefPtr def)
+{
+    virNodeDevCapStoragePtr storage = &def->caps->data.storage;
+
+    if (udevGetStringSysfsAttr(device, "device/uid", &storage->serial) < 0)
+        return -1;
+
+    return udevProcessDisk(device, def);
+}
+
+
 /* This function exists to deal with the case in which a driver does
  * not provide a device type in the usual place, but udev told us it's
  * a storage device, and we can make a good guess at what kind of
@@ -885,6 +910,19 @@ udevKludgeStorageType(virNodeDeviceDefPtr def)
     /* virtio disk */
     if (STRPREFIX(def->caps->data.storage.block, "/dev/vd")) {
         def->caps->data.storage.drive_type = g_strdup("disk");
+        VIR_DEBUG("Found storage type '%s' for device "
+                  "with sysfs path '%s'",
+                  def->caps->data.storage.drive_type,
+                  def->sysfs_path);
+        return 0;
+    }
+
+    /* For Direct Access Storage Devices (DASDs) there are
+     * currently no identifiers in udev besides ID_PATH. Since
+     * ID_TYPE=disk does not exist on DASDs they fall through
+     * the udevProcessStorage detection logic. */
+    if (STRPREFIX(def->caps->data.storage.block, "/dev/dasd")) {
+        def->caps->data.storage.drive_type = g_strdup("dasd");
         VIR_DEBUG("Found storage type '%s' for device "
                   "with sysfs path '%s'",
                   def->caps->data.storage.drive_type,
@@ -937,37 +975,16 @@ udevProcessStorage(struct udev_device *device,
 
     if (!storage->drive_type ||
         STREQ(def->caps->data.storage.drive_type, "generic")) {
-        int val = 0;
-        const char *str = NULL;
-
         /* All floppy drives have the ID_DRIVE_FLOPPY prop. This is
          * needed since legacy floppies don't have a drive_type */
-        if (udevGetIntProperty(device, "ID_DRIVE_FLOPPY", &val, 0) < 0)
+        if (udevHasDeviceProperty(device, "ID_DRIVE_FLOPPY"))
+            storage->drive_type = g_strdup("floppy");
+        else if (udevHasDeviceProperty(device, "ID_CDROM"))
+            storage->drive_type = g_strdup("cd");
+        else if (udevHasDeviceProperty(device, "ID_DRIVE_FLASH_SD"))
+            storage->drive_type = g_strdup("sd");
+        else if (udevKludgeStorageType(def) != 0)
             goto cleanup;
-        else if (val == 1)
-            str = "floppy";
-
-        if (!str) {
-            if (udevGetIntProperty(device, "ID_CDROM", &val, 0) < 0)
-                goto cleanup;
-            else if (val == 1)
-                str = "cd";
-        }
-
-        if (!str) {
-            if (udevGetIntProperty(device, "ID_DRIVE_FLASH_SD", &val, 0) < 0)
-                goto cleanup;
-            if (val == 1)
-                str = "sd";
-        }
-
-        if (str) {
-            storage->drive_type = g_strdup(str);
-        } else {
-            /* If udev doesn't have it, perhaps we can guess it. */
-            if (udevKludgeStorageType(def) != 0)
-                goto cleanup;
-        }
     }
 
     if (STREQ(def->caps->data.storage.drive_type, "cd")) {
@@ -978,6 +995,8 @@ udevProcessStorage(struct udev_device *device,
         ret = udevProcessFloppy(device, def);
     } else if (STREQ(def->caps->data.storage.drive_type, "sd")) {
         ret = udevProcessSD(device, def);
+    } else if (STREQ(def->caps->data.storage.drive_type, "dasd")) {
+        ret = udevProcessDASD(device, def);
     } else {
         VIR_DEBUG("Unsupported storage type '%s'",
                   def->caps->data.storage.drive_type);
@@ -1013,7 +1032,6 @@ udevProcessMediatedDevice(struct udev_device *dev,
                           virNodeDeviceDefPtr def)
 {
     int ret = -1;
-    const char *uuidstr = NULL;
     int iommugrp = -1;
     char *linkpath = NULL;
     char *canonicalpath = NULL;
@@ -1041,8 +1059,8 @@ udevProcessMediatedDevice(struct udev_device *dev,
 
     data->type = g_path_get_basename(canonicalpath);
 
-    uuidstr = udev_device_get_sysname(dev);
-    if ((iommugrp = virMediatedDeviceGetIOMMUGroupNum(uuidstr)) < 0)
+    data->uuid = g_strdup(udev_device_get_sysname(dev));
+    if ((iommugrp = virMediatedDeviceGetIOMMUGroupNum(data->uuid)) < 0)
         goto cleanup;
 
     if (udevGenerateDeviceName(dev, def, NULL) != 0)
@@ -1059,28 +1077,181 @@ udevProcessMediatedDevice(struct udev_device *dev,
 
 
 static int
-udevProcessCCW(struct udev_device *device,
-               virNodeDeviceDefPtr def)
+udevGetCCWAddress(const char *sysfs_path,
+                  virNodeDevCapDataPtr data)
 {
-    int online;
     char *p;
-    virNodeDevCapDataPtr data = &def->caps->data;
 
-    /* process only online devices to keep the list sane */
-    if (udevGetIntSysfsAttr(device, "online", &online, 0) < 0 || online != 1)
-        return -1;
-
-    if ((p = strrchr(def->sysfs_path, '/')) == NULL ||
+    if ((p = strrchr(sysfs_path, '/')) == NULL ||
         virStrToLong_ui(p + 1, &p, 16, &data->ccw_dev.cssid) < 0 || p == NULL ||
         virStrToLong_ui(p + 1, &p, 16, &data->ccw_dev.ssid) < 0 || p == NULL ||
         virStrToLong_ui(p + 1, &p, 16, &data->ccw_dev.devno) < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("failed to parse the CCW address from sysfs path: '%s'"),
+                       sysfs_path);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int
+udevProcessCCW(struct udev_device *device,
+               virNodeDeviceDefPtr def)
+{
+    int online;
+
+    /* process only online devices to keep the list sane */
+    if (udevGetIntSysfsAttr(device, "online", &online, 0) < 0 || online != 1)
+        return -1;
+
+    if (udevGetCCWAddress(def->sysfs_path, &def->caps->data) < 0)
+        return -1;
+
+    if (udevGenerateDeviceName(device, def, NULL) != 0)
+        return -1;
+
+    return 0;
+}
+
+
+static int
+udevProcessCSS(struct udev_device *device,
+               virNodeDeviceDefPtr def)
+{
+    /* only process IO subchannel and vfio-ccw devices to keep the list sane */
+    if (!def->driver ||
+        (STRNEQ(def->driver, "io_subchannel") &&
+         STRNEQ(def->driver, "vfio_ccw")))
+        return -1;
+
+    if (udevGetCCWAddress(def->sysfs_path, &def->caps->data) < 0)
+        return -1;
+
+    if (udevGenerateDeviceName(device, def, NULL) != 0)
+        return -1;
+
+    if (virNodeDeviceGetCSSDynamicCaps(def->sysfs_path, &def->caps->data.ccw_dev) < 0)
+        return -1;
+
+    return 0;
+}
+
+
+static int
+udevGetVDPACharDev(const char *sysfs_path,
+                   virNodeDevCapDataPtr data)
+{
+    struct dirent *entry;
+    g_autoptr(DIR) dir = NULL;
+    int direrr;
+
+    if (virDirOpenIfExists(&dir, sysfs_path) <= 0)
+        return -1;
+
+    while ((direrr = virDirRead(dir, &entry, NULL)) > 0) {
+        if (g_str_has_prefix(entry->d_name, "vhost-vdpa")) {
+            g_autofree char *chardev = g_strdup_printf("/dev/%s", entry->d_name);
+
+            if (!virFileExists(chardev)) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("vDPA chardev path '%s' does not exist"),
+                               chardev);
+                return -1;
+            }
+            VIR_DEBUG("vDPA chardev is at '%s'", chardev);
+
+            data->vdpa.chardev = g_steal_pointer(&chardev);
+            break;
+        }
+    }
+    if (direrr < 0)
+        return -1;
+
+    return 0;
+}
+
+static int
+udevProcessVDPA(struct udev_device *device,
+                virNodeDeviceDefPtr def)
+{
+    if (udevGenerateDeviceName(device, def, NULL) != 0)
+        return -1;
+
+    if (udevGetVDPACharDev(def->sysfs_path, &def->caps->data) < 0)
+        return -1;
+
+    return 0;
+}
+
+
+static int
+udevProcessAPCard(struct udev_device *device,
+                  virNodeDeviceDefPtr def)
+{
+    char *c;
+    virNodeDevCapDataPtr data = &def->caps->data;
+
+    /* The sysfs path would be in the format /sys/bus/ap/devices/cardXX,
+       where XX is the ap adapter id */
+    if ((c = strrchr(def->sysfs_path, '/')) == NULL ||
+        virStrToLong_ui(c + 1 + strlen("card"), NULL, 16,
+                        &data->ap_card.ap_adapter) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("failed to parse the AP Card from sysfs path: '%s'"),
                        def->sysfs_path);
         return -1;
     }
 
     if (udevGenerateDeviceName(device, def, NULL) != 0)
+        return -1;
+
+    return 0;
+}
+
+
+static int
+udevProcessAPQueue(struct udev_device *device,
+                   virNodeDeviceDefPtr def)
+{
+    char *c;
+    virNodeDevCapDataPtr data = &def->caps->data;
+
+    /* The sysfs path would be in the format /sys/bus/ap/devices
+       /XX.YYYY, where XX is the ap adapter id and YYYY is the ap
+       domain id  */
+    if ((c = strrchr(def->sysfs_path, '/')) == NULL ||
+        virStrToLong_ui(c + 1, &c, 16, &data->ap_queue.ap_adapter) < 0 ||
+        virStrToLong_ui(c + 1, &c, 16, &data->ap_queue.ap_domain) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("failed to parse the AP Queue from sysfs path: '%s'"),
+                       def->sysfs_path);
+        return -1;
+    }
+
+    if (udevGenerateDeviceName(device, def, NULL) != 0)
+        return -1;
+
+    return 0;
+}
+
+
+static int
+udevProcessAPMatrix(struct udev_device *device,
+                    virNodeDeviceDefPtr def)
+{
+    /* Both udev_device_get_sysname and udev_device_get_subsystem return
+     * "matrix" for an AP matrix device, so in order to prevent confusion in
+     * naming, let's fallback to hardcoding the name.
+     */
+    virNodeDevCapDataPtr data = &def->caps->data;
+
+    data->ap_matrix.addr =  g_strdup(udev_device_get_sysname(device));
+    def->name = g_strdup("ap_matrix");
+
+    if (virNodeDeviceGetAPMatrixDynamicCaps(def->sysfs_path,
+                                            &data->ap_matrix) < 0)
         return -1;
 
     return 0;
@@ -1102,8 +1273,7 @@ udevGetDeviceNodes(struct udev_device *device,
     udev_list_entry_foreach(list_entry, udev_device_get_devlinks_list_entry(device))
         n++;
 
-    if (VIR_ALLOC_N(def->devlinks, n + 1) < 0)
-        return -1;
+    def->devlinks = g_new0(char *, n + 1);
 
     n = 0;
     udev_list_entry_foreach(list_entry, udev_device_get_devlinks_list_entry(device)) {
@@ -1142,6 +1312,10 @@ udevGetDeviceType(struct udev_device *device,
             *type = VIR_NODE_DEV_CAP_NET;
         else if (STREQ(devtype, "drm_minor"))
             *type = VIR_NODE_DEV_CAP_DRM;
+        else if (STREQ(devtype, "ap_card"))
+            *type = VIR_NODE_DEV_CAP_AP_CARD;
+        else if (STREQ(devtype, "ap_queue"))
+            *type = VIR_NODE_DEV_CAP_AP_QUEUE;
     } else {
         /* PCI devices don't set the DEVTYPE property. */
         if (udevHasDeviceProperty(device, "PCI_CLASS"))
@@ -1165,6 +1339,12 @@ udevGetDeviceType(struct udev_device *device,
             *type = VIR_NODE_DEV_CAP_MDEV;
         else if (STREQ_NULLABLE(subsystem, "ccw"))
             *type = VIR_NODE_DEV_CAP_CCW_DEV;
+        else if (STREQ_NULLABLE(subsystem, "css"))
+            *type = VIR_NODE_DEV_CAP_CSS_DEV;
+        else if (STREQ_NULLABLE(subsystem, "vdpa"))
+            *type = VIR_NODE_DEV_CAP_VDPA;
+        else if (STREQ_NULLABLE(subsystem, "matrix"))
+            *type = VIR_NODE_DEV_CAP_AP_MATRIX;
 
         VIR_FREE(subsystem);
     }
@@ -1209,6 +1389,16 @@ udevGetDeviceDetails(struct udev_device *device,
         return udevProcessMediatedDevice(device, def);
     case VIR_NODE_DEV_CAP_CCW_DEV:
         return udevProcessCCW(device, def);
+    case VIR_NODE_DEV_CAP_CSS_DEV:
+        return udevProcessCSS(device, def);
+    case VIR_NODE_DEV_CAP_VDPA:
+        return udevProcessVDPA(device, def);
+    case VIR_NODE_DEV_CAP_AP_CARD:
+        return udevProcessAPCard(device, def);
+    case VIR_NODE_DEV_CAP_AP_QUEUE:
+        return udevProcessAPQueue(device, def);
+    case VIR_NODE_DEV_CAP_AP_MATRIX:
+        return udevProcessAPMatrix(device, def);
     case VIR_NODE_DEV_CAP_MDEV_TYPES:
     case VIR_NODE_DEV_CAP_SYSTEM:
     case VIR_NODE_DEV_CAP_FC_HOST:
@@ -1222,17 +1412,15 @@ udevGetDeviceDetails(struct udev_device *device,
 
 
 static int
-udevRemoveOneDevice(struct udev_device *device)
+udevRemoveOneDeviceSysPath(const char *path)
 {
     virNodeDeviceObjPtr obj = NULL;
     virNodeDeviceDefPtr def;
     virObjectEventPtr event = NULL;
-    const char *name = NULL;
 
-    name = udev_device_get_syspath(device);
-    if (!(obj = virNodeDeviceObjListFindBySysfsPath(driver->devs, name))) {
-        VIR_DEBUG("Failed to find device to remove that has udev name '%s'",
-                  name);
+    if (!(obj = virNodeDeviceObjListFindBySysfsPath(driver->devs, path))) {
+        VIR_DEBUG("Failed to find device to remove that has udev path '%s'",
+                  path);
         return -1;
     }
     def = virNodeDeviceObjGetDef(obj);
@@ -1242,12 +1430,21 @@ udevRemoveOneDevice(struct udev_device *device)
                                            0);
 
     VIR_DEBUG("Removing device '%s' with sysfs path '%s'",
-              def->name, name);
+              def->name, path);
     virNodeDeviceObjListRemove(driver->devs, obj);
-    virObjectUnref(obj);
+    virNodeDeviceObjEndAPI(&obj);
 
     virObjectEventStateQueue(driver->nodeDeviceEventState, event);
     return 0;
+}
+
+
+static int
+udevRemoveOneDevice(struct udev_device *device)
+{
+    const char *path = udev_device_get_syspath(device);
+
+    return udevRemoveOneDeviceSysPath(path);
 }
 
 
@@ -1303,16 +1500,14 @@ udevAddOneDevice(struct udev_device *device)
     bool new_device = true;
     int ret = -1;
 
-    if (VIR_ALLOC(def) != 0)
-        goto cleanup;
+    def = g_new0(virNodeDeviceDef, 1);
 
     def->sysfs_path = g_strdup(udev_device_get_syspath(device));
 
     if (udevGetStringProperty(device, "DRIVER", &def->driver) < 0)
         goto cleanup;
 
-    if (VIR_ALLOC(def->caps) != 0)
-        goto cleanup;
+    def->caps = g_new0(virNodeDevCapsDef, 1);
 
     if (udevGetDeviceType(device, &def->caps->data.type) != 0)
         goto cleanup;
@@ -1391,7 +1586,7 @@ udevProcessDeviceListEntry(struct udev *udev,
  * Do not bother enumerating over subsystems that do not
  * contain interesting devices.
  */
-const char *subsystem_blacklist[] = {
+const char *subsystem_ignored[] = {
     "acpi", "tty", "vc", "i2c",
 };
 
@@ -1400,10 +1595,10 @@ udevEnumerateAddMatches(struct udev_enumerate *udev_enumerate)
 {
     size_t i;
 
-    for (i = 0; i < G_N_ELEMENTS(subsystem_blacklist); i++) {
-        const char *s = subsystem_blacklist[i];
+    for (i = 0; i < G_N_ELEMENTS(subsystem_ignored); i++) {
+        const char *s = subsystem_ignored[i];
         if (udev_enumerate_add_nomatch_subsystem(udev_enumerate, s) < 0) {
-            virReportSystemError(errno, "%s", _("failed to add susbsystem filter"));
+            virReportSystemError(errno, "%s", _("failed to add subsystem filter"));
             return -1;
         }
     }
@@ -1491,13 +1686,25 @@ udevHandleOneDevice(struct udev_device *device)
 {
     const char *action = udev_device_get_action(device);
 
-    VIR_DEBUG("udev action: '%s'", action);
+    VIR_DEBUG("udev action: '%s': %s", action, udev_device_get_syspath(device));
 
     if (STREQ(action, "add") || STREQ(action, "change"))
         return udevAddOneDevice(device);
 
     if (STREQ(action, "remove"))
         return udevRemoveOneDevice(device);
+
+    if (STREQ(action, "move")) {
+        const char *devpath_old = udevGetDeviceProperty(device, "DEVPATH_OLD");
+
+        if (devpath_old) {
+            g_autofree char *devpath_old_fixed = g_strdup_printf("/sys%s", devpath_old);
+
+            udevRemoveOneDeviceSysPath(devpath_old_fixed);
+        }
+
+        return udevAddOneDevice(device);
+    }
 
     return 0;
 }
@@ -1656,14 +1863,11 @@ udevGetDMIData(virNodeDevCapSystemPtr syscap)
 
     device = udev_device_new_from_syspath(udev, DMI_DEVPATH);
     if (device == NULL) {
-        device = udev_device_new_from_syspath(udev, DMI_DEVPATH_FALLBACK);
-        if (device == NULL) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("Failed to get udev device for syspath '%s' or '%s'"),
-                           DMI_DEVPATH, DMI_DEVPATH_FALLBACK);
-            virObjectUnlock(priv);
-            return;
-        }
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to get udev device for syspath '%s'"),
+                       DMI_DEVPATH);
+        virObjectUnlock(priv);
+        return;
     }
     virObjectUnlock(priv);
 
@@ -1708,13 +1912,10 @@ udevSetupSystemDev(void)
     virNodeDeviceObjPtr obj = NULL;
     int ret = -1;
 
-    if (VIR_ALLOC(def) < 0)
-        return -1;
+    def = g_new0(virNodeDeviceDef, 1);
 
     def->name = g_strdup("computer");
-
-    if (VIR_ALLOC(def->caps) != 0)
-        goto cleanup;
+    def->caps = g_new0(virNodeDevCapsDef, 1);
 
 #if defined(__x86_64__) || defined(__i386__) || defined(__amd64__)
     udevGetDMIData(&def->caps->data.system);
@@ -1802,8 +2003,7 @@ nodeStateInitialize(bool privileged,
         return -1;
     }
 
-    if (VIR_ALLOC(driver) < 0)
-        return VIR_DRV_STATE_INIT_ERROR;
+    driver = g_new0(virNodeDeviceDriverState, 1);
 
     driver->lockFD = -1;
     if (virMutexInit(&driver->lock) < 0) {

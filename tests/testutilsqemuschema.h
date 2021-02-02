@@ -25,11 +25,28 @@
 int
 testQEMUSchemaValidate(virJSONValuePtr obj,
                        virJSONValuePtr root,
-                       virHashTablePtr schema,
+                       GHashTable *schema,
+                       bool allowDeprecated,
                        virBufferPtr debug);
+
+int
+testQEMUSchemaValidateCommand(const char *command,
+                              virJSONValuePtr arguments,
+                              GHashTable *schema,
+                              bool allowDeprecated,
+                              bool allowRemoved,
+                              virBufferPtr debug);
+
+int
+testQEMUSchemaEntryMatchTemplate(virJSONValuePtr schemaentry,
+                                 ...);
+
 
 virJSONValuePtr
 testQEMUSchemaGetLatest(const char* arch);
 
-virHashTablePtr
-testQEMUSchemaLoad(const char* arch);
+GHashTable *
+testQEMUSchemaLoadLatest(const char *arch);
+
+GHashTable *
+testQEMUSchemaLoad(const char *filename);

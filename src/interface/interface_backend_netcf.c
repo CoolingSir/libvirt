@@ -148,12 +148,7 @@ netcfStateCleanup(void)
     if (!driver)
         return -1;
 
-    if (virObjectUnref(driver)) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Attempt to close netcf state driver "
-                         "with open connections"));
-        return -1;
-    }
+    virObjectUnref(driver);
     driver = NULL;
     return 0;
 }
@@ -252,8 +247,7 @@ netcfGetMinimalDefForDevice(struct netcf_if *iface)
     virInterfaceDef *def;
 
     /* Allocate our interface definition structure */
-    if (VIR_ALLOC(def) < 0)
-        return NULL;
+    def = g_new0(virInterfaceDef, 1);
 
     def->name = g_strdup(ncf_if_name(iface));
     def->mac = g_strdup(ncf_if_mac_string(iface));
@@ -380,8 +374,7 @@ static int netcfConnectNumOfInterfacesImpl(virConnectPtr conn,
         goto cleanup;
     }
 
-    if (VIR_ALLOC_N(names, count) < 0)
-        goto cleanup;
+    names = g_new0(char *, count);
 
     if ((count = ncf_list_interfaces(driver->netcf, count, names, status)) < 0) {
         const char *errmsg, *details;
@@ -470,8 +463,7 @@ static int netcfConnectListInterfacesImpl(virConnectPtr conn,
         goto cleanup;
     }
 
-    if (VIR_ALLOC_N(allnames, count) < 0)
-        goto cleanup;
+    allnames = g_new0(char *, count);
 
     if ((count = ncf_list_interfaces(driver->netcf, count, allnames, status)) < 0) {
         const char *errmsg, *details;
@@ -656,8 +648,7 @@ netcfConnectListAllInterfaces(virConnectPtr conn,
         goto cleanup;
     }
 
-    if (VIR_ALLOC_N(names, count) < 0)
-        goto cleanup;
+    names = g_new0(char *, count);
 
     if ((count = ncf_list_interfaces(driver->netcf, count,
                                      names, ncf_flags)) < 0) {
@@ -671,8 +662,8 @@ netcfConnectListAllInterfaces(virConnectPtr conn,
         goto cleanup;
     }
 
-    if (ifaces && VIR_ALLOC_N(tmp_iface_objs, count + 1) < 0)
-        goto cleanup;
+    if (ifaces)
+        tmp_iface_objs = g_new0(virInterfacePtr, count + 1);
 
     for (i = 0; i < count; i++) {
         virInterfaceDefPtr def;

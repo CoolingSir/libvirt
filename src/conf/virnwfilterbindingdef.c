@@ -36,13 +36,13 @@ virNWFilterBindingDefFree(virNWFilterBindingDefPtr def)
     if (!def)
         return;
 
-    VIR_FREE(def->ownername);
-    VIR_FREE(def->portdevname);
-    VIR_FREE(def->linkdevname);
-    VIR_FREE(def->filter);
+    g_free(def->ownername);
+    g_free(def->portdevname);
+    g_free(def->linkdevname);
+    g_free(def->filter);
     virHashFree(def->filterparams);
 
-    VIR_FREE(def);
+    g_free(def);
 }
 
 
@@ -51,8 +51,7 @@ virNWFilterBindingDefCopy(virNWFilterBindingDefPtr src)
 {
     virNWFilterBindingDefPtr ret;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virNWFilterBindingDef, 1);
 
     ret->ownername = g_strdup(src->ownername);
 
@@ -66,7 +65,7 @@ virNWFilterBindingDefCopy(virNWFilterBindingDefPtr src)
 
     ret->filter = g_strdup(src->filter);
 
-    if (!(ret->filterparams = virNWFilterHashTableCreate(0)))
+    if (!(ret->filterparams = virHashNew(virNWFilterVarValueHashFree)))
         goto error;
 
     if (virNWFilterHashTablePutAll(src->filterparams, ret->filterparams) < 0)
@@ -88,8 +87,7 @@ virNWFilterBindingDefParseXML(xmlXPathContextPtr ctxt)
     char *mac = NULL;
     xmlNodePtr node;
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virNWFilterBindingDef, 1);
 
     ret->portdevname = virXPathString("string(./portdev/@name)", ctxt);
     if (!ret->portdevname) {
@@ -223,12 +221,10 @@ virNWFilterBindingDefParseFile(const char *filename)
 char *
 virNWFilterBindingDefFormat(const virNWFilterBindingDef *def)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
-    if (virNWFilterBindingDefFormatBuf(&buf, def) < 0) {
-        virBufferFreeAndReset(&buf);
+    if (virNWFilterBindingDefFormatBuf(&buf, def) < 0)
         return NULL;
-    }
 
     return virBufferContentAndReset(&buf);
 }

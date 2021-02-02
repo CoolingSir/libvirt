@@ -4,9 +4,12 @@ PCI addresses in domain XML and guest OS
 
 .. contents::
 
-When discussing PCI addresses, it's important to understand the
-relationship between the addresses that can be seen in the domain XML
-and those that are visible inside the guest OS.
+Looking at the configuration for a guest, it would be reasonable
+to expect that each PCI device would show up in the guest OS with
+a PCI address that matches the one present in the corresponding
+``<address>`` element of the domain XML, but that's not guaranteed
+to happen and will in fact not be the case in all but the simplest
+scenarios.
 
 
 Simple cases
@@ -173,14 +176,14 @@ In the simplest case, the following XML snippet
     <model name='pci-bridge'/>
     <target chassisNr='1'/>
     <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x0'>
-      <zpci uid='0x0002' fid='0x00000001'/>
+      <zpci uid='0x0001' fid='0x00000000'/>
     </address>
   </controller>
   <interface type='bridge'>
     <source bridge='virbr0'/>
     <model type='virtio'/>
     <address type='pci' domain='0x0000' bus='0x01' slot='0x01' function='0x0'>
-      <zpci uid='0x0001' fid='0x00000000'/>
+      <zpci uid='0x0007' fid='0x00000003'/>
     </address>
   </interface>
 
@@ -188,21 +191,23 @@ will result in the following in a Linux guest:
 
 ::
 
-  0001:00:00.0 Ethernet controller: Red Hat, Inc. Virtio network device
+  0007:00:00.0 Ethernet controller: Red Hat, Inc. Virtio network device
 
 Note that the PCI bridge is not visible in the guest; s390x always has a flat
-topology.
+topology. The PCI address in the guest is generated from the information
+provided via the ``zpci`` element: more specifically, ``uid`` is used as the
+PCI domain. ``fid`` doesn't appear in the PCI address itself, but it will be
+used in sysfs (``/sys/bus/pci/slots/$fid/...``).
 
-Neither are any changes in the PCI address visible in the guest; replacing
-the PCI address for the ``virtio-net`` device with
+Any changes in the PCI address are not visible in the guest; replacing the PCI
+address for the ``virtio-net`` device with
 
 ::
 
-  <address type='pci' domain='0x0000' bus='0x01' slot='0x07' function='0x3'>
+  <address type='pci' domain='0x0000' bus='0x01' slot='0x06' function='0x4'>
 
-will result in the exactly same view in the guest, as the addresses there
-are generated from the information provided via the ``zpci`` element (in
-fact, from the ``uid``).
+will result in the exactly same view in the guest, as the ``fid`` and ``uid``
+values in the ``zpci`` element remain unchanged.
 
 
 Device assignment
@@ -230,3 +235,53 @@ guest OS rather than as ``0001:08:00.1``, which is the address of the
 device on the host.
 
 Of course, all the rules and behaviors described above still apply.
+
+
+Reserved addresses
+==================
+
+Due to some historical reasons hypervisors might expect some PCI
+devices to appear at certain addresses instead of 'random' ones.
+For QEMU this is machine type and guest architecture dependant.
+But to give you at least a gist here is list of reserved PCI
+addresses:
+
+For the x86_64 architecture's ``I440FX``-based machine types the following
+devices are hard coded into QEMU and can't be moved or eliminated:
+
+============  ======================
+0000:00:00.0  Host bridge
+0000:00:01.0  ISA bridge
+0000:00:01.1  primary IDE controller
+0000:00:01.2  PIIX3 USB controller
+0000:00:01.3  ACPI (power management) and SMBus controller
+============  ======================
+
+The following addresses will be used as default ones for the corresponding
+devices (if the address is free or a different address wasn't provided for the
+device). It is okay to use this address for any other device.
+
+============  ==================
+0000:00:02.0  primary video card
+============  ==================
+
+
+For the x86_64 architecture's ``Q35``-based machine types the following
+devices are hard coded into QEMU and can't be moved or eliminated:
+
+============  =======================
+0000:00:00.0  Host bridge
+0000:00:1f.2  primary SATA controller
+0000:00:1f.0  ISA bridge
+0000:00:1f.3  SMBus
+============  =======================
+
+The following addresses will be used as default ones for the corresponding
+devices (if the address is free or a different address wasn't provided for the
+device) because that's how real ``Q35`` would do it:
+
+============  ===============
+0000:00:1a.0  USB2 controller
+0000:00:1b.0  ICH9 sound chip
+0000:00:1d.0  USB2 controller
+============  ===============

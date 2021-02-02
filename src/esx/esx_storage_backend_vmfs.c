@@ -32,7 +32,7 @@
 #include "virlog.h"
 #include "viruuid.h"
 #include "storage_conf.h"
-#include "virstoragefile.h"
+#include "storage_source_conf.h"
 #include "esx_storage_backend_vmfs.h"
 #include "esx_private.h"
 #include "esx_vi.h"
@@ -512,8 +512,7 @@ esxStoragePoolGetXMLDesc(virStoragePoolPtr pool, unsigned int flags)
     if (esxVI_LocalDatastoreInfo_DynamicCast(info)) {
         def.type = VIR_STORAGE_POOL_DIR;
     } else if ((nasInfo = esxVI_NasDatastoreInfo_DynamicCast(info))) {
-        if (VIR_ALLOC_N(def.source.hosts, 1) < 0)
-            goto cleanup;
+        def.source.hosts = g_new0(virStoragePoolSourceHost, 1);
         def.type = VIR_STORAGE_POOL_NETFS;
         def.source.nhost = 1;
         def.source.hosts[0].name = nasInfo->nas->remoteHost;
@@ -897,7 +896,7 @@ esxStorageVolCreateXML(virStoragePoolPtr pool,
         goto cleanup;
 
     if (def->type != VIR_STORAGE_VOL_FILE) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+        virReportError(VIR_ERR_NO_SUPPORT, "%s",
                        _("Creating non-file volumes is not supported"));
         goto cleanup;
     }
@@ -913,7 +912,7 @@ esxStorageVolCreateXML(virStoragePoolPtr pool,
     }
 
     if (!virStringHasCaseSuffix(def->name, ".vmdk")) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_SUPPORT,
                        _("Volume name '%s' has unsupported suffix, "
                          "expecting '.vmdk'"), def->name);
         goto cleanup;
@@ -1016,8 +1015,7 @@ esxStorageVolCreateXML(virStoragePoolPtr pool,
         }
 
         if (priv->primary->hasQueryVirtualDiskUuid) {
-            if (VIR_ALLOC_N(key, VIR_UUID_STRING_BUFLEN) < 0)
-                goto cleanup;
+            key = g_new0(char, VIR_UUID_STRING_BUFLEN);
 
             if (esxVI_QueryVirtualDiskUuid(priv->primary, datastorePath,
                                            priv->primary->datacenter->_reference,
@@ -1032,7 +1030,7 @@ esxStorageVolCreateXML(virStoragePoolPtr pool,
             key = g_strdup(datastorePath);
         }
     } else {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_SUPPORT,
                        _("Creation of %s volumes is not supported"),
                        virStorageFileFormatTypeToString(def->target.format));
         goto cleanup;
@@ -1111,7 +1109,7 @@ esxStorageVolCreateXMLFrom(virStoragePoolPtr pool,
         goto cleanup;
 
     if (def->type != VIR_STORAGE_VOL_FILE) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+        virReportError(VIR_ERR_NO_SUPPORT, "%s",
                        _("Creating non-file volumes is not supported"));
         goto cleanup;
     }
@@ -1127,7 +1125,7 @@ esxStorageVolCreateXMLFrom(virStoragePoolPtr pool,
     }
 
     if (!virStringHasCaseSuffix(def->name, ".vmdk")) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_SUPPORT,
                        _("Volume name '%s' has unsupported suffix, "
                          "expecting '.vmdk'"), def->name);
         goto cleanup;
@@ -1196,8 +1194,7 @@ esxStorageVolCreateXMLFrom(virStoragePoolPtr pool,
         }
 
         if (priv->primary->hasQueryVirtualDiskUuid) {
-            if (VIR_ALLOC_N(key, VIR_UUID_STRING_BUFLEN) < 0)
-                goto cleanup;
+            key = g_new0(char, VIR_UUID_STRING_BUFLEN);
 
             if (esxVI_QueryVirtualDiskUuid(priv->primary, datastorePath,
                                            priv->primary->datacenter->_reference,
@@ -1212,7 +1209,7 @@ esxStorageVolCreateXMLFrom(virStoragePoolPtr pool,
             key = g_strdup(datastorePath);
         }
     } else {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
+        virReportError(VIR_ERR_NO_SUPPORT,
                        _("Creation of %s volumes is not supported"),
                        virStorageFileFormatTypeToString(def->target.format));
         goto cleanup;

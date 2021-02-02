@@ -37,7 +37,7 @@ virshSecretUUIDCompleter(vshControl *ctl,
     int nsecrets = 0;
     size_t i = 0;
     char **ret = NULL;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -47,8 +47,7 @@ virshSecretUUIDCompleter(vshControl *ctl,
     if ((nsecrets = virConnectListAllSecrets(priv->conn, &secrets, flags)) < 0)
         return NULL;
 
-    if (VIR_ALLOC_N(tmp, nsecrets + 1) < 0)
-        goto cleanup;
+    tmp = g_new0(char *, nsecrets + 1);
 
     for (i = 0; i < nsecrets; i++) {
         char uuid[VIR_UUID_STRING_BUFLEN];
@@ -63,7 +62,7 @@ virshSecretUUIDCompleter(vshControl *ctl,
  cleanup:
     for (i = 0; i < nsecrets; i++)
         virshSecretFree(secrets[i]);
-    VIR_FREE(secrets);
+    g_free(secrets);
     return ret;
 }
 
@@ -74,12 +73,11 @@ virshSecretEventNameCompleter(vshControl *ctl G_GNUC_UNUSED,
                               unsigned int flags)
 {
     size_t i;
-    VIR_AUTOSTRINGLIST tmp = NULL;
+    g_auto(GStrv) tmp = NULL;
 
     virCheckFlags(0, NULL);
 
-    if (VIR_ALLOC_N(tmp, VIR_SECRET_EVENT_ID_LAST + 1) < 0)
-        return NULL;
+    tmp = g_new0(char *, VIR_SECRET_EVENT_ID_LAST + 1);
 
     for (i = 0; i < VIR_SECRET_EVENT_ID_LAST; i++)
         tmp[i] = g_strdup(virshSecretEventCallbacks[i].name);

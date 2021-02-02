@@ -33,8 +33,9 @@ int virStateInitialize(bool privileged,
                        bool mandatory,
                        const char *root,
                        virStateInhibitCallback inhibit,
-                       void *opaque)
-    ATTRIBUTE_NONNULL(2);
+                       void *opaque);
+int virStateShutdownPrepare(void);
+int virStateShutdownWait(void);
 int virStateCleanup(void);
 int virStateReload(void);
 int virStateStop(void);
@@ -129,6 +130,8 @@ typedef enum {
 
 
 int virConnectSupportsFeature(virConnectPtr conn, int feature);
+
+int virDomainMigrateCheckNotLocal(const char *dconnuri);
 
 int virDomainMigratePrepare (virConnectPtr dconn,
                              char **cookie,

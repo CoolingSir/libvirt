@@ -27,7 +27,7 @@
  * The vbox_tmpl.c is the only place where the driver knows the inside
  * architecture of those vbox structs(vboxObj, vboxSession,
  * pFuncs, and vboxCallback). The file should be included
- * after the currect vbox_CAPI_v*.h, then we can use the vbox structs
+ * after the correct vbox_CAPI_v*.h, then we can use the vbox structs
  * in vboxGlobalData. The vbox_tmpl.c should implement functions
  * defined in vboxUniformedAPI.
  *
@@ -50,7 +50,7 @@
  *
  * In conclusion:
  *  * In vbox_tmpl.c, this file is included after vbox_CAPI_v*.h
- *  * In vbox_driver.c, this file is included after vbox_glue.h
+ *  * In vbox_driver.c, this file is included after vbox_XPCOMCGlue.h
  *  * In vbox_common.c, this file is included after vbox_common.h
  *
  */
@@ -555,6 +555,6 @@ virDomainPtr vboxDomainLookupByUUID(virConnectPtr conn,
                                     const unsigned char *uuid);
 
 /* Version specified functions for installing uniformed API */
-void vbox50InstallUniformedAPI(vboxUniformedAPI *pVBoxAPI);
-void vbox51InstallUniformedAPI(vboxUniformedAPI *pVBoxAPI);
 void vbox52InstallUniformedAPI(vboxUniformedAPI *pVBoxAPI);
+void vbox60InstallUniformedAPI(vboxUniformedAPI *pVBoxAPI);
+void vbox61InstallUniformedAPI(vboxUniformedAPI *pVBoxAPI);

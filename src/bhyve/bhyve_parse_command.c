@@ -4,7 +4,7 @@
  * Copyright (C) 2006-2016 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  * Copyright (c) 2011 NetApp, Inc.
- * Copyright (C) 2016 Fabian Freyer
+ * Copyright (C) 2020 Fabian Freyer
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -53,8 +53,7 @@ bhyveParseCommandLineUnescape(const char *command)
 
     /* Since we are only removing characters, allocating a buffer of the same
      * size as command shouldn't be a problem here */
-    if (VIR_ALLOC_N(unescaped, len+1) < 0)
-        return NULL;
+    unescaped = g_new0(char, len + 1);
 
     /* Iterate over characters in the command, skipping "\\\n", "\\\r" as well
      * as "\\\r\n". */
@@ -171,11 +170,12 @@ bhyveCommandLineToArgv(const char *nativeConfig,
     }
 
     for (i = 0; i < line_count; i++) {
-        curr = lines[i];
         size_t j;
         char **arglist = NULL;
         size_t args_count = 0;
         size_t args_alloc = 0;
+
+        curr = lines[i];
 
         /* iterate over each line, splitting on sequences of ' '. This code is
          * adapted from qemu/qemu_parse_command.c. */
@@ -246,7 +246,7 @@ bhyveCommandLineToArgv(const char *nativeConfig,
         } else {
             /* To prevent a use-after-free here, only free the argument list
              * when it is definitely not going to be used */
-            virStringListFree(arglist);
+            g_strfreev(arglist);
         }
     }
 
@@ -254,13 +254,13 @@ bhyveCommandLineToArgv(const char *nativeConfig,
     if (!(*bhyve_argv = _bhyve_argv))
         goto error;
 
-    virStringListFree(lines);
+    g_strfreev(lines);
     return 0;
 
  error:
     VIR_FREE(_loader_argv);
     VIR_FREE(_bhyve_argv);
-    virStringListFree(lines);
+    g_strfreev(lines);
     return -1;
 }
 
@@ -277,11 +277,11 @@ bhyveParseBhyveLPCArg(virDomainDefPtr def,
     char *type = NULL;
 
     separator = strchr(arg, ',');
-    param = separator + 1;
 
     if (!separator)
         goto error;
 
+    param = separator + 1;
     type = g_strndup(arg, separator - arg);
 
     /* Only support com%d */
@@ -434,13 +434,13 @@ bhyveParsePCIDisk(virDomainDefPtr def,
     disk->info.addr.pci.slot = pcislot;
     disk->info.addr.pci.function = function;
 
+    if (!config)
+        goto error;
+
     if (STRPREFIX(config, "/dev/"))
         disk->src->type = VIR_STORAGE_TYPE_BLOCK;
     else
         disk->src->type = VIR_STORAGE_TYPE_FILE;
-
-    if (!config)
-        goto error;
 
     separator = strchr(config, ',');
     if (separator)
@@ -553,6 +553,120 @@ bhyveParsePCINet(virDomainDefPtr def,
 }
 
 static int
+bhyveParsePCIFbuf(virDomainDefPtr def,
+                  virDomainXMLOptionPtr xmlopt,
+                  unsigned caps G_GNUC_UNUSED,
+                  unsigned bus,
+                  unsigned slot,
+                  unsigned function,
+                  const char *config)
+{
+    /* -s slot,fbuf,wait,vga=on|io|off,rfb=<ip>:port,w=width,h=height */
+
+    virDomainVideoDefPtr video = NULL;
+    virDomainGraphicsDefPtr graphics = NULL;
+    char **params = NULL;
+    char *param = NULL, *separator = NULL;
+    size_t nparams = 0;
+    size_t i = 0;
+
+    if (!(video = virDomainVideoDefNew(xmlopt)))
+        goto cleanup;
+
+    video->type = VIR_DOMAIN_VIDEO_TYPE_GOP;
+
+    if (!(graphics = virDomainGraphicsDefNew(xmlopt)))
+        goto cleanup;
+
+    graphics->type = VIR_DOMAIN_GRAPHICS_TYPE_VNC;
+    video->info.addr.pci.bus = bus;
+    video->info.addr.pci.slot = slot;
+    video->info.addr.pci.function = function;
+
+    if (!config)
+        goto error;
+
+    if (!(params = virStringSplitCount(config, ",", 0, &nparams)))
+        goto error;
+
+    for (i = 0; i < nparams; i++) {
+        param = params[i];
+        if (!video->driver)
+            video->driver = g_new0(virDomainVideoDriverDef, 1);
+
+        if (STREQ(param, "vga=on"))
+            video->driver->vgaconf = VIR_DOMAIN_VIDEO_VGACONF_ON;
+
+        if (STREQ(param, "vga=io"))
+            video->driver->vgaconf = VIR_DOMAIN_VIDEO_VGACONF_IO;
+
+        if (STREQ(param, "vga=off"))
+            video->driver->vgaconf = VIR_DOMAIN_VIDEO_VGACONF_OFF;
+
+        if (STRPREFIX(param, "rfb=") || STRPREFIX(param, "tcp=")) {
+            /* fortunately, this is the same length as "tcp=" */
+            param += strlen("rfb=");
+
+            if (!(separator = strchr(param, ':')))
+                goto error;
+
+            *separator = '\0';
+
+            if (separator != param)
+                virDomainGraphicsListenAppendAddress(graphics, param);
+            else
+                /* Default to 127.0.0.1, just like bhyve does */
+                virDomainGraphicsListenAppendAddress(graphics, "127.0.0.1");
+
+            param = ++separator;
+            if (virStrToLong_i(param, NULL, 10, &graphics->data.vnc.port))
+                goto error;
+        }
+
+        if (STRPREFIX(param, "w=")) {
+            param += strlen("w=");
+
+            if (video->res == NULL)
+                video->res = g_new0(virDomainVideoResolutionDef, 1);
+
+            if (virStrToLong_uip(param, NULL, 10, &video->res->x))
+                goto error;
+        }
+
+        if (STRPREFIX(param, "h=")) {
+            param += strlen("h=");
+
+            if (video->res == NULL)
+                video->res = g_new0(virDomainVideoResolutionDef, 1);
+
+            if (virStrToLong_uip(param, NULL, 10, &video->res->y))
+                goto error;
+        }
+
+        if (STRPREFIX(param, "password=")) {
+            param += strlen("password=");
+            graphics->data.vnc.auth.passwd = g_strdup(param);
+        }
+    }
+
+ cleanup:
+    if (VIR_APPEND_ELEMENT(def->videos, def->nvideos, video) < 0)
+        goto error;
+
+    if (VIR_APPEND_ELEMENT(def->graphics, def->ngraphics, graphics) < 0)
+        goto error;
+
+    g_strfreev(params);
+    return 0;
+
+ error:
+    virDomainVideoDefFree(video);
+    virDomainGraphicsDefFree(graphics);
+    g_strfreev(params);
+    return -1;
+}
+
+static int
 bhyveParseBhyvePCIArg(virDomainDefPtr def,
                       virDomainXMLOptionPtr xmlopt,
                       unsigned caps,
@@ -614,6 +728,8 @@ bhyveParseBhyvePCIArg(virDomainDefPtr def,
     else if (STREQ(emulation, "e1000"))
         bhyveParsePCINet(def, xmlopt, caps, bus, slot, function,
                          VIR_DOMAIN_NET_MODEL_E1000, conf);
+    else if (STREQ(emulation, "fbuf"))
+        bhyveParsePCIFbuf(def, xmlopt, caps, bus, slot, function, conf);
 
     VIR_FREE(emulation);
     VIR_FREE(slotdef);
@@ -884,8 +1000,8 @@ bhyveParseCommandLineString(const char* nativeConfig,
     }
 
  cleanup:
-    virStringListFree(loader_argv);
-    virStringListFree(bhyve_argv);
+    g_strfreev(loader_argv);
+    g_strfreev(bhyve_argv);
     return def;
  error:
     virDomainDefFree(def);

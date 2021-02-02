@@ -22,7 +22,6 @@
 #include "virsh-nodedev.h"
 
 #include "internal.h"
-#include "virbuffer.h"
 #include "viralloc.h"
 #include "virfile.h"
 #include "virstring.h"
@@ -154,7 +153,7 @@ cmdNodeDeviceDestroy(vshControl *ctl, const vshCmd *cmd)
 
     ret = true;
  cleanup:
-    virStringListFree(arr);
+    g_strfreev(arr);
     if (dev)
         virNodeDeviceFree(dev);
     return ret;
@@ -217,7 +216,7 @@ virshNodeDeviceListCollect(vshControl *ctl,
                          int ncapnames,
                          unsigned int flags)
 {
-    virshNodeDeviceListPtr list = vshMalloc(ctl, sizeof(*list));
+    virshNodeDeviceListPtr list = g_new0(struct virshNodeDeviceList, 1);
     size_t i;
     int ret;
     virNodeDevicePtr device;
@@ -257,7 +256,7 @@ virshNodeDeviceListCollect(vshControl *ctl,
     if (ndevices == 0)
         return list;
 
-    names = vshMalloc(ctl, sizeof(char *) * ndevices);
+    names = g_new0(char *, ndevices);
 
     ndevices = virNodeListDevices(priv->conn, NULL, names, ndevices, 0);
     if (ndevices < 0) {
@@ -265,7 +264,7 @@ virshNodeDeviceListCollect(vshControl *ctl,
         goto cleanup;
     }
 
-    list->devices = vshMalloc(ctl, sizeof(virNodeDevicePtr) * (ndevices));
+    list->devices = g_new0(virNodeDevicePtr, ndevices);
     list->ndevices = 0;
 
     /* get the node devices */
@@ -286,6 +285,7 @@ virshNodeDeviceListCollect(vshControl *ctl,
         char **caps = NULL;
         int ncaps = 0;
         bool match = false;
+        size_t j, k;
 
         device = list->devices[i];
 
@@ -295,7 +295,7 @@ virshNodeDeviceListCollect(vshControl *ctl,
             goto cleanup;
         }
 
-        caps = vshMalloc(ctl, sizeof(char *) * ncaps);
+        caps = g_new0(char *, ncaps);
 
         if ((ncaps = virNodeDeviceListCaps(device, caps, ncaps)) < 0) {
             vshError(ctl, "%s", _("Failed to get capability names of the device"));
@@ -306,7 +306,6 @@ virshNodeDeviceListCollect(vshControl *ctl,
         /* Check if the device's capability matches with provided
          * capabilities.
          */
-        size_t j, k;
         for (j = 0; j < ncaps; j++) {
             for (k = 0; k < ncapnames; k++) {
                 if (STREQ(caps[j], capnames[k])) {
@@ -462,6 +461,21 @@ cmdNodeListDevices(vshControl *ctl, const vshCmd *cmd G_GNUC_UNUSED)
         case VIR_NODE_DEV_CAP_CCW_DEV:
             flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_CCW_DEV;
             break;
+        case VIR_NODE_DEV_CAP_CSS_DEV:
+            flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_CSS_DEV;
+            break;
+        case VIR_NODE_DEV_CAP_VDPA:
+            flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_VDPA;
+            break;
+        case VIR_NODE_DEV_CAP_AP_CARD:
+            flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_CARD;
+            break;
+        case VIR_NODE_DEV_CAP_AP_QUEUE:
+            flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_QUEUE;
+            break;
+        case VIR_NODE_DEV_CAP_AP_MATRIX:
+            flags |= VIR_CONNECT_LIST_NODE_DEVICES_CAP_AP_MATRIX;
+            break;
         case VIR_NODE_DEV_CAP_LAST:
             break;
         }
@@ -473,8 +487,8 @@ cmdNodeListDevices(vshControl *ctl, const vshCmd *cmd G_GNUC_UNUSED)
     }
 
     if (tree) {
-        char **parents = vshMalloc(ctl, sizeof(char *) * list->ndevices);
-        char **names = vshMalloc(ctl, sizeof(char *) * list->ndevices);
+        char **parents = g_new0(char *, list->ndevices);
+        char **names = g_new0(char *, list->ndevices);
         struct virshNodeList arrays = { names, parents };
 
         for (i = 0; i < list->ndevices; i++)
@@ -508,7 +522,7 @@ cmdNodeListDevices(vshControl *ctl, const vshCmd *cmd G_GNUC_UNUSED)
     }
 
  cleanup:
-    virStringListFree(caps);
+    g_strfreev(caps);
     virshNodeDeviceListFree(list);
     return ret;
 }
@@ -578,7 +592,7 @@ cmdNodeDeviceDumpXML(vshControl *ctl, const vshCmd *cmd)
 
     ret = true;
  cleanup:
-    virStringListFree(arr);
+    g_strfreev(arr);
     VIR_FREE(xml);
     if (device)
         virNodeDeviceFree(device);

@@ -45,12 +45,12 @@ virNetworkPortDefFree(virNetworkPortDefPtr def)
     if (!def)
         return;
 
-    VIR_FREE(def->ownername);
-    VIR_FREE(def->group);
+    g_free(def->ownername);
+    g_free(def->group);
 
     virNetDevBandwidthFree(def->bandwidth);
     virNetDevVlanClear(&def->vlan);
-    VIR_FREE(def->virtPortProfile);
+    g_free(def->virtPortProfile);
 
     switch ((virNetworkPortPlugType)def->plugtype) {
     case VIR_NETWORK_PORT_PLUG_TYPE_NONE:
@@ -58,11 +58,11 @@ virNetworkPortDefFree(virNetworkPortDefPtr def)
 
     case VIR_NETWORK_PORT_PLUG_TYPE_NETWORK:
     case VIR_NETWORK_PORT_PLUG_TYPE_BRIDGE:
-        VIR_FREE(def->plug.bridge.brname);
+        g_free(def->plug.bridge.brname);
         break;
 
     case VIR_NETWORK_PORT_PLUG_TYPE_DIRECT:
-        VIR_FREE(def->plug.direct.linkdev);
+        g_free(def->plug.direct.linkdev);
         break;
 
     case VIR_NETWORK_PORT_PLUG_TYPE_HOSTDEV_PCI:
@@ -73,7 +73,7 @@ virNetworkPortDefFree(virNetworkPortDefPtr def)
         break;
     }
 
-    VIR_FREE(def);
+    g_free(def);
 }
 
 
@@ -95,8 +95,7 @@ virNetworkPortDefParseXML(xmlXPathContextPtr ctxt)
     g_autofree char *managed = NULL;
     g_autofree char *driver = NULL;
 
-    if (VIR_ALLOC(def) < 0)
-        return NULL;
+    def = g_new0(virNetworkPortDef, 1);
 
     uuid = virXPathString("string(./uuid)", ctxt);
     if (!uuid) {
@@ -324,12 +323,10 @@ virNetworkPortDefParseFile(const char *filename)
 char *
 virNetworkPortDefFormat(const virNetworkPortDef *def)
 {
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
 
-    if (virNetworkPortDefFormatBuf(&buf, def) < 0) {
-        virBufferFreeAndReset(&buf);
+    if (virNetworkPortDefFormatBuf(&buf, def) < 0)
         return NULL;
-    }
 
     return virBufferContentAndReset(&buf);
 }
@@ -432,10 +429,7 @@ static char *
 virNetworkPortDefConfigFile(const char *dir,
                             const char *name)
 {
-    char *ret = NULL;
-
-    ret = g_strdup_printf("%s/%s.xml", dir, name);
-    return ret;
+    return g_strdup_printf("%s/%s.xml", dir, name);
 }
 
 

@@ -47,11 +47,11 @@ struct _virDomainObjList {
 
     /* uuid string -> virDomainObj  mapping
      * for O(1), lockless lookup-by-uuid */
-    virHashTable *objs;
+    GHashTable *objs;
 
     /* name -> virDomainObj mapping for O(1),
      * lockless lookup-by-name */
-    virHashTable *objsName;
+    GHashTable *objsName;
 };
 
 
@@ -75,8 +75,8 @@ virDomainObjListPtr virDomainObjListNew(void)
     if (!(doms = virObjectRWLockableNew(virDomainObjListClass)))
         return NULL;
 
-    if (!(doms->objs = virHashCreate(50, virObjectFreeHashData)) ||
-        !(doms->objsName = virHashCreate(50, virObjectFreeHashData))) {
+    if (!(doms->objs = virHashNew(virObjectFreeHashData)) ||
+        !(doms->objsName = virHashNew(virObjectFreeHashData))) {
         virObjectUnref(doms);
         return NULL;
     }
@@ -95,7 +95,7 @@ static void virDomainObjListDispose(void *obj)
 
 
 static int virDomainObjListSearchID(const void *payload,
-                                    const void *name G_GNUC_UNUSED,
+                                    const char *name G_GNUC_UNUSED,
                                     const void *data)
 {
     virDomainObjPtr obj = (virDomainObjPtr)payload;
@@ -588,7 +588,7 @@ virDomainObjListLoadAllConfigs(virDomainObjListPtr doms,
                                virDomainLoadConfigNotify notify,
                                void *opaque)
 {
-    DIR *dir;
+    g_autoptr(DIR) dir = NULL;
     struct dirent *entry;
     int ret = -1;
     int rc;
@@ -633,7 +633,6 @@ virDomainObjListLoadAllConfigs(virDomainObjListPtr doms,
         }
     }
 
-    VIR_DIR_CLOSE(dir);
     virObjectRWUnlock(doms);
     return ret;
 }
@@ -649,7 +648,7 @@ struct virDomainObjListData {
 
 static int
 virDomainObjListCount(void *payload,
-                      const void *name G_GNUC_UNUSED,
+                      const char *name G_GNUC_UNUSED,
                       void *opaque)
 {
     virDomainObjPtr obj = payload;
@@ -696,7 +695,7 @@ struct virDomainIDData {
 
 static int
 virDomainObjListCopyActiveIDs(void *payload,
-                              const void *name G_GNUC_UNUSED,
+                              const char *name G_GNUC_UNUSED,
                               void *opaque)
 {
     virDomainObjPtr obj = payload;
@@ -741,7 +740,7 @@ struct virDomainNameData {
 
 static int
 virDomainObjListCopyInactiveNames(void *payload,
-                                  const void *name G_GNUC_UNUSED,
+                                  const char *name G_GNUC_UNUSED,
                                   void *opaque)
 {
     virDomainObjPtr obj = payload;
@@ -797,7 +796,7 @@ struct virDomainListIterData {
 
 static int
 virDomainObjListHelper(void *payload,
-                       const void *name G_GNUC_UNUSED,
+                       const char *name G_GNUC_UNUSED,
                        void *opaque)
 {
     struct virDomainListIterData *data = opaque;
@@ -838,7 +837,7 @@ virDomainObjListForEach(virDomainObjListPtr doms,
         virObjectRWLockWrite(doms);
     else
         virObjectRWLockRead(doms);
-    virHashForEach(doms->objs, virDomainObjListHelper, &data);
+    virHashForEachSafe(doms->objs, virDomainObjListHelper, &data);
     virObjectRWUnlock(doms);
     return data.ret;
 }
@@ -925,7 +924,7 @@ struct virDomainListData {
 
 static int
 virDomainObjListCollectIterator(void *payload,
-                                const void *name G_GNUC_UNUSED,
+                                const char *name G_GNUC_UNUSED,
                                 void *opaque)
 {
     struct virDomainListData *data = opaque;
@@ -981,10 +980,7 @@ virDomainObjListCollect(virDomainObjListPtr domlist,
 
     virObjectRWLockRead(domlist);
     sa_assert(domlist->objs);
-    if (VIR_ALLOC_N(data.vms, virHashSize(domlist->objs)) < 0) {
-        virObjectRWUnlock(domlist);
-        return -1;
-    }
+    data.vms = g_new0(virDomainObjPtr, virHashSize(domlist->objs));
 
     virHashForEach(domlist->objs, virDomainObjListCollectIterator, &data);
     virObjectRWUnlock(domlist);
@@ -1074,8 +1070,7 @@ virDomainObjListExport(virDomainObjListPtr domlist,
         return -1;
 
     if (domains) {
-        if (VIR_ALLOC_N(doms, nvms + 1) < 0)
-            goto cleanup;
+        doms = g_new0(virDomainPtr, nvms + 1);
 
         for (i = 0; i < nvms; i++) {
             virDomainObjPtr vm = vms[i];

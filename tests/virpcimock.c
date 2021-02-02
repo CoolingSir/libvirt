@@ -18,7 +18,8 @@
 
 #include <config.h>
 
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
+# define VIR_MOCK_LOOKUP_MAIN
 # include "virmock.h"
 # include <unistd.h>
 # include <fcntl.h>
@@ -120,7 +121,7 @@ struct pciDeviceAddress {
     unsigned int device;
     unsigned int function;
 };
-# define ADDR_STR_FMT "%04x:%02x:%02x.%d"
+# define ADDR_STR_FMT "%04x:%02x:%02x.%u"
 
 struct pciDevice {
     struct pciDeviceAddress addr;
@@ -305,11 +306,7 @@ add_fd(int fd, const char *path)
               fd, path, cb.fd, cb.path);
     }
 
-    if (VIR_REALLOC_N_QUIET(callbacks, nCallbacks + 1) < 0) {
-        errno = ENOMEM;
-        return -1;
-    }
-
+    callbacks = g_renew(struct fdCallback, callbacks, nCallbacks + 1);
     callbacks[nCallbacks].path = g_strdup(path);
     callbacks[nCallbacks++].fd = fd;
 
@@ -427,9 +424,7 @@ pci_device_create_iommu(const struct pciDevice *dev,
             return;
     }
 
-    if (VIR_ALLOC_QUIET(iommuGroup) < 0)
-        ABORT_OOM();
-
+    iommuGroup = g_new0(struct pciIommuGroup, 1);
     iommuGroup->iommu = dev->iommuGroup;
     iommuGroup->nDevicesBoundToVFIO = 0; /* No device bound to VFIO by default */
 
@@ -469,8 +464,7 @@ pci_device_new_from_stub(const struct pciDevice *data)
         c = strchr(c, ':');
     }
 
-    if (VIR_ALLOC_QUIET(dev) < 0)
-        ABORT_OOM();
+    dev = g_new0(struct pciDevice, 1);
 
     configSrc = g_strdup_printf("%s/virpcitestdata/%s.config", abs_srcdir, id);
 
@@ -694,8 +688,7 @@ pci_driver_new(const char *name, ...)
     int vendor, device;
     g_autofree char *driverpath = NULL;
 
-    if (VIR_ALLOC_QUIET(driver) < 0)
-        ABORT_OOM();
+    driver = g_new0(struct pciDriver, 1);
     driver->name = g_strdup(name);
     if (!(driverpath = pci_driver_get_path(driver, NULL, true)))
         ABORT_OOM();
@@ -709,12 +702,12 @@ pci_driver_new(const char *name, ...)
         if ((device = va_arg(args, int)) == -1)
             ABORT("Invalid vendor device pair for driver %s", name);
 
-        if (VIR_REALLOC_N_QUIET(driver->vendor, driver->len + 1) < 0 ||
-            VIR_REALLOC_N_QUIET(driver->device, driver->len + 1) < 0)
-            ABORT_OOM();
-
+        driver->vendor = g_renew(int, driver->vendor, driver->len + 1);
         driver->vendor[driver->len] = vendor;
+
+        driver->device = g_renew(int, driver->device, driver->len + 1);
         driver->device[driver->len] = device;
+
         driver->len++;
     }
 
@@ -943,7 +936,11 @@ init_syms(void)
     VIR_MOCK_REAL_INIT(__open_2);
 # endif /* ! __GLIBC__ */
     VIR_MOCK_REAL_INIT(close);
+# ifdef __APPLE__
+    VIR_MOCK_REAL_INIT_ALIASED(opendir, "opendir$INODE64");
+# else
     VIR_MOCK_REAL_INIT(opendir);
+# endif
     VIR_MOCK_REAL_INIT(virFileCanonicalizePath);
 }
 
@@ -1086,7 +1083,7 @@ open(const char *path, int flags, ...)
 
 # ifdef __GLIBC__
 /* in some cases this function may not be present in headers, so we need
- * a declaration to silence the complier */
+ * a declaration to silence the compiler */
 int
 __open_2(const char *path, int flags);
 
@@ -1131,6 +1128,8 @@ opendir(const char *path)
 int
 close(int fd)
 {
+    init_syms();
+
     if (remove_fd(fd) < 0)
         return -1;
     return real_close(fd);

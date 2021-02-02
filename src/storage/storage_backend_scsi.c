@@ -41,7 +41,6 @@
 VIR_LOG_INIT("storage.storage_backend_scsi");
 
 #define LINUX_SYSFS_SCSI_HOST_PREFIX "/sys/class/scsi_host"
-#define LINUX_SYSFS_SCSI_HOST_POSTFIX "device"
 #define LINUX_SYSFS_SCSI_HOST_SCAN_STRING "- - -"
 
 typedef struct _virStoragePoolFCRefreshInfo virStoragePoolFCRefreshInfo;
@@ -330,16 +329,15 @@ createVport(virStoragePoolDefPtr def,
      * retry logic set to true. If the thread isn't created, then no big
      * deal since it's still possible to refresh the pool later.
      */
-    if (VIR_ALLOC(cbdata) == 0) {
-        memcpy(cbdata->pool_uuid, def->uuid, VIR_UUID_BUFLEN);
-        cbdata->fchost_name = g_steal_pointer(&name);
+    cbdata = g_new0(virStoragePoolFCRefreshInfo, 1);
+    memcpy(cbdata->pool_uuid, def->uuid, VIR_UUID_BUFLEN);
+    cbdata->fchost_name = g_steal_pointer(&name);
 
-        if (virThreadCreateFull(&thread, false, virStoragePoolFCRefreshThread,
-                                "scsi-refresh", false, cbdata) < 0) {
-            /* Oh well - at least someone can still refresh afterwards */
-            VIR_DEBUG("Failed to create FC Pool Refresh Thread");
-            virStoragePoolFCRefreshDataFree(cbdata);
-        }
+    if (virThreadCreateFull(&thread, false, virStoragePoolFCRefreshThread,
+                            "scsi-refresh", false, cbdata) < 0) {
+        /* Oh well - at least someone can still refresh afterwards */
+        VIR_DEBUG("Failed to create FC Pool Refresh Thread");
+        virStoragePoolFCRefreshDataFree(cbdata);
     }
 
     return 0;

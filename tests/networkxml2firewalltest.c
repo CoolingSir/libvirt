@@ -26,8 +26,11 @@
 
 #if defined (__linux__)
 
+# include <gio/gio.h>
+
 # include "network/bridge_driver_platform.h"
 # include "virbuffer.h"
+# include "virmock.h"
 
 # define LIBVIRT_VIRFIREWALLPRIV_H_ALLOW
 # include "virfirewallpriv.h"
@@ -42,6 +45,33 @@
 # else
 #  error "test case not ported to this platform"
 # endif
+
+VIR_MOCK_WRAP_RET_ARGS(g_dbus_connection_call_sync,
+                       GVariant *,
+                       GDBusConnection *, connection,
+                       const gchar *, bus_name,
+                       const gchar *, object_path,
+                       const gchar *, interface_name,
+                       const gchar *, method_name,
+                       GVariant *, parameters,
+                       const GVariantType *, reply_type,
+                       GDBusCallFlags, flags,
+                       gint, timeout_msec,
+                       GCancellable *, cancellable,
+                       GError **, error)
+{
+    if (parameters) {
+        g_variant_ref_sink(parameters);
+        g_variant_unref(parameters);
+    }
+
+    VIR_MOCK_REAL_INIT(g_dbus_connection_call_sync);
+
+    *error = g_dbus_error_new_for_dbus_error("org.freedesktop.error",
+                                             "dbus is disabled");
+
+    return NULL;
+}
 
 static void
 testCommandDryRun(const char *const*args G_GNUC_UNUSED,
@@ -61,9 +91,8 @@ static int testCompareXMLToArgvFiles(const char *xml,
                                      const char *cmdline,
                                      const char *baseargs)
 {
-    char *expectargv = NULL;
     char *actualargv = NULL;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     virNetworkDefPtr def = NULL;
     int ret = -1;
     char *actual;
@@ -93,8 +122,6 @@ static int testCompareXMLToArgvFiles(const char *xml,
     ret = 0;
 
  cleanup:
-    virBufferFreeAndReset(&buf);
-    VIR_FREE(expectargv);
     VIR_FREE(actualargv);
     virNetworkDefFree(def);
     return ret;
@@ -152,8 +179,6 @@ mymain(void)
             ret = -1; \
     } while (0)
 
-    virFirewallSetLockOverride(true);
-
     if (virFirewallSetBackend(VIR_FIREWALL_BACKEND_DIRECT) < 0) {
         if (!hasNetfilterTools()) {
             fprintf(stderr, "iptables/ip6tables/ebtables tools not present");
@@ -173,12 +198,13 @@ mymain(void)
     DO_TEST("nat-many-ips");
     DO_TEST("nat-no-dhcp");
     DO_TEST("nat-ipv6");
+    DO_TEST("nat-ipv6-masquerade");
     DO_TEST("route-default");
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIR_TEST_MAIN(mymain)
+VIR_TEST_MAIN_PRELOAD(mymain, VIR_TEST_MOCK("virgdbus"))
 
 #else /* ! defined (__linux__) */
 

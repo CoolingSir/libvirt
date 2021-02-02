@@ -26,10 +26,13 @@ static int testCompareXMLToArgvFiles(const char *xml,
                                      const char *dmcmdline,
                                      unsigned int flags)
 {
-    char *actualargv = NULL, *actualld = NULL, *actualdm = NULL;
-    virDomainDefPtr vmdef = NULL;
-    virCommandPtr cmd = NULL, ldcmd = NULL;
-    virConnectPtr conn;
+    g_autofree char *actualargv = NULL;
+    g_autofree char *actualld = NULL;
+    g_autofree char *actualdm = NULL;
+    g_autoptr(virDomainDef) vmdef = NULL;
+    g_autoptr(virCommand) cmd = NULL;
+    g_autoptr(virCommand) ldcmd = NULL;
+    g_autoptr(virConnect) conn = NULL;
     int ret = -1;
 
     if (!(conn = virGetConnect()))
@@ -96,13 +99,6 @@ static int testCompareXMLToArgvFiles(const char *xml,
         vmdef->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_VNC)
         virPortAllocatorRelease(vmdef->graphics[0]->data.vnc.port);
 
-    VIR_FREE(actualargv);
-    VIR_FREE(actualld);
-    VIR_FREE(actualdm);
-    virCommandFree(cmd);
-    virCommandFree(ldcmd);
-    virDomainDefFree(vmdef);
-    virObjectUnref(conn);
     return ret;
 }
 
@@ -114,10 +110,11 @@ struct testInfo {
 static int
 testCompareXMLToArgvHelper(const void *data)
 {
-    int ret = -1;
     const struct testInfo *info = data;
-    char *xml = NULL;
-    char *args = NULL, *ldargs = NULL, *dmargs = NULL;
+    g_autofree char *xml = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *ldargs = NULL;
+    g_autofree char *dmargs = NULL;
 
     xml = g_strdup_printf("%s/bhyvexml2argvdata/bhyvexml2argv-%s.xml",
                           abs_srcdir, info->name);
@@ -128,13 +125,7 @@ testCompareXMLToArgvHelper(const void *data)
     dmargs = g_strdup_printf("%s/bhyvexml2argvdata/bhyvexml2argv-%s.devmap",
                              abs_srcdir, info->name);
 
-    ret = testCompareXMLToArgvFiles(xml, args, ldargs, dmargs, info->flags);
-
-    VIR_FREE(xml);
-    VIR_FREE(args);
-    VIR_FREE(ldargs);
-    VIR_FREE(dmargs);
-    return ret;
+    return testCompareXMLToArgvFiles(xml, args, ldargs, dmargs, info->flags);
 }
 
 static int
@@ -175,7 +166,8 @@ mymain(void)
     driver.bhyvecaps = BHYVE_CAP_RTC_UTC | BHYVE_CAP_AHCI32SLOT | \
                        BHYVE_CAP_NET_E1000 | BHYVE_CAP_LPC_BOOTROM | \
                        BHYVE_CAP_FBUF | BHYVE_CAP_XHCI | \
-                       BHYVE_CAP_CPUTOPOLOGY;
+                       BHYVE_CAP_CPUTOPOLOGY | BHYVE_CAP_SOUND_HDA | \
+                       BHYVE_CAP_VNC_PASSWORD | BHYVE_CAP_VIRTIO_9P;
 
     DO_TEST("base");
     DO_TEST("wired");
@@ -206,10 +198,23 @@ mymain(void)
     DO_TEST("vnc-vgaconf-off");
     DO_TEST("vnc-vgaconf-io");
     DO_TEST("vnc-autoport");
+    DO_TEST("vnc-resolution");
+    DO_TEST("vnc-password");
+    DO_TEST_FAILURE("vnc-password-comma");
     DO_TEST("cputopology");
     DO_TEST_FAILURE("cputopology-nvcpu-mismatch");
     DO_TEST("commandline");
     DO_TEST("msrs");
+    DO_TEST("sound");
+    DO_TEST("isa-controller");
+    DO_TEST_FAILURE("isa-multiple-controllers");
+    DO_TEST("fs-9p");
+    DO_TEST("fs-9p-readonly");
+    DO_TEST_FAILURE("fs-9p-unsupported-type");
+    DO_TEST_FAILURE("fs-9p-unsupported-driver");
+    DO_TEST_FAILURE("fs-9p-unsupported-accessmode");
+    driver.bhyvecaps &= ~BHYVE_CAP_VIRTIO_9P;
+    DO_TEST_FAILURE("fs-9p");
 
     /* Address allocation tests */
     DO_TEST("addr-single-sata-disk");
@@ -217,6 +222,9 @@ mymain(void)
     DO_TEST("addr-more-than-32-sata-disks");
     DO_TEST("addr-single-virtio-disk");
     DO_TEST("addr-multiple-virtio-disks");
+    DO_TEST("addr-isa-controller-on-slot-1");
+    DO_TEST("addr-isa-controller-on-slot-31");
+    DO_TEST("addr-non-isa-controller-on-slot-1");
 
     /* The same without 32 devs per controller support */
     driver.bhyvecaps ^= BHYVE_CAP_AHCI32SLOT;
@@ -248,6 +256,12 @@ mymain(void)
 
     driver.bhyvecaps &= ~BHYVE_CAP_CPUTOPOLOGY;
     DO_TEST_FAILURE("cputopology");
+
+    driver.bhyvecaps &= ~BHYVE_CAP_SOUND_HDA;
+    DO_TEST_FAILURE("sound");
+
+    driver.bhyvecaps &= ~BHYVE_CAP_VNC_PASSWORD;
+    DO_TEST_FAILURE("vnc-password");
 
     virObjectUnref(driver.caps);
     virObjectUnref(driver.xmlopt);

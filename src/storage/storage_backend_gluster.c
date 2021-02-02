@@ -30,7 +30,9 @@
 #include "virlog.h"
 #include "virstring.h"
 #include "viruri.h"
+#include "storage_file_probe.h"
 #include "storage_util.h"
+#include "storage_source.h"
 
 #define VIR_FROM_THIS VIR_FROM_STORAGE
 
@@ -97,16 +99,14 @@ virStorageBackendGlusterOpen(virStoragePoolObjPtr pool)
             trailing_slash = false;
     }
 
-    if (VIR_ALLOC(ret) < 0)
-        return NULL;
+    ret = g_new0(virStorageBackendGlusterState, 1);
 
     ret->volname = g_strdup(name);
     ret->dir = g_strdup_printf("%s%s", dir ? dir : "/", trailing_slash ? "" : "/");
 
     /* FIXME: Currently hard-coded to tcp transport; XML needs to be
      * extended to allow alternate transport */
-    if (VIR_ALLOC(ret->uri) < 0)
-        goto error;
+    ret->uri = g_new0(virURI, 1);
     ret->uri->scheme = g_strdup("gluster");
     ret->uri->server = g_strdup(def->source.hosts[0].name);
     ret->uri->path = g_strdup_printf("/%s%s", ret->volname, ret->dir);
@@ -151,8 +151,7 @@ virStorageBackendGlusterRead(glfs_fd_t *fd,
     char *s;
     size_t nread = 0;
 
-    if (VIR_ALLOC_N(*buf, len) < 0)
-        return -1;
+    *buf = g_new0(char, len);
 
     s = *buf;
     while (len) {
@@ -245,8 +244,7 @@ virStorageBackendGlusterRefreshVol(virStorageBackendGlusterStatePtr state,
         return ret;
     }
 
-    if (VIR_ALLOC(vol) < 0)
-        goto cleanup;
+    vol = g_new0(virStorageVolDef, 1);
 
     if (virStorageBackendUpdateVolTargetInfoFD(&vol->target, -1, st) < 0)
         goto cleanup;
@@ -274,16 +272,13 @@ virStorageBackendGlusterRefreshVol(virStorageBackendGlusterStatePtr state,
                                             &header)) < 0)
         goto cleanup;
 
-    if (!(meta = virStorageFileGetMetadataFromBuf(name, header, len,
-                                                  VIR_STORAGE_FILE_AUTO)))
+    if (!(meta = virStorageSourceGetMetadataFromBuf(name, header, len,
+                                                    VIR_STORAGE_FILE_AUTO)))
         goto cleanup;
 
     if (meta->backingStoreRaw) {
-        if (!(vol->target.backingStore = virStorageSourceNew()))
-            goto cleanup;
-
+        vol->target.backingStore = virStorageSourceNew();
         vol->target.backingStore->type = VIR_STORAGE_TYPE_NETWORK;
-
         vol->target.backingStore->path = g_steal_pointer(&meta->backingStoreRaw);
         vol->target.backingStore->format = meta->backingStoreRawFormat;
 
@@ -334,8 +329,8 @@ virStorageBackendGlusterRefreshPool(virStoragePoolObjPtr pool)
     /* Why oh why did glfs 3.4 decide to expose only readdir_r rather
      * than readdir?  POSIX admits that readdir_r is inherently a
      * flawed design, because systems are not required to define
-     * NAME_MAX: http://austingroupbugs.net/view.php?id=696
-     * http://womble.decadent.org.uk/readdir_r-advisory.html
+     * NAME_MAX: https://austingroupbugs.net/view.php?id=696
+     * https://womble.decadent.org.uk/readdir_r-advisory.html
      *
      * Fortunately, gluster appears to limit its underlying bricks to
      * only use file systems such as XFS that have a NAME_MAX of 255;
@@ -343,7 +338,7 @@ virStorageBackendGlusterRefreshPool(virStoragePoolObjPtr pool)
      * tail padding, then we should have enough space to avoid buffer
      * overflow no matter whether the OS used d_name[], d_name[1], or
      * d_name[256] in its 'struct dirent'.
-     * http://lists.gnu.org/archive/html/gluster-devel/2013-10/msg00083.html
+     * https://lists.gnu.org/archive/html/gluster-devel/2013-10/msg00083.html
      */
 
     if (!(dir = glfs_opendir(state->vol, state->dir))) {

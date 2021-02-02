@@ -72,6 +72,10 @@ int main(int argc, char **argv) {
     char *buffers[3] = {NULL, NULL, NULL};
     size_t buflen[3] = {0, 0, 0};
     char c;
+    bool daemonize_check = false;
+    size_t daemonize_retries = 3;
+    char buf[1024];
+    ssize_t got;
 
     if (!log)
         return ret;
@@ -83,6 +87,8 @@ int main(int argc, char **argv) {
             sscanf(argv[i], "%u%c", &readfds[numreadfds++], &c) != 1) {
             printf("Could not parse fd %s\n", argv[i]);
             goto cleanup;
+        } else if (STREQ(argv[i], "--check-daemonize")) {
+            daemonize_check = true;
         }
     }
 
@@ -126,7 +132,18 @@ int main(int argc, char **argv) {
             fprintf(log, "FD:%zu\n", i);
     }
 
-    fprintf(log, "DAEMON:%s\n", getpgrp() == getsid(0) ? "yes" : "no");
+    while (true) {
+        bool daemonized = getpgrp() != getppid();
+
+        if (daemonize_check && !daemonized && daemonize_retries-- > 0) {
+            usleep(100*1000);
+            continue;
+        }
+
+        fprintf(log, "DAEMON:%s\n", daemonized ? "yes" : "no");
+        break;
+    }
+
     if (!(cwd = getcwd(NULL, 0)))
         goto cleanup;
     if (strlen(cwd) > strlen(".../commanddata") &&
@@ -152,9 +169,6 @@ int main(int argc, char **argv) {
         usleep(100*1000);
     }
 
-    char buf[1024];
-    ssize_t got;
-
     fprintf(stdout, "BEGIN STDOUT\n");
     fflush(stdout);
     fprintf(stderr, "BEGIN STDERR\n");
@@ -176,7 +190,17 @@ int main(int argc, char **argv) {
         }
 
         for (i = 0; i < numpollfds; i++) {
-            if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+            short revents = POLLIN | POLLHUP | POLLERR;
+
+# ifdef __APPLE__
+            /*
+             * poll() on /dev/null will return POLLNVAL
+             * Apple-Feedback: FB8785208
+             */
+            revents |= POLLNVAL;
+# endif
+
+            if (fds[i].revents & revents) {
                 fds[i].revents = 0;
 
                 got = read(fds[i].fd, buf, sizeof(buf));
@@ -207,9 +231,9 @@ int main(int argc, char **argv) {
     }
 
     for (i = 0; i < numpollfds; i++) {
-        if (write(STDOUT_FILENO, buffers[i], buflen[i]) != buflen[i])
+        if (fwrite(buffers[i], 1, buflen[i], stdout) != buflen[i])
             goto cleanup;
-        if (write(STDERR_FILENO, buffers[i], buflen[i]) != buflen[i])
+        if (fwrite(buffers[i], 1, buflen[i], stderr) != buflen[i])
             goto cleanup;
     }
 

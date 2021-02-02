@@ -452,11 +452,10 @@ static int
 virCommandMassCloseGetFDsLinux(virCommandPtr cmd G_GNUC_UNUSED,
                                virBitmapPtr fds)
 {
-    DIR *dp = NULL;
+    g_autoptr(DIR) dp = NULL;
     struct dirent *entry;
     const char *dirName = "/proc/self/fd";
     int rc;
-    int ret = -1;
 
     if (virDirOpen(&dp, dirName) < 0)
         return -1;
@@ -468,19 +467,16 @@ virCommandMassCloseGetFDsLinux(virCommandPtr cmd G_GNUC_UNUSED,
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("unable to parse FD: %s"),
                            entry->d_name);
-            goto cleanup;
+            return -1;
         }
 
         ignore_value(virBitmapSetBit(fds, fd));
     }
 
     if (rc < 0)
-        goto cleanup;
+        return -1;
 
-    ret = 0;
- cleanup:
-    VIR_DIR_CLOSE(dp);
-    return ret;
+    return 0;
 }
 
 # else /* !__linux__ */
@@ -571,8 +567,7 @@ virCommandMassClose(virCommandPtr cmd,
         return -1;
     }
 
-    if (!(fds = virBitmapNew(openmax)))
-        return -1;
+    fds = virBitmapNew(openmax);
 
 #  ifdef __linux__
     if (virCommandMassCloseGetFDsLinux(cmd, fds) < 0)
@@ -787,15 +782,6 @@ virExec(virCommandPtr cmd)
         }
     }
 
-    if (virProcessSetMaxMemLock(0, cmd->maxMemLock) < 0)
-        goto fork_error;
-    if (virProcessSetMaxProcesses(0, cmd->maxProcesses) < 0)
-        goto fork_error;
-    if (virProcessSetMaxFiles(0, cmd->maxFiles) < 0)
-        goto fork_error;
-    if (cmd->setMaxCore &&
-        virProcessSetMaxCoreSize(0, cmd->maxCore) < 0)
-        goto fork_error;
     if (cmd->pidfile) {
         int pidfilefd = -1;
         char c;
@@ -819,6 +805,16 @@ virExec(virCommandPtr cmd)
 
         /* pidfilefd is intentionally leaked. */
     }
+
+    if (virProcessSetMaxMemLock(0, cmd->maxMemLock) < 0)
+        goto fork_error;
+    if (virProcessSetMaxProcesses(0, cmd->maxProcesses) < 0)
+        goto fork_error;
+    if (virProcessSetMaxFiles(0, cmd->maxFiles) < 0)
+        goto fork_error;
+    if (cmd->setMaxCore &&
+        virProcessSetMaxCoreSize(0, cmd->maxCore) < 0)
+        goto fork_error;
 
     if (cmd->hook) {
         VIR_DEBUG("Run hook %p %p", cmd->hook, cmd->opaque);
@@ -893,42 +889,7 @@ virExec(virCommandPtr cmd)
 }
 
 
-/**
- * virRun:
- * @argv NULL terminated argv to run
- * @status optional variable to return exit status in
- *
- * Run a command without using the shell.
- *
- * If status is NULL, then return 0 if the command run and
- * exited with 0 status; Otherwise return -1
- *
- * If status is not-NULL, then return 0 if the command ran.
- * The status variable is filled with the command exit status
- * and should be checked by caller for success. Return -1
- * only if the command could not be run.
- */
-int
-virRun(const char *const*argv, int *status)
-{
-    g_autoptr(virCommand) cmd = virCommandNewArgs(argv);
-
-    return virCommandRun(cmd, status);
-}
-
 #else /* WIN32 */
-
-int
-virRun(const char *const *argv G_GNUC_UNUSED,
-       int *status)
-{
-    if (status)
-        *status = ENOTSUP;
-    else
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       "%s", _("virRun is not implemented for WIN32"));
-    return -1;
-}
 
 pid_t
 virFork(void)
@@ -970,8 +931,7 @@ virCommandNewArgs(const char *const*args)
 {
     virCommandPtr cmd;
 
-    if (VIR_ALLOC(cmd) < 0)
-        return NULL;
+    cmd = g_new0(virCommand, 1);
 
     cmd->handshakeWait[0] = -1;
     cmd->handshakeWait[1] = -1;
@@ -1039,10 +999,11 @@ virCommandNewVAList(const char *binary, va_list list)
         VIR_FORCE_CLOSE(fd)
 
 /**
- * virCommandPassFD:
+ * virCommandPassFDIndex:
  * @cmd: the command to modify
  * @fd: fd to reassign to the child
  * @flags: extra flags; binary-OR of virCommandPassFDFlags
+ * @idx: pointer to fill with the index of the FD in the transfer set
  *
  * Transfer the specified file descriptor to the child, instead
  * of closing it on exec. @fd must not be one of the three
@@ -1053,7 +1014,7 @@ virCommandNewVAList(const char *binary, va_list list)
  * should cease using the @fd when this call completes
  */
 void
-virCommandPassFD(virCommandPtr cmd, int fd, unsigned int flags)
+virCommandPassFDIndex(virCommandPtr cmd, int fd, unsigned int flags, size_t *idx)
 {
     int ret = 0;
 
@@ -1077,6 +1038,29 @@ virCommandPassFD(virCommandPtr cmd, int fd, unsigned int flags)
         VIR_COMMAND_MAYBE_CLOSE_FD(fd, flags);
         return;
     }
+
+    if (idx)
+        *idx = cmd->npassfd - 1;
+}
+
+/**
+ * virCommandPassFD:
+ * @cmd: the command to modify
+ * @fd: fd to reassign to the child
+ * @flags: extra flags; binary-OR of virCommandPassFDFlags
+ *
+ * Transfer the specified file descriptor to the child, instead
+ * of closing it on exec. @fd must not be one of the three
+ * standard streams.
+ *
+ * If the flag VIR_COMMAND_PASS_FD_CLOSE_PARENT is set then fd will
+ * be closed in the parent no later than Run/RunAsync/Free. The parent
+ * should cease using the @fd when this call completes
+ */
+void
+virCommandPassFD(virCommandPtr cmd, int fd, unsigned int flags)
+{
+    virCommandPassFDIndex(cmd, fd, flags, NULL);
 }
 
 /*
@@ -1461,7 +1445,7 @@ virCommandAddEnvBuffer(virCommandPtr cmd, virBufferPtr buf)
  * @name: the name to look up in current environment
  *
  * Pass an environment variable to the child
- * using current process' value
+ * using current process's value
  */
 void
 virCommandAddEnvPass(virCommandPtr cmd, const char *name)
@@ -1543,7 +1527,6 @@ virCommandAddArg(virCommandPtr cmd, const char *val)
 
     if (val == NULL) {
         cmd->has_error = EINVAL;
-        abort();
         return;
     }
 
@@ -2115,7 +2098,7 @@ char *
 virCommandToString(virCommandPtr cmd, bool linebreaks)
 {
     size_t i;
-    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    g_auto(virBuffer) buf = VIR_BUFFER_INITIALIZER;
     bool prevopt = false;
 
     /* Cannot assume virCommandRun will be called; so report the error
@@ -2136,7 +2119,6 @@ virCommandToString(virCommandPtr cmd, bool linebreaks)
         char *eq = strchr(cmd->env[i], '=');
 
         if (!eq) {
-            virBufferFreeAndReset(&buf);
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                            _("invalid use of command API"));
             return NULL;
@@ -2164,6 +2146,29 @@ virCommandToString(virCommandPtr cmd, bool linebreaks)
     }
 
     return virBufferContentAndReset(&buf);
+}
+
+
+int
+virCommandGetArgList(virCommandPtr cmd,
+                     char ***args,
+                     size_t *nargs)
+{
+    size_t i;
+
+    if (cmd->has_error) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("invalid use of command API"));
+        return -1;
+    }
+
+    *args = g_new0(char *, cmd->nargs);
+    *nargs = cmd->nargs - 1;
+
+    for (i = 1; i < cmd->nargs; i++)
+        (*args)[i - 1] = g_strdup(cmd->args[i]);
+
+    return 0;
 }
 
 
@@ -2197,21 +2202,18 @@ virCommandProcessIO(virCommandPtr cmd)
     if (cmd->outbuf) {
         outfd = cmd->outfd;
         VIR_FREE(*cmd->outbuf);
-        if (VIR_ALLOC_N(*cmd->outbuf, 1) < 0)
-            ret = -1;
+        *cmd->outbuf = g_new0(char, 1);
     }
     if (cmd->errbuf) {
         errfd = cmd->errfd;
         VIR_FREE(*cmd->errbuf);
-        if (VIR_ALLOC_N(*cmd->errbuf, 1) < 0)
-            ret = -1;
+        *cmd->errbuf = g_new0(char, 1);
     }
     if (ret == -1)
         goto cleanup;
     ret = -1;
 
-    if (VIR_ALLOC_N(fds, 3 + virCommandGetNumSendBuffers(cmd)) < 0)
-        goto cleanup;
+    fds = g_new0(struct pollfd, 3 + virCommandGetNumSendBuffers(cmd));
 
     for (;;) {
         size_t i;
@@ -2650,8 +2652,9 @@ virCommandRunAsync(virCommandPtr cmd, pid_t *pid)
             VIR_FORCE_CLOSE(cmd->infd);
         /* clear any error so we can catch if the helper thread reports one */
         cmd->has_error = 0;
-        if (VIR_ALLOC(cmd->asyncioThread) < 0 ||
-            virThreadCreateFull(cmd->asyncioThread, true,
+        cmd->asyncioThread = g_new0(virThread, 1);
+
+        if (virThreadCreateFull(cmd->asyncioThread, true,
                                 virCommandDoAsyncIOHelper,
                                 "cmd-async-io", false, cmd) < 0) {
             virReportSystemError(errno, "%s",
@@ -2866,10 +2869,7 @@ int virCommandHandshakeWait(virCommandPtr cmd)
     if (c != '1') {
         g_autofree char *msg = NULL;
         ssize_t len;
-        if (VIR_ALLOC_N(msg, 1024) < 0) {
-            VIR_FORCE_CLOSE(cmd->handshakeWait[0]);
-            return -1;
-        }
+        msg = g_new0(char, 1024);
         /* Close the handshakeNotify fd before trying to read anything
          * further on the handshakeWait pipe; so that a child waiting
          * on our acknowledgment will die rather than deadlock.  */
@@ -3201,12 +3201,11 @@ virCommandRunRegex(virCommandPtr cmd,
     int totgroups = 0, ngroup = 0;
     char **groups;
     g_autofree char *outbuf = NULL;
-    VIR_AUTOSTRINGLIST lines = NULL;
+    g_auto(GStrv) lines = NULL;
     int ret = -1;
 
     /* Compile all regular expressions */
-    if (VIR_ALLOC_N(reg, nregex) < 0)
-        return -1;
+    reg = g_new0(GRegex *, nregex);
 
     for (i = 0; i < nregex; i++) {
         g_autoptr(GError) err = NULL;
@@ -3224,8 +3223,7 @@ virCommandRunRegex(virCommandPtr cmd,
     }
 
     /* Storage for matched variables */
-    if (VIR_ALLOC_N(groups, totgroups) < 0)
-        goto cleanup;
+    groups = g_new0(char *, totgroups);
 
     virCommandSetOutputBuffer(cmd, &outbuf);
     if (virCommandRun(cmd, exitstatus) < 0)
@@ -3311,8 +3309,7 @@ virCommandRunNul(virCommandPtr cmd,
     if (n_columns == 0)
         return -1;
 
-    if (VIR_ALLOC_N(v, n_columns) < 0)
-        return -1;
+    v = g_new0(char *, n_columns);
     for (i = 0; i < n_columns; i++)
         v[i] = NULL;
 
